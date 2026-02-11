@@ -1,0 +1,12 @@
+1 : Interclubs Avenirs (Rég. & Dép.)
+2 : Interclubs Jeunes (Rég. & Dép.)
+3 : Interclubs TC (Rég. & Dép.)
+4 : Championnats Régionaux
+5 : Meetings nationaux labellisés
+6 : Championnats nationaux
+7 : Compétitions internationales (défaut si pas spécifié)
+8 : Compétitions interrégionales
+12 : Régionaux (web confrontation)
+13 : Animation « A vos plots ! »
+14 : Coupes Nationales
+15 : Coupes Régionales
