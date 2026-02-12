@@ -31,6 +31,7 @@ Recupere par type : Championnats nationaux, Coupes regionales, International, et
 - **python get_data_deeper.py intl list**Liste les competitions sans telecharger les resultats (fichier competitions_idtyp_7.json).
 - **python get_data_deeper.py intl 15 10/01/2026 12/01/2026**
   Type 15 (Coupes Regionales) filtre par dates (du 10/01/2026 au 12/01/2026).
+- **python get_data_deeper.py --update**Recupere les competitions et leurs resultats ajoutes dans la derniere mise a jour (differentiel).
 
 ### Types (idtyp)
 
