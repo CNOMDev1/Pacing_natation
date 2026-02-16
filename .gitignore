@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+
+# Données générées 
+app/data/omega/pdfs/
+app/data/omega/pdfs_manifest.json
+app/data/extranat/
+
+# Fichiers locaux
+cookies_omegatiming.txt
+.env
+
+# Environnement virtuel
+.venv/
+venv/
+
+# OS
+.DS_Store

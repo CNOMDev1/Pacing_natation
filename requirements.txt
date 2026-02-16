@@ -1,0 +1,14 @@
+# Installation : pip install -r requirements.txt
+
+# API
+fastapi>=0.100.0
+uvicorn[standard]>=0.22.0
+pydantic>=2.0.0
+
+# HTTP & scraping
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# Omega (cookies, navigateur headless)
+playwright>=1.40.0
