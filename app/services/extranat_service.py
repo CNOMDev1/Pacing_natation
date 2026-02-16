@@ -8,6 +8,14 @@ from urllib.parse import urljoin
 from datetime import datetime, date
 from bs4 import BeautifulSoup
 
+# Permettre d'exécuter le script depuis app/services/ (python3 extranat_service.py ...)
+if __name__ == "__main__" or "app" not in sys.modules:
+    _project_root = Path(__file__).resolve().parent.parent.parent
+    if str(_project_root) not in sys.path:
+        sys.path.insert(0, str(_project_root))
+
+from app.models.competition_extranat import CompetitionExtranat
+
 # Dossier data Extranat 
 _DATA_BASE = Path(__file__).resolve().parent.parent / "data" / "extranat"
 
@@ -2479,11 +2487,15 @@ def main():
             
                             comp_filtered["filter"] = filter_name
                             comp_filtered["name"] = f"{safe_base}-{filter_name}"
-            
+
                             comp_filename = f"{safe_base}-{filter_name}.json"
                             comp_path = os.path.join(type_dir, comp_filename)
-                            with open(comp_path, "w", encoding="utf-8") as f:
-                                json.dump(comp_filtered, f, ensure_ascii=False, indent=2)
+                            try:
+                                comp_model = CompetitionExtranat.model_validate(comp_filtered)
+                                comp_model.to_json_file(comp_path)
+                            except Exception:
+                                with open(comp_path, "w", encoding="utf-8") as f:
+                                    json.dump(comp_filtered, f, ensure_ascii=False, indent=2)
                             competitions_files.append(comp_path)
                     else:
                         def _normalize_event_fields(results_dict: Dict):
@@ -2710,8 +2722,12 @@ def main():
                             comp_gender["name"] = f"{safe_base}-{gender_label}"
                             comp_filename = f"{safe_base}-{gender_label}.json"
                             comp_path = os.path.join(type_dir, comp_filename)
-                            with open(comp_path, "w", encoding="utf-8") as f:
-                                json.dump(comp_gender, f, ensure_ascii=False, indent=2)
+                            try:
+                                comp_model = CompetitionExtranat.model_validate(comp_gender)
+                                comp_model.to_json_file(comp_path)
+                            except Exception:
+                                with open(comp_path, "w", encoding="utf-8") as f:
+                                    json.dump(comp_gender, f, ensure_ascii=False, indent=2)
                             competitions_files.append(comp_path)
         
                         _write_gender_file("Dames", epreuves_dames)
