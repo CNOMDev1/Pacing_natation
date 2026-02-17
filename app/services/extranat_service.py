@@ -8,7 +8,7 @@ from urllib.parse import urljoin
 from datetime import datetime, date
 from bs4 import BeautifulSoup
 
-# Permettre d'exécuter le script depuis app/services/ (python3 extranat_service.py ...)
+# Permettre d'exécuter le script depuis app/services/ 
 if __name__ == "__main__" or "app" not in sys.modules:
     _project_root = Path(__file__).resolve().parent.parent.parent
     if str(_project_root) not in sys.path:
@@ -2133,24 +2133,21 @@ def generate_resume(data: Dict, output_dir: str = "competitions_per_type", idtyp
         "global_error_percentage": f"{round(global_error_percentage, 2)}%"
     }
     
-    # Fonction helper pour convertir un nom de type en nom de fichier valide
     def type_name_to_filename(type_name: str) -> str:
         if not type_name:
             return "resume_type_inconnu"
         
         filename = type_name.lower()
         
-        filename = re.sub(r'[^\w\s-]', '', filename)  # Supprimer caractères spéciaux
-        filename = re.sub(r'[-\s]+', '_', filename)  # Remplacer espaces et tirets par underscore
-        filename = filename.strip('_')  # Supprimer underscores en début/fin
+        filename = re.sub(r'[^\w\s-]', '', filename) 
+        filename = re.sub(r'[-\s]+', '_', filename) 
+        filename = filename.strip('_')  
         
-        # Nettoyer les caractères interdits 
         forbidden = '\\/:*?"<>|'
         filename = "".join(("_" if ch in forbidden else ch) for ch in filename)
         
         return f"resume_{filename}"
     
-    # Sauvegarder un fichier de résumé pour chaque type individuellement
     for type_info in resume["par_type"]:
         idtyp_val = type_info.get("idtyp")
         type_name_val = type_info.get("type_name", "")

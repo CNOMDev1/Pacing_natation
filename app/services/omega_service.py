@@ -2,12 +2,13 @@
 Service Omega: logique de récupération des données et PDFs depuis omegatiming.com.
 Inclut la mise à jour des cookies .
 """
-import asyncio, os, sys, time
+import asyncio, os, sys, time, threading
 import requests
 from pathlib import Path
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Racine du projet (Pacing/) pour le fichier cookies
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -20,7 +21,6 @@ BASE_URL = "https://www.omegatiming.com"
 START_YEAR = 2000
 END_YEAR = 2026
 REVERSE_ORDER = False
-TEST_PDF_URL = ""
 DELAY_BETWEEN_YEARS = 2
 TIMEOUT_OLD_YEARS = 15
 DIRECT_COMPETITION_URLS = {
@@ -95,6 +95,7 @@ if cookie_header:
 
 session = requests.Session()
 session.headers.update(HEADERS)
+SESSION_LOCK = threading.Lock()
 
 
 def update_cookies(cookies_file: Path | None = None, url: str = COOKIE_FETCH_URL, headless: bool = False) -> bool:
@@ -117,8 +118,9 @@ def update_cookies(cookies_file: Path | None = None, url: str = COOKIE_FETCH_URL
 
     new_cookie_header = load_cookie_header_from_file(_COOKIES_FILE)
     if new_cookie_header:
-        session.headers["Cookie"] = new_cookie_header
-        HEADERS["Cookie"] = new_cookie_header
+        with SESSION_LOCK:
+            session.headers["Cookie"] = new_cookie_header
+            HEADERS["Cookie"] = new_cookie_header
         print("Cookies mis à jour dans la session", flush=True)
         return True
     else:
@@ -133,7 +135,8 @@ TIMEOUT_PDF = 40
 
 def check_url_exists(url, timeout=5):
     try:
-        resp = session.head(url, timeout=timeout, allow_redirects=True)
+        with SESSION_LOCK:
+            resp = session.head(url, timeout=timeout, allow_redirects=True)
         return resp.status_code
     except Exception:
         return None
@@ -165,10 +168,12 @@ def fetch_with_retries(url, description, timeout, skip_quick_check=False):
             print(f"{description} (essai {attempt}/{MAX_RETRIES})...", flush=True)
             print(f"URL: {url}", flush=True)
             if "/2000/" in url:
-                session.headers["Referer"] = "https://www.omegatiming.com/"
+                with SESSION_LOCK:
+                    session.headers["Referer"] = "https://www.omegatiming.com/"
                 print("  Configuration spéciale pour l'année 2000...", flush=True)
 
-            resp = session.get(url, timeout=timeout, allow_redirects=True)
+            with SESSION_LOCK:
+                resp = session.get(url, timeout=timeout, allow_redirects=True)
 
             print(f"Code de statut HTTP: {resp.status_code} {resp.reason}", flush=True)
             print(f"  Taille de la réponse: {len(resp.content)} octets", flush=True)
@@ -241,7 +246,8 @@ def fetch_with_retries(url, description, timeout, skip_quick_check=False):
         if update_cookies():
             print("Dernier essai avec les cookies mis à jour...", flush=True)
             try:
-                resp = session.get(url, timeout=timeout, allow_redirects=True)
+                with SESSION_LOCK:
+                    resp = session.get(url, timeout=timeout, allow_redirects=True)
                 if resp.status_code == 200:
                     print("Requête réussie après mise à jour des cookies (200 OK)", flush=True)
                     return resp
@@ -270,11 +276,13 @@ def try_alternative_urls(base_url: str) -> requests.Response | None:
     for alt_url in alternatives:
         print(f"  Essai avec l'URL alternative: {alt_url}", flush=True)
         try:
-            session.headers["Referer"] = "https://www.omegatiming.com/"
-            resp = session.head(alt_url, timeout=10, allow_redirects=True)
+            with SESSION_LOCK:
+                session.headers["Referer"] = "https://www.omegatiming.com/"
+                resp = session.head(alt_url, timeout=10, allow_redirects=True)
             if resp.status_code == 200:
                 print(f"  URL alternative fonctionne: {alt_url}", flush=True)
-                return session.get(alt_url, timeout=TIMEOUT_INDEX)
+                with SESSION_LOCK:
+                    return session.get(alt_url, timeout=TIMEOUT_INDEX)
             elif resp.status_code == 404:
                 print("  URL alternative retourne 404", flush=True)
             else:
@@ -363,7 +371,8 @@ def download_total_ranking_pdfs_for_meet(meet_url: str, pdf_dir: str) -> None:
 
     for idx, pdf_url in enumerate(total_ranking_links, 1):
         print(f"\n[{idx}/{len(total_ranking_links)}] Téléchargement du PDF 'Total Ranking' : {pdf_url}", flush=True)
-        session.headers["Referer"] = meet_url
+        with SESSION_LOCK:
+            session.headers["Referer"] = meet_url
         r = fetch_with_retries(pdf_url, f'Téléchargement du PDF "Total Ranking" {idx}/{len(total_ranking_links)}', timeout=TIMEOUT_PDF)
         if r is None:
             print("  Échec du téléchargement pour ce PDF, passage au suivant...", flush=True)
@@ -442,9 +451,57 @@ def get_pdfs_by_years_response(start_year: int, end_year: int, execute: bool = F
     }
 
 
+def _process_year(year: int, base_pdf_dir: str) -> None:
+    """
+    Traite le téléchargement pour une année donnée (utilisé par les threads).
+    """
+    print(f"\n{'*'*60}", flush=True)
+    print(f"TRAITEMENT DE L'ANNÉE {year}", flush=True)
+    print(f"{'*'*60}\n", flush=True)
+
+    index_url = f"https://www.omegatiming.com/sports-timing-live-results/{year}"
+    pdf_dir = os.path.join(base_pdf_dir, str(year))
+    os.makedirs(pdf_dir, exist_ok=True)
+
+    print(f"Récupération de la page index: {index_url}", flush=True)
+    timeout_to_use = TIMEOUT_OLD_YEARS if year < 2010 else TIMEOUT_INDEX
+    resp = fetch_with_retries(index_url, f"Récupération de la page index {year}", timeout=timeout_to_use)
+
+    meet_links = []
+    if resp is None:
+        if year < 2010:
+            print(f"Année {year} : La page index n'est pas accessible.", flush=True)
+            if year in DIRECT_COMPETITION_URLS and DIRECT_COMPETITION_URLS[year]:
+                meet_links = DIRECT_COMPETITION_URLS[year]
+            else:
+                return
+        else:
+            print(f"Impossible de récupérer la page index pour l'année {year}", flush=True)
+            return
+    else:
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for row in soup.select("div.row"):
+            sport_p = row.select_one("p.sport.swimming")
+            if not sport_p:
+                continue
+            detail_link = row.select_one("h3.detail a[href]")
+            if not detail_link:
+                continue
+            href = detail_link["href"]
+            meet_url = urljoin(BASE_URL, href)
+            meet_links.append(meet_url)
+
+    print(f"Nombre de compétitions 'Swimming' trouvées pour {year} : {len(meet_links)}", flush=True)
+    for meet_url in meet_links:
+        print(f"\n=== Compétition {year} : {meet_url} ===", flush=True)
+        download_total_ranking_pdfs_for_meet(meet_url, pdf_dir)
+        time.sleep(2)
+
+
 def run_download_between_years(start_year: int, end_year: int) -> None:
     """
-    Lance le téléchargement des PDFs Omega pour les années [start_year, end_year] (inclus).
+    Lance le téléchargement des PDFs Omega pour les années [start_year, end_year] (inclus),
+    en traitant plusieurs années en parallèle (multi-thread).
     """
     if start_year > end_year:
         start_year, end_year = end_year, start_year
@@ -456,72 +513,26 @@ def run_download_between_years(start_year: int, end_year: int) -> None:
     if REVERSE_ORDER:
         years = list(reversed(years))
 
-    for year in years:
-        print(f"\n{'*'*60}", flush=True)
-        print(f"TRAITEMENT DE L'ANNÉE {year}", flush=True)
-        print(f"{'*'*60}\n", flush=True)
+    max_workers = min(27, len(years)) 
+    if max_workers <= 0:
+        return
 
-        index_url = f"https://www.omegatiming.com/sports-timing-live-results/{year}"
-        pdf_dir = os.path.join(base_pdf_dir, str(year))
-        os.makedirs(pdf_dir, exist_ok=True)
-
-        print(f"Récupération de la page index: {index_url}", flush=True)
-        timeout_to_use = TIMEOUT_OLD_YEARS if year < 2010 else TIMEOUT_INDEX
-        resp = fetch_with_retries(index_url, f"Récupération de la page index {year}", timeout=timeout_to_use)
-
-        meet_links = []
-        if resp is None:
-            if year < 2010:
-                print(f"Année {year} : La page index n'est pas accessible.", flush=True)
-                if year in DIRECT_COMPETITION_URLS and DIRECT_COMPETITION_URLS[year]:
-                    meet_links = DIRECT_COMPETITION_URLS[year]
-                else:
-                    continue
-            else:
-                print(f"Impossible de récupérer la page index pour l'année {year}", flush=True)
-                continue
-        else:
-            soup = BeautifulSoup(resp.text, "html.parser")
-            for row in soup.select("div.row"):
-                sport_p = row.select_one("p.sport.swimming")
-                if not sport_p:
-                    continue
-                detail_link = row.select_one("h3.detail a[href]")
-                if not detail_link:
-                    continue
-                href = detail_link["href"]
-                meet_url = urljoin(BASE_URL, href)
-                meet_links.append(meet_url)
-
-        print(f"Nombre de compétitions 'Swimming' trouvées pour {year} : {len(meet_links)}", flush=True)
-        for meet_url in meet_links:
-            print(f"\n=== Compétition {year} : {meet_url} ===", flush=True)
-            download_total_ranking_pdfs_for_meet(meet_url, pdf_dir)
-            time.sleep(2)
-        if year < end_year:
-            print(f"\nPause de {DELAY_BETWEEN_YEARS} secondes avant l'année suivante...\n", flush=True)
-            time.sleep(DELAY_BETWEEN_YEARS)
+    print(f"\nLancement du téléchargement en parallèle pour les années {years}", flush=True)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_process_year, year, base_pdf_dir): year for year in years}
+        for future in as_completed(futures):
+            year = futures[future]
+            try:
+                future.result()
+                print(f"\n=== Année {year} terminée ===", flush=True)
+            except Exception as e:
+                print(f"\nErreur lors du traitement de l'année {year}: {type(e).__name__} - {e}", flush=True)
 
 
 def main():
     base_pdf_dir = _DATA_BASE_OMEGA / "pdfs"
     base_pdf_dir.mkdir(parents=True, exist_ok=True)
     base_pdf_dir = str(base_pdf_dir)
-
-    if TEST_PDF_URL:
-        print("Mode test: téléchargement direct d'un seul PDF.", flush=True)
-        r = fetch_with_retries(TEST_PDF_URL, "Test téléchargement PDF direct", timeout=TIMEOUT_PDF)
-        if r is None:
-            return
-        filename = os.path.join(base_pdf_dir, TEST_PDF_URL.split("/")[-1])
-        try:
-            with open(filename, "wb") as f:
-                f.write(r.content)
-            print(f"Téléchargé : {filename}", flush=True)
-        except Exception as e:
-            print(f"Erreur lors de l'écriture du fichier: {e}", flush=True)
-        return
-
     start_year = START_YEAR
     end_year = END_YEAR
     if len(sys.argv) >= 3:
