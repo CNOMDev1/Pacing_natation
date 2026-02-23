@@ -14,7 +14,7 @@ if __name__ == "__main__" or "app" not in sys.modules:
     if str(_project_root) not in sys.path:
         sys.path.insert(0, str(_project_root))
 
-from app.models.competition_extranat import CompetitionExtranat
+from app.models.extranat_models import CompetitionExtranat
 
 # Dossier data Extranat 
 _DATA_BASE = Path(__file__).resolve().parent.parent / "data" / "extranat"
@@ -686,6 +686,15 @@ def get_all_results_by_type(base_url: str = BASE_URL, path: str = COMPETITIONS_P
         data["types"].append(t_data)
 
     return data
+
+
+def save_results_to_data_dir(data: Dict) -> Path:
+    """Sauvegarde le résultat de get_all_results_by_type dans data/extranat/results_by_type.json."""
+    _DATA_BASE.mkdir(parents=True, exist_ok=True)
+    path = _DATA_BASE / "results_by_type.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return path
 
 
 def get_results_by_date_range(start_date: date, end_date: date, delay_between_comps: float = 0.5, debug: bool = False) -> Dict:
