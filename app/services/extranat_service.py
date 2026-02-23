@@ -697,6 +697,53 @@ def save_results_to_data_dir(data: Dict) -> Path:
     return path
 
 
+def save_type_competitions_to_folder(data: Dict, idtyp: int, type_label: str) -> Path:
+    """
+    À partir des données retournées par get_all_results_by_type(only_idtyps=[idtyp]),
+    crée le même dossier que main() dans data/extranat/competitions_per_type/<folder_name>
+    et y écrit un fichier JSON par compétition.
+    Nommage du dossier aligné sur main() : type_label.split(" (")[0] (ex. "Compétitions internationales").
+    """
+    # Même règle que main() (l.2474-2476) pour le nom du dossier
+    folder_name = type_label.split(" (")[0] if type_label else f"type_{idtyp}"
+    type_dir = _DATA_BASE / "competitions_per_type" / folder_name
+    type_dir.mkdir(parents=True, exist_ok=True)
+
+    competitions: List[Dict] = []
+
+    if "types" in data:
+        types_list = data.get("types", [])
+        if len(types_list) == 1:
+            competitions = types_list[0].get("competitions", []) or []
+        else:
+            for t in types_list:
+                if t.get("idtyp") == idtyp:
+                    competitions = t.get("competitions", []) or []
+                    break
+    elif "competitions" in data:
+        competitions = data.get("competitions", []) or []
+
+    def _competition_filename(comp: Dict, index: int) -> str:
+        comp_id = comp.get("competition_id") or comp.get("id") or ""
+        name = comp.get("name") or f"competition_{index}"
+        base = f"{comp_id}_{name}" if comp_id else name
+        # Simplifier le nom de fichier pour le système de fichiers
+        base_str = str(base)
+        base_str = re.sub(r"[\\/:*?\"<>|]", "_", base_str)
+        base_str = base_str.strip().strip(".")
+        if not base_str:
+            base_str = f"competition_{index}"
+        return f"{base_str}.json"
+
+    for idx, comp in enumerate(competitions):
+        filename = _competition_filename(comp, idx)
+        out_path = type_dir / filename
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(comp, f, ensure_ascii=False, indent=2)
+
+    return type_dir
+
+
 def get_results_by_date_range(start_date: date, end_date: date, delay_between_comps: float = 0.5, debug: bool = False) -> Dict:
     """Récupère tous les résultats puis ne garde que les compétitions dont la date est dans [start_date, end_date]."""
     data = get_all_results_by_type(delay_between_comps=delay_between_comps, debug=debug)
