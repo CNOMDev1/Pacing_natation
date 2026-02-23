@@ -5,10 +5,13 @@ __pycache__/
 app/data/omega/pdfs/
 app/data/omega/pdfs_manifest.json
 app/data/extranat/
+app/data/usaswimming/
 
 # Fichiers locaux
 cookies_omegatiming.txt
 .env
+bearer_token.txt
+state.json
 
 # Environnement virtuel
 .venv/

@@ -2,7 +2,7 @@
 Point d'entrée de l'API FastAPI.
 """
 from fastapi import FastAPI
-from app.routers import extranat, omega
+from app.routers import extranat, omega, usaswimming
 
 app = FastAPI(
     title="Pacing",
@@ -12,6 +12,7 @@ app = FastAPI(
 
 app.include_router(omega.router)
 app.include_router(extranat.router)
+app.include_router(usaswimming.router)
 
 @app.get("/")
 def root():
