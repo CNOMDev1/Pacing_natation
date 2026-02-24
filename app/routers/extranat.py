@@ -20,6 +20,11 @@ async def get_all_results():
         None, lambda: get_all_results_by_type(delay_between_comps=0.5, debug=True)
     )
     save_results_to_data_dir(data)
+    for t in data.get("types", []):
+        idtyp = t.get("idtyp")
+        label = t.get("label", "") or f"type_{idtyp}"
+        if idtyp is not None:
+            save_type_competitions_to_folder({"types": [t]}, idtyp, label)
     return data
 
 
