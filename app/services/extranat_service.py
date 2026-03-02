@@ -1,27 +1,14 @@
-import html as html_module
-import json, os, sys, time, requests
-import re as re_module
-import re
-from pathlib import Path
-from typing import Dict, List, Optional
-from urllib.parse import urljoin
-from datetime import datetime, date
+import requests
 from bs4 import BeautifulSoup
-
-# Permettre d'exécuter le script depuis app/services/ 
-if __name__ == "__main__" or "app" not in sys.modules:
-    _project_root = Path(__file__).resolve().parent.parent.parent
-    if str(_project_root) not in sys.path:
-        sys.path.insert(0, str(_project_root))
-
-from app.models.extranat_models import CompetitionExtranat
-
-# Dossier data Extranat 
-_DATA_BASE = Path(__file__).resolve().parent.parent / "data" / "extranat"
+from typing import List, Dict, Optional
+import time
+import re
 
 
+# Effectue une requête GET HTTP avec relances automatiques : en cas d'échec (erreur réseau,
+# 403, 429, 5xx), attend un délai croissant (backoff exponentiel) puis réessaie jusqu'à
+# max_retries fois (ou indéfiniment si retry_forever=True). Retourne la réponse ou lève une exception.
 def http_get_with_retries(url: str, headers: Optional[dict] = None, max_retries: int = 3, base_delay: float = 1.0, debug: bool = False, session: Optional[requests.Session] = None, retry_forever: bool = False):
-    """Effectue une requête GET HTTP avec relances automatiques"""
     if headers is None:
         headers = {
             "User-Agent": (
@@ -116,26 +103,20 @@ def http_get_with_retries(url: str, headers: Optional[dict] = None, max_retries:
             f"Echec de la requête GET vers {url} après {max_retries} tentatives"
         )
 
-
-def parse_competition_date(date_str: Optional[str]) -> Optional[date]:
-    """
-    Extrait une date JJ/MM/AAAA d'une chaîne comme 'Samedi 10/01/2026' et la convertit en date.
-    """
-    if not date_str:
-        return None
-    m = re.search(r"(\d{2}/\d{2}/\d{4})", date_str)
-    if not m:
-        return None
-    try:
-        return datetime.strptime(m.group(1), "%d/%m/%Y").date()
-    except ValueError:
-        return None
-
-
+# Récupère les données de compétition (résultats de natation) depuis l'URL fournie : charge la page,
+# trouve la table des résultats (épreuves type 100 Nage Libre, Brasse, etc.), parse les lignes
+# (rang, nageur, club, temps, splits, MPP) et retourne une liste de dictionnaires par résultat.
 def get_competition_data(url: str, debug: bool = False, session: Optional[requests.Session] = None, retry_forever: bool = True) -> List[Dict]:
-    """Récupère les données de compétition (résultats de natation) depuis l'URL fournie"""
-    response = http_get_with_retries(url,debug=debug,max_retries=5,session=session,retry_forever=retry_forever)
+    response = http_get_with_retries(
+        url,
+        debug=debug,
+        max_retries=5,
+        session=session,
+        retry_forever=retry_forever,
+    )
+
     soup = BeautifulSoup(response.content, 'html.parser')
+
     table = None
     table_div = soup.find('div', class_='relative overflow-x-auto shadow-md sm:rounded-lg print-not-shadow')
     if table_div:
@@ -411,36 +392,52 @@ def get_competition_data(url: str, debug: bool = False, session: Optional[reques
         print(f"Total de résultats extraits: {len(results)}")
     return results
 
+import html as html_module
+import json, os
+import os
+from typing import Dict, List, Optional
+import requests
+from bs4 import BeautifulSoup
 
 BASE_URL = "https://ffn.extranat.fr/webffn/"
 COMPETITIONS_PATH = "competitions.php?idact=nat"
 INTERNATIONALS_URL = ("https://ffn.extranat.fr/webffn/competitions.php?idact=nat&idsai=&idreg=&idtyp=7")
-NEW_ENTRIES_URL = ("https://ffn.extranat.fr/webffn/competitions.php?idact=nat&idaff=1") # Page “Les nouvelles entrées” (la liste des compétitions nouvellement ajoutées.)
 
 
-# Construction de l'URL de la page des compétitions FFN pour un type donné (idtyp).
+# Construit l'URL de la page des compétitions FFN pour un type donné (idtyp).
 def get_competitions_url_by_idtyp(idtyp: int) -> str:
     return f"{BASE_URL}competitions.php?idact=nat&idsai=&idreg=&idtyp={idtyp}"
 
 
-
-def get_competition_types(base_url: str = BASE_URL, path: str = COMPETITIONS_PATH, debug: bool = False)-> List[Dict]:
-    """Récupèration de la liste des types de compétition depuis la page FFN (retourne types)"""
+# Récupère la liste des types de compétition depuis la page FFN : parse le <select> liste_type
+# et retourne pour chaque option idtyp, label, value et url complète.
+def get_competition_types(
+    base_url: str = BASE_URL,
+    path: str = COMPETITIONS_PATH,
+    debug: bool = False,
+) -> List[Dict]:
     url = f"{base_url}{path}"
-    if debug: 
+
+    if debug:
         print(f"Récupération des types de compétitions depuis : {url}")
+
     try:
         resp = http_get_with_retries(url, debug=debug)
     except requests.HTTPError as e:
         if e.response is not None and e.response.status_code == 403:
-            print(" x 403 Forbidden sur la page des compétitions ")
+            print(
+                " x 403 Forbidden sur la page des compétitions "
+            )
+            print(
+                "  Réessaie plus tard, ou avec moins de scripts en parallèle "
+            )
             return []
         raise
     soup = BeautifulSoup(resp.content, "html.parser")
 
-    select = soup.find("select", id="liste_type") 
+    select = soup.find("select", id="liste_type")
     if not select:
-        select = soup.find("select", {"name": "idtyp"}) 
+        select = soup.find("select", {"name": "idtyp"})
 
     if not select:
         if debug:
@@ -448,10 +445,10 @@ def get_competition_types(base_url: str = BASE_URL, path: str = COMPETITIONS_PAT
         return []
 
     types: List[Dict] = []
-    
-    for opt in select.find_all("option"): 
-        value = opt.get("value", "").strip() 
-        label = opt.get_text(strip=True) 
+
+    for opt in select.find_all("option"):
+        value = opt.get("value", "").strip()
+        label = opt.get_text(strip=True)
 
         full_url = value
         if value and not value.startswith("http"):
@@ -474,6 +471,7 @@ def get_competition_types(base_url: str = BASE_URL, path: str = COMPETITIONS_PAT
                 "url": full_url,
             }
         )
+
     if debug:
         print(f"{len(types)} type(s) de compétition trouvé(s)")
         for t in types:
@@ -482,13 +480,19 @@ def get_competition_types(base_url: str = BASE_URL, path: str = COMPETITIONS_PAT
     return types
 
 
-def get_competitions_for_url(url: str, debug: bool = False) -> List[Dict]:
-    """Récupèration de la liste des compétitions pour une URL donnée"""
+# Récupère la liste des compétitions pour une URL donnée, avec pagination : suit tous les liens
+# de liste (même filtre), parse chaque bloc compétition (nom, date, lieu, URL, type, bassin, etc.).
+def get_competitions_for_url(
+    url: str,
+    debug: bool = False,
+) -> List[Dict]:
     competitions: List[Dict] = []
+
     if debug:
         print(f"Récupération des compétitions (avec pagination) depuis : {url}")
 
     from urllib.parse import urljoin, urlparse, parse_qs
+
     start_url = url
     parsed_start = urlparse(start_url)
     start_qs = parse_qs(parsed_start.query)
@@ -624,17 +628,29 @@ def get_competitions_for_url(url: str, debug: bool = False) -> List[Dict]:
     return competitions
 
 
-# Pour chaque type de compétition, récupère les compétitions puis les résultats de chaque compétition (via get_competition_data) 
-def get_all_results_by_type(base_url: str = BASE_URL, path: str = COMPETITIONS_PATH, delay_between_comps: float = 1.0, debug: bool = False, only_idtyps: Optional[List[int]] = None) -> Dict:
+# Pour chaque type de compétition, récupère les compétitions puis les résultats de chaque
+# compétition (via get_competition_data) ; retourne un dict types → competitions → results.
+def get_all_results_by_type(
+    base_url: str = BASE_URL,
+    path: str = COMPETITIONS_PATH,
+    delay_between_comps: float = 1.0,
+    debug: bool = False,
+    only_idtyps: Optional[List[int]] = None,
+) -> Dict:
     types = get_competition_types(base_url=base_url, path=path, debug=debug)
+
     data: Dict = {"types": []}
 
     if not types:
         return data
 
+    # Ne traiter que les vrais types (ignorer l'option "Type de compétition" sans idtyp)
     types = [t for t in types if t.get("idtyp") is not None]
+
     if not types:
         return data
+
+    import time
 
     if only_idtyps:
         types = [t for t in types if t.get("idtyp") in only_idtyps]
@@ -651,7 +667,9 @@ def get_all_results_by_type(base_url: str = BASE_URL, path: str = COMPETITIONS_P
             print(
                 f"\n[{idx}/{total_types}] Type: idtyp={t.get('idtyp')} - {label}\n"
             )
+
         competitions = get_competitions_for_url(url, debug=debug)
+
         for c_idx, comp in enumerate(competitions, 1):
             comp_url = comp.get("url")
             if not comp_url:
@@ -688,83 +706,114 @@ def get_all_results_by_type(base_url: str = BASE_URL, path: str = COMPETITIONS_P
     return data
 
 
-def save_results_to_data_dir(data: Dict) -> Path:
-    """Sauvegarde le résultat de get_all_results_by_type dans data/extranat/results_by_type.json."""
-    _DATA_BASE.mkdir(parents=True, exist_ok=True)
-    path = _DATA_BASE / "results_by_type.json"
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    return path
-
-
-def save_type_competitions_to_folder(data: Dict, idtyp: int, type_label: str) -> Path:
+def get_all_results_grouped_by_event_by_type(
+    base_url: str = BASE_URL,
+    path: str = COMPETITIONS_PATH,
+    delay_between_comps: float = 1.0,
+    debug: bool = False,
+    only_idtyps: Optional[List[int]] = None,
+) -> Dict:
     """
-    À partir des données retournées par get_all_results_by_type(only_idtyps=[idtyp]),
-    crée le même dossier que main() dans data/extranat/competitions_per_type/<folder_name>
-    et y écrit un fichier JSON par compétition.
-    Nommage du dossier aligné sur main() : type_label.split(" (")[0] (ex. "Compétitions internationales").
+    Variante de get_all_results_by_type qui, pour chaque compétition,
+    utilise la logique « avancée » basée sur le formulaire (get_results_for_competitions_url)
+    afin de récupérer des résultats groupés par épreuve.
+
+    Structure de retour (similaire à get_all_results_by_type) :
+    {
+      "types": [
+        {
+          "idtyp": ...,
+          "label": ...,
+          "url": "...",
+          "competitions": [
+            {
+              "name": "...",
+              "url": "...",
+              ...
+              "results": { ... },         # dict groupé par épreuves / filtres
+              "results_count": <int>,    # nombre total de performances
+            },
+            ...
+          ]
+        },
+        ...
+      ]
+    }
     """
-    # Même règle que main() (l.2474-2476) pour le nom du dossier
-    folder_name = type_label.split(" (")[0] if type_label else f"type_{idtyp}"
-    type_dir = _DATA_BASE / "competitions_per_type" / folder_name
-    type_dir.mkdir(parents=True, exist_ok=True)
+    types = get_competition_types(base_url=base_url, path=path, debug=debug)
 
-    competitions: List[Dict] = []
+    data: Dict = {"types": []}
 
-    if "types" in data:
-        types_list = data.get("types", [])
-        if len(types_list) == 1:
-            competitions = types_list[0].get("competitions", []) or []
-        else:
-            for t in types_list:
-                if t.get("idtyp") == idtyp:
-                    competitions = t.get("competitions", []) or []
-                    break
-    elif "competitions" in data:
-        competitions = data.get("competitions", []) or []
+    if not types:
+        return data
 
-    def _competition_filename(comp: Dict, index: int) -> str:
-        comp_id = comp.get("competition_id") or comp.get("id") or ""
-        name = comp.get("name") or f"competition_{index}"
-        base = f"{comp_id}_{name}" if comp_id else name
-        # Simplifier le nom de fichier pour le système de fichiers
-        base_str = str(base)
-        base_str = re.sub(r"[\\/:*?\"<>|]", "_", base_str)
-        base_str = base_str.strip().strip(".")
-        if not base_str:
-            base_str = f"competition_{index}"
-        return f"{base_str}.json"
+    # Ne traiter que les vrais types (ignorer l'option "Type de compétition" sans idtyp)
+    types = [t for t in types if t.get("idtyp") is not None]
 
-    for idx, comp in enumerate(competitions):
-        filename = _competition_filename(comp, idx)
-        out_path = type_dir / filename
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(comp, f, ensure_ascii=False, indent=2)
+    if not types:
+        return data
 
-    return type_dir
+    if only_idtyps:
+        types = [t for t in types if t.get("idtyp") in only_idtyps]
+
+    total_types = len(types)
+    for idx, t in enumerate(types, 1):
+        label = t.get("label", "")
+        url = t.get("url")
+
+        if not url:
+            continue
+
+        if debug:
+            print(
+                f"\n[{idx}/{total_types}] Type (grouped): idtyp={t.get('idtyp')} - {label}\n"
+            )
+
+        try:
+            # Réutilise la fonction qui gère le formulaire et les épreuves
+            results_for_type = get_results_for_competitions_url(
+                url,
+                delay_between_comps=delay_between_comps,
+                debug=debug,
+            )
+        except Exception as e:
+            if debug:
+                print(
+                    f"  ✗ Erreur lors de la récupération groupée pour le type "
+                    f"idtyp={t.get('idtyp')} - {label} : {e}"
+                )
+            type_entry = {
+                "idtyp": t.get("idtyp"),
+                "label": label,
+                "url": url,
+                "competitions": [],
+                "error": str(e),
+            }
+            data["types"].append(type_entry)
+            continue
+
+        competitions = results_for_type.get("competitions", [])
+
+        type_entry = {
+            "idtyp": t.get("idtyp"),
+            "label": label,
+            "url": url,
+            "competitions": competitions,
+        }
+        data["types"].append(type_entry)
+
+    return data
 
 
-def get_results_by_date_range(start_date: date, end_date: date, delay_between_comps: float = 0.5, debug: bool = False) -> Dict:
-    """Récupère tous les résultats puis ne garde que les compétitions dont la date est dans [start_date, end_date]."""
-    data = get_all_results_by_type(delay_between_comps=delay_between_comps, debug=debug)
-    out: Dict = {"types": []}
-    for t in data.get("types", []):
-        comps = []
-        for c in t.get("competitions", []):
-            comp_date = parse_competition_date(c.get("date")) if c.get("date") else None
-            if comp_date and start_date <= comp_date <= end_date:
-                comps.append(c)
-        if comps:
-            out["types"].append({**t, "competitions": comps})
-    return out
-
-
-# Parse le HTML (soup) des pages « filtre » : extrait les épreuves et leurs performances (nom épreuve, catégorie, nageurs, temps, splits, etc.) depuis les tables.
+# Parse le HTML (soup) des pages « filtre » : extrait les épreuves et leurs performances
+# (nom épreuve, catégorie, nageurs, temps, splits, etc.) depuis les tables.
 def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) -> List[Dict]:
     epreuves: List[Dict] = []
     current_epreuve: Optional[Dict] = None
     last_performance: Optional[Dict] = None  
     tables = soup.find_all("table")
+
+    import re as re_module
 
     def parse_event_header(header_text: str) -> Dict:
         text = " ".join(header_text.split())
@@ -807,14 +856,17 @@ def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) 
             r"(?P<nationalite>[A-Z]{3})?$"
         )
         m = re_module.match(pattern, txt)
+
         sexe = None
         if categorie == "Dames":
             sexe = "F"
         elif categorie == "Messieurs":
             sexe = "M"
 
+        # On ne garde dans la sortie finale qu'une propriété "name"
+        # (plus les méta-données), pas de "nom" / "prenom" séparés.
         nageur: Dict = {
-            "name": txt,  
+            "name": txt,  # valeur par défaut : texte complet brut
             "sexe": sexe,
             "annee_naissance": None,
             "age": None,
@@ -839,7 +891,8 @@ def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) 
         return nageur
 
     for table in tables:
-        # On parcourt TOUTES les lignes dans l'ordre, pour pouvoir détecter les en-têtes d'épreuves 
+        # On parcourt TOUTES les lignes dans l'ordre, pour pouvoir
+        # détecter les en-têtes d'épreuves (td colspan="8" ...).
         rows = table.find_all("tr")
 
         for row in rows:
@@ -852,7 +905,7 @@ def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) 
             if len(cells) == 1:
                 header_cell = cells[0]
             else:
-                # Chercher une cellule avec un colspan élevé (trouver la cellule “large”)
+                # Chercher une cellule avec un colspan élevé (>= 6, souvent 8)
                 for c in cells:
                     try:
                         colspan = int(c.get("colspan", "1"))
@@ -863,6 +916,8 @@ def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) 
                         break
 
             if header_cell is not None:
+                # Vérifier si c'est une cellule informative (région, etc.) à ignorer
+                # Ces cellules ont souvent des classes comme "text-gray-500", "italic", etc.
                 cell_classes = header_cell.get("class", [])
                 is_info_cell = any(
                     cls in ["text-gray-500", "italic", "text-xs"] 
@@ -875,7 +930,11 @@ def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) 
                 else:
                     header_text = header_cell.get_text(strip=True)
 
+                # Ignorer les cellules qui contiennent uniquement des informations de région
+                # Format typique : "(CAF - GRAND-EST / METZ)" ou similaire
                 if header_text:
+                    # Vérifier si le texte commence et se termine par des parenthèses
+                    # et ne contient pas de nom d'épreuve typique
                     text_trimmed = header_text.strip()
                     is_region_info = (
                         (text_trimmed.startswith("(") and text_trimmed.endswith(")")) or
@@ -883,6 +942,7 @@ def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) 
                         ("CAF" in text_trimmed and "/" in text_trimmed)
                     )
                     
+                    # Vérifier si c'est un vrai nom d'épreuve (contient des chiffres et des mots d'épreuve)
                     is_real_event = any(
                         keyword in text_trimmed.upper() 
                         for keyword in [
@@ -891,8 +951,9 @@ def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) 
                         ]
                     ) or any(char.isdigit() for char in text_trimmed)
                     
+                    # Ignorer si c'est une cellule informative ET que ce n'est pas un vrai nom d'épreuve
                     if (is_info_cell or is_region_info) and not is_real_event:
-                        continue  
+                        continue  # Ignorer cette cellule, ce n'est pas une épreuve
                     
                     header_info = parse_event_header(header_text)
                     current_epreuve = {
@@ -902,15 +963,19 @@ def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) 
                         "performances": [],
                     }
                     epreuves.append(current_epreuve)
-                    last_performance = None  
+                    last_performance = None  # Réinitialiser lors du changement d'épreuve
                 continue
 
+            # Lignes de résultats : au moins 4 cellules (rank, swimmer, club, time)
             if len(cells) < 4:
                 continue
 
+            # Si aucune épreuve courante n'a encore été détectée, on ignore
+            # (normalement, les résultats suivent toujours un en-tête).
             if current_epreuve is None:
                 continue
 
+            # Classement (1ère colonne)
             rank_cell = cells[0]
             rank = rank_cell.get_text(strip=True)
             
@@ -962,7 +1027,7 @@ def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) 
                 mpp_button = mpp_cell.find("button")
                 if mpp_button and mpp_button.get("data-tippy-content"):
                     mpp_info = mpp_button.get("data-tippy-content", "")
-                    # Nettoyage du HTML
+                    # Nettoyer le HTML
                     mpp_info = (
                         mpp_info.replace("&lt;b&gt;", "")
                         .replace("&lt;/b&gt;", "")
@@ -970,7 +1035,8 @@ def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) 
                         .replace("</b>", "")
                     )
 
-            # Extraire les temps de passage (splits) 
+            # Extraire les temps de passage (splits) : priorité au tableau dans
+            # data-tippy-content du bouton tippy-button (table avec distance, cumul, split).
             splits: List[Dict] = []
             tippy_button = time_cell.find("button", class_="tippy-button")
             if tippy_button:
@@ -998,6 +1064,7 @@ def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) 
                                     })
                     except Exception:
                         pass
+            # Fallback : ancienne logique sur les liens <a class="text-blue-600">
             if not splits:
                 split_links = time_cell.find_all("a", class_="text-blue-600")
                 for split_link in split_links:
@@ -1018,7 +1085,7 @@ def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) 
                         splits.append(split_info)
 
             # Si cette ligne n'a pas de classement ET qu'il y a une performance précédente,
-            # alors on ajoute ce nageur à la liste des nageurs de la performance précédente - Relais -
+            # ajouter ce nageur à la liste des nageurs de la performance précédente
             if not has_ranking and last_performance is not None and swimmer_name:
                 nageur = parse_swimmer(
                     swimmer_name, current_epreuve.get("categorie", "")
@@ -1032,10 +1099,11 @@ def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) 
                 
                 # Ajouter le nouveau nageur à la liste
                 last_performance["nageur"].append(nageur)
-                continue  # pour passer à la ligne suivante sans créer de nouvelle performance
+                continue  # Passer à la ligne suivante sans créer de nouvelle performance
 
             # Sinon, créer une nouvelle performance normalement
             if swimmer_name and (time or has_ranking):
+                # Points numériques si possible
                 points_val: Optional[int] = None
                 if points:
                     m_pts = re_module.search(r"(\d+)", points)
@@ -1063,14 +1131,38 @@ def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) 
                     perf["splits"] = splits
 
                 current_epreuve["performances"].append(perf)
-                last_performance = perf  
+                last_performance = perf  # Garder une référence pour les lignes suivantes sans classement
 
     return epreuves
 
 
-# LA récupèration de toutes les compétitions listées sur l'URL (ex. internationales idtyp=7), charge chaque page compétition, récupère les résultats par épreuve et gère les pauses session.
-def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0, debug: bool = False, max_competitions_before_pause: int = 50, rest_delay: float = 30.0) -> Dict:
-    def get_competition_results_grouped_by_event(comp_url: str, debug: bool = False,
+# Récupère toutes les compétitions listées sur l'URL (ex. internationales idtyp=7), charge
+# chaque page compétition, récupère les résultats par épreuve et gère les pauses session.
+def get_results_for_competitions_url(
+    url: str,
+    delay_between_comps: float = 1.0,
+    debug: bool = False,
+    max_competitions_before_pause: int = 50,
+    rest_delay: float = 30.0,
+) -> Dict:
+    """
+    Récupère toutes les compétitions listées sur une URL donnée
+    (par ex. la page des Compétitions internationales idtyp=7)
+    et leurs résultats complets.
+
+    Comportement :
+      - Parcourt toutes les compétitions sans délai obligatoire entre elles
+        (sauf si delay_between_comps > 0).
+      - Compte le nombre de compétitions traitées (requêtes HTTP) et, dès que
+        max_competitions_before_pause est atteint, ferme la session HTTP actuelle
+        et en crée une nouvelle pour "réinitialiser" la connexion au serveur.
+    """
+    import time
+    import requests
+
+    def get_competition_results_grouped_by_event(
+        comp_url: str,
+        debug: bool = False,
         session: Optional[requests.Session] = None,
     ) -> Dict[str, List[Dict]]:
         """
@@ -1078,20 +1170,42 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
         épreuves disponibles dans le formulaire <form name="choix"> (Épreuves
         Dames, Messieurs, Relais, etc.), puis scrape chaque URL d'épreuve
         (50 Nage Libre, 50 Dos, ...) et classe les résultats par nom d'épreuve.
+
+        Retourne un dict du type :
+        {
+          "50 Nage Libre": [ {...}, {...}, ... ],
+          "50 Dos": [...],
+          ...
+        }
         """
+        from urllib.parse import urljoin
+
         grouped_results: Dict[str, List[Dict]] = {}
 
+        # Partager le compteur de requêtes avec la fonction englobante
         nonlocal requests_since_session
 
         # 1) Charger la page principale de la compétition (avec le formulaire)
         if debug:
             print(f"    [grouped] Chargement page principale : {comp_url}")
 
-        resp = http_get_with_retries(comp_url, debug=debug, max_retries=5, session=session, retry_forever=False )
+        resp = http_get_with_retries(
+            comp_url,
+            debug=debug,
+            max_retries=5,
+            session=session,
+            # Important : pas de retry infini ici. Si cette compétition
+            # retourne 403 en continu (bloquée côté serveur), on laisse
+            # http_get_with_retries lever une erreur après quelques essais,
+            # puis le code appelant marquera la compétition en erreur et
+            # passera à la suivante.
+            retry_forever=False,
+        )
+        # Une requête "logique" supplémentaire
         requests_since_session += 1
         soup = BeautifulSoup(resp.content, "html.parser")
 
-        # 1.a) TENTE D'ABORD de lire directement les <select> d'épreuves dans le bloc
+        # 1.a) TENTER D'ABORD de lire directement les <select> d'épreuves dans le bloc
         #      <div class="mb-3"> qui contient "Épreuves Dames/Messieurs" et "Relais ...".
         #      Cela permet de couvrir les compétitions où il n'y a pas de liens idsex=
         #      mais uniquement ces selects.
@@ -1107,6 +1221,7 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
                     value = opt.get("value", "").strip()
                     label_opt = opt.get_text(strip=True)
 
+                    # Ignorer option vide / titre
                     if not value or not label_opt:
                         continue
                     if "Épreuves" in label_opt or "Relais" in label_opt:
@@ -1134,6 +1249,7 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
                         if epreuves_event:
                             all_epreuves.extend(epreuves_event)
                         else:
+                            # Aucune performance trouvée : créer tout de même l'épreuve vide
                             all_epreuves.append(
                                 {
                                     "nom": label_opt,
@@ -1147,6 +1263,7 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
                             print(
                                 f"        ✗ Erreur lors du scraping de l'épreuve '{label_opt}' ({gender_label}) : {e}"
                             )
+                        # En cas d'erreur, on ajoute quand même l'épreuve (vide) pour ne pas la perdre
                         all_epreuves.append(
                             {
                                 "nom": label_opt,
@@ -1158,7 +1275,7 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
 
             return all_epreuves
 
-        # Cherche tous les <select> et regroupe ceux qui concernent Dames/Messieurs
+        # Chercher tous les <select> et regrouper ceux qui concernent Dames/Messieurs
         all_selects = soup.find_all("select")
         selects_dames = []
         selects_messieurs = []
@@ -1188,6 +1305,7 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
                     selects_messieurs, "Messieurs"
                 )
 
+            # Si on a effectivement récupéré quelque chose, on peut retourner tout de suite
             if grouped_results:
                 return grouped_results
 
@@ -1201,10 +1319,12 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
                 simple_results = get_competition_data(
                     comp_url, debug=debug, session=session, retry_forever=False
                 )
+                # Une requête "logique" supplémentaire
                 requests_since_session += 1
                 if simple_results:
                     grouped_results["default"] = simple_results
                 else:
+                    # Aucun résultat trouvé même avec le fallback
                     grouped_results["_info"] = "Formulaire non trouvé et aucun résultat sur la page principale"
             except Exception as e:
                 if debug:
@@ -1212,13 +1332,13 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
                 grouped_results["_error"] = f"Formulaire non trouvé et erreur lors du scraping : {str(e)}"
             return grouped_results
 
-        # 2) Vérification s'il y a des filtres (Dames, Messieurs) dans le formulaire
+        # 2) Vérifier s'il y a des filtres (Dames, Messieurs) dans le formulaire
         filter_links = form.find_all("a", href=True)
         filter_links_valid = []
         for link in filter_links:
             href = link.get("href", "")
             text = link.get_text(strip=True)
-            # Recherche des liens de filtre (Dames, Messieurs) qui contiennent idsex=
+            # Chercher les liens de filtre (Dames, Messieurs) qui contiennent idsex=
             if "idsex=" in href and text in ["Dames", "Messieurs"]:
                 filter_links_valid.append({
                     "label": text,
@@ -1282,6 +1402,7 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
                                 value = opt.get("value", "").strip()
                                 label_opt = opt.get_text(strip=True)
 
+                                # Ignorer options vides / titres / vues alternatives
                                 if not value or not label_opt:
                                     continue
                                 if (
@@ -1316,8 +1437,14 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
                                         event_soup, debug=debug
                                     )
                                     if epreuves_event:
+                                        # On a trouvé des résultats pour cette épreuve :
+                                        # on les ajoute tels quels.
                                         all_epreuves_for_filter.extend(epreuves_event)
                                     else:
+                                        # Aucun résultat trouvé sur la page, mais on veut
+                                        # quand même que l'épreuve existe dans le JSON
+                                        # (avec une liste de performances vide) pour ne
+                                        # pas "perdre" l'épreuve présente dans le <select>.
                                         all_epreuves_for_filter.append(
                                             {
                                                 "nom": label_opt,
@@ -1339,12 +1466,15 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
                         if events_for_filter > 0 and all_epreuves_for_filter:
                             grouped_results[filter_label] = all_epreuves_for_filter
                         else:
+                            # Fallback : table directe (cas où il n'y aurait pas d'épreuves
+                            # accessibles via le formulaire pour ce filtre).
                             filter_results = extract_results_from_filter_table(
                                 filter_soup, debug=debug
                             )
                             grouped_results[filter_label] = filter_results
                     else:
                         # Aucun formulaire trouvé sur la page filtrée :
+                        # fallback direct sur la table.
                         filter_results = extract_results_from_filter_table(
                             filter_soup, debug=debug
                         )
@@ -1373,8 +1503,12 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
                 value = opt.get("value", "").strip()
                 label = opt.get_text(strip=True)
 
+                # Ignorer les options vides ou purement descriptives
                 if not value or not label:
                     continue
+                # Exemples de labels à ignorer :
+                #   - "Épreuves Dames", "Relais Messieurs", etc. (titres de groupes)
+                #   - "Affichage par séries" (vue alternative qu'on ne souhaite pas scraper)
                 if (
                     "Épreuves" in label
                     or "Relais" in label
@@ -1383,20 +1517,22 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
                     continue
 
                 events_found += 1
-                event_name = label  
+                event_name = label  # ex : "50 Nage Libre"
                 event_url = urljoin(BASE_URL, value)
 
                 if debug:
                     print(f"    [grouped] Épreuve détectée : '{event_name}' → {event_url}")
 
                 try:
-                    
+                    # Pas de retry infini ici non plus : si une épreuve
+                    # est inaccessible, on passe à la suivante.
                     event_results = get_competition_data(
                         event_url,
                         debug=False,
                         session=session,
                         retry_forever=False,
                     )
+                    # Une requête "logique" supplémentaire
                     requests_since_session += 1
                     grouped_results[event_name] = event_results
                     if debug:
@@ -1410,6 +1546,7 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
                         )
                     grouped_results[event_name] = []
 
+        # Si aucun événement valide n'a été trouvé, ajouter une info
         if events_found == 0 and len(grouped_results) == 0:
             grouped_results["_info"] = f"Formulaire trouvé avec {len(selects)} select(s) mais aucune épreuve valide détectée"
 
@@ -1421,13 +1558,16 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
     competitions = get_competitions_for_url(url, debug=debug)
 
     competitions_since_pause = 0
+    # Compteur approximatif de "requêtes logiques" (pages de résultats)
+    # effectuées avec la session courante : 1 pour la page principale
+    # d'une compétition, 1 pour chaque épreuve/option du formulaire.
     requests_since_session = 0
     consecutive_403_count = 0
-    recent_success_count = 0  
-    competitions_since_new_session = 0 
+    recent_success_count = 0  # Compteur de succès récents
+    competitions_since_new_session = 0  # Compteur depuis la dernière création de session
 
     def create_new_session():
-        """ pour créer une nouvelle session avec des headers réalistes"""
+        """Helper pour créer une nouvelle session avec des headers réalistes"""
         import random
         new_session = requests.Session()
         chrome_version = f"Chrome/{random.randint(120, 130)}.0.{random.randint(1000, 9999)}.{random.randint(100, 999)}"
@@ -1476,12 +1616,15 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
                 def _count_grouped_results(grouped_dict: Dict) -> int:
                     total = 0
                     for key, value in grouped_dict.items():
+                        # Ignorer les clés spéciales éventuelles (_info, _error, etc.)
                         if isinstance(key, str) and key.startswith("_"):
                             continue
                         if not isinstance(value, list):
                             continue
                         if not value:
                             continue
+                        # Cas des pages filtrées : value est une liste d'épreuves,
+                        # chaque épreuve ayant une liste "performances".
                         if isinstance(value[0], dict) and "performances" in value[0]:
                             for epreuve in value:
                                 if isinstance(epreuve, dict):
@@ -1489,12 +1632,13 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
                                     if isinstance(perfs, list):
                                         total += len(perfs)
                         else:
+                            # Cas historique : liste "plate" de résultats
                             total += len(value)
                     return total
 
                 comp["results_count"] = _count_grouped_results(grouped)
                 consecutive_403_count = 0  # Réinitialiser le compteur si succès
-                recent_success_count = min(recent_success_count + 1, 10)  
+                recent_success_count = min(recent_success_count + 1, 10)  # Max 10, pour tracker les succès récents
 
                 if debug:
                     total_grouped = comp.get("results_count", 0)
@@ -1514,6 +1658,7 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
                 if debug:
                     print(f"      ✗ Erreur lors de la récupération : {e}")
 
+            # Compter cette compétition (même si erreur, on a fait une requête)
             competitions_since_pause += 1
             competitions_since_new_session += 1
 
@@ -1522,13 +1667,20 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
             if competitions_since_new_session <= 3 and is_403:
                 if debug and competitions_since_new_session == 3:
                     print(
-                        f"      x Les 3 premières compétitions après la nouvelle session ont échoué avec 403. "
+                        f"      ⚠ Les 3 premières compétitions après la nouvelle session ont échoué avec 403. "
                         f"Ce sont probablement des compétitions bloquées en permanence."
                     )
+                # Ne pas compter ces 403 comme des erreurs de rate-limiting
+                # On continue normalement sans créer une autre session
+
+            # Si trop de 403 consécutifs ET qu'on a eu des succès récents (rate-limiting probable),
+            # créer une nouvelle session. Si on n'a pas eu de succès récents, ce sont probablement
+            # des compétitions bloquées en permanence, donc pas besoin de créer une nouvelle session.
+            # ET on ne crée pas de session si on vient juste d'en créer une (competitions_since_new_session <= 5)
             if consecutive_403_count >= 5 and recent_success_count > 0 and competitions_since_new_session > 5:
                 if debug:
                     print(
-                        f"      x {consecutive_403_count} erreurs 403 consécutives détectées "
+                        f"      ⚠ {consecutive_403_count} erreurs 403 consécutives détectées "
                         f"(après {recent_success_count} succès récents). "
                         f"Création d'une nouvelle session (rate-limiting probable)..."
                     )
@@ -1540,14 +1692,15 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
                 competitions_since_pause = 0
                 competitions_since_new_session = 0  # Réinitialiser le compteur depuis la nouvelle session
                 recent_success_count = 0  # Réinitialiser aussi le compteur de succès
-                continue 
+                continue  # Passer à la compétition suivante sans pause supplémentaire
             elif consecutive_403_count >= 5 and recent_success_count == 0:
                 if debug:
                     print(
-                        f"      x {consecutive_403_count} erreurs 403 consécutives détectées "
+                        f"      ⚠ {consecutive_403_count} erreurs 403 consécutives détectées "
                         f"(aucun succès récent). Ces compétitions semblent bloquées en permanence. "
                         f"On continue sans créer de nouvelle session..."
                     )
+                # Ne pas créer de nouvelle session, juste réinitialiser le compteur pour éviter les messages répétés
                 consecutive_403_count = 0
 
             # Pause courte éventuelle entre compétitions (optionnelle)
@@ -1600,493 +1753,71 @@ def get_results_for_competitions_url(url: str, delay_between_comps: float = 1.0,
 
 
 # Raccourci : récupère les compétitions « Compétitions internationales » (idtyp=7) et leurs résultats.
-def get_international_results(delay_between_comps: float = 1.0,debug: bool = False) -> Dict:
+def get_international_results(
+    delay_between_comps: float = 1.0,
+    debug: bool = False,
+) -> Dict:
+    """
+    Raccourci : récupère uniquement les compétitions
+    de type « Compétitions internationales » (idtyp=7)
+    et leurs résultats complets.
+    """
     return get_results_for_competitions_url(
         INTERNATIONALS_URL,
         delay_between_comps=delay_between_comps,
         debug=debug,
     )
 
-# Normalisation
-def results_list_to_epreuves(results: List[Dict], default_categorie: Optional[str] = None) -> List[Dict]:
-    events_map: Dict[str, List[Dict]] = {}
-    for perf in results:
-        if not isinstance(perf, dict):
-            continue
-        event_name = perf.get("event")
-        if not isinstance(event_name, str) or not event_name.strip():
-            continue
-        events_map.setdefault(event_name, []).append(perf)
 
-    def _base_event_name(event_label: str) -> str:
-        text = (event_label or "").strip()
-        if " - " in text:
-            text = text.split(" - ", 1)[0].strip()
-        for gender_word in (" Dames", " Messieurs"):
-            if text.endswith(gender_word):
-                text = text[: -len(gender_word)].strip()
-                break
-        return text or event_label
-
-    epreuves: List[Dict] = []
-
-    for event_name, perfs in events_map.items():
-        base_name = _base_event_name(event_name)
-
-        performances_dames: List[Dict] = []
-        performances_messieurs: List[Dict] = []
-        performances_neutres: List[Dict] = []
-
-        for perf in perfs:
-            if not isinstance(perf, dict):
-                continue
-
-            # Classement
-            classement: Optional[int] = None
-            rank_val = perf.get("rank")
-            if isinstance(rank_val, int):
-                classement = rank_val
-            elif isinstance(rank_val, str):
-                m = re_module.search(r"(\d+)", rank_val)
-                if m:
-                    try:
-                        classement = int(m.group(1))
-                    except ValueError:
-                        classement = None
-
-            # Nageur
-            swimmer_name = perf.get("swimmer")
-            # Sexe 
-            sexe_inferred: Optional[str] = None
-            if isinstance(event_name, str):
-                if "Dames" in event_name:
-                    sexe_inferred = "F"
-                elif "Messieurs" in event_name:
-                    sexe_inferred = "M"
-
-            nageur_obj: Dict = {
-                "name": swimmer_name,
-                "sexe": sexe_inferred,
-                "annee_naissance": None,
-                "age": None,
-                "nationalite": None,
-            }
-
-            new_perf: Dict = {
-                "classement": classement,
-                "nageur": nageur_obj,
-                "club": perf.get("club"),
-                "temps": perf.get("time") or perf.get("temps"),
-            }
-            if "points" in perf:
-                new_perf["points"] = perf["points"]
-            if "mpp" in perf:
-                new_perf["mpp"] = perf["mpp"]
-            if "splits" in perf:
-                new_perf["splits"] = perf["splits"]
-
-            # Répartition par catégorie
-            cat_perf: Optional[str] = None
-            if "Dames" in (event_name or ""):
-                cat_perf = "Dames"
-            elif "Messieurs" in (event_name or ""):
-                cat_perf = "Messieurs"
-
-            if cat_perf == "Dames":
-                performances_dames.append(new_perf)
-            elif cat_perf == "Messieurs":
-                performances_messieurs.append(new_perf)
-            else:
-                performances_neutres.append(new_perf)
-
-        # Créer les épreuves par catégorie
-        if performances_dames:
-            epreuves.append(
-                {
-                    "nom": base_name,
-                    "categorie": "Dames",
-                    "tour": "",
-                    "performances": performances_dames,
-                }
-            )
-        if performances_messieurs:
-            epreuves.append(
-                {
-                    "nom": base_name,
-                    "categorie": "Messieurs",
-                    "tour": "",
-                    "performances": performances_messieurs,
-                }
-            )
-        if not performances_dames and not performances_messieurs and performances_neutres:
-            epreuves.append(
-                {
-                    "nom": base_name,
-                    "categorie": default_categorie or "",
-                    "tour": "",
-                    "performances": performances_neutres,
-                }
-            )
-
-    return epreuves
-
-
-# Récupère toutes les épreuves et leurs résultats en utilisant en priorité les selects « Épreuves Dames/Messieurs » du formulaire de filtres
-def get_epreuves_for_competition_via_filters(comp_url: str, debug: bool = False) -> List[Dict]:
-    epreuves_all: List[Dict] = []
-    if debug:
-        print(f"    [update] Chargement page compétition (filtres) : {comp_url}")
-
-    resp = http_get_with_retries(
-        comp_url,
-        debug=debug,
-        max_retries=5,
-        retry_forever=False,
-    )
-    soup = BeautifulSoup(resp.content, "html.parser")
-
-    def _scrape_events_from_selects(select_elements, gender_label: Optional[str]) -> List[Dict]:
-        all_epreuves: List[Dict] = []
-        from urllib.parse import urljoin as _urljoin_local
-
-        for sel in select_elements:
-            for opt in sel.find_all("option"):
-                value = opt.get("value", "").strip()
-                label_opt = opt.get_text(strip=True)
-
-                if not value or not label_opt:
-                    continue
-                if (
-                    "Épreuves" in label_opt
-                    or "Relais" in label_opt
-                    or "Affichage par séries" in label_opt
-                ):
-                    continue
-
-                event_url = _urljoin_local(BASE_URL, value)
-                if debug:
-                    print(
-                        f"        [update] ({gender_label}) épreuve '{label_opt}' → {event_url}"
-                    )
-
-                try:
-                    event_resp = http_get_with_retries(
-                        event_url,
-                        debug=debug,
-                        max_retries=5,
-                        retry_forever=False,
-                    )
-                    event_soup = BeautifulSoup(event_resp.content, "html.parser")
-                    epreuves_event = extract_results_from_filter_table(
-                        event_soup, debug=debug
-                    )
-                    if epreuves_event:
-                        all_epreuves.extend(epreuves_event)
-                    else:
-                        all_epreuves.append(
-                            {
-                                "nom": label_opt,
-                                "categorie": gender_label or "",
-                                "tour": "",
-                                "performances": [],
-                            }
-                        )
-                except Exception as e:
-                    if debug:
-                        print(
-                            f"        ✗ [update] Erreur lors du scraping de l'épreuve "
-                            f"'{label_opt}' ({gender_label}) : {e}"
-                        )
-                    all_epreuves.append(
-                        {
-                            "nom": label_opt,
-                            "categorie": gender_label or "",
-                            "tour": "",
-                            "performances": [],
-                        }
-                    )
-
-        return all_epreuves
-
-    # Chercher tous les selects et repérer ceux pour Dames / Messieurs
-    all_selects = soup.find_all("select")
-    selects_dames: List = []
-    selects_messieurs: List = []
-    for sel in all_selects:
-        opts = sel.find_all("option")
-        if not opts:
-            continue
-        first_label = opts[0].get_text(strip=True)
-        if "Dames" in first_label:
-            selects_dames.append(sel)
-        elif "Messieurs" in first_label:
-            selects_messieurs.append(sel)
-
-    if selects_dames or selects_messieurs:
-        if debug:
-            print(
-                f"    [update] Selects trouvés : "
-                f"{len(selects_dames)} pour Dames, {len(selects_messieurs)} pour Messieurs"
-            )
-        if selects_dames:
-            epreuves_all.extend(_scrape_events_from_selects(selects_dames, "Dames"))
-        if selects_messieurs:
-            epreuves_all.extend(_scrape_events_from_selects(selects_messieurs, "Messieurs"))
-
-        if epreuves_all:
-            return epreuves_all
-
-    if debug:
-        print("    [update] Aucuns selects Dames/Messieurs utilisables, fallback get_competition_data.")
-
-    try:
-        results = get_competition_data(
-            comp_url,
-            debug=debug,
-            retry_forever=False,
-        )
-    except TypeError:
-        results = get_competition_data(comp_url, debug=debug)
-
-    if isinstance(results, list):
-        return results_list_to_epreuves(results, default_categorie=None)
-
-    if isinstance(results, dict):
-        flat_results: List[Dict] = []
-        for key, value in results.items():
-            if isinstance(value, list):
-                flat_results.extend([v for v in value if isinstance(v, dict)])
-        if flat_results:
-            return results_list_to_epreuves(flat_results, default_categorie=None)
-
-    return []
-
-
-# Récupère les compétitions de la derniere mise a jour
-def get_new_competitions_latest_update(debug: bool = False) -> Dict:
+# Récupère uniquement la liste des compétitions internationales (idtyp=7), sans résultats détaillés.
+def get_international_competitions_list(
+    debug: bool = False,
+) -> Dict:
     """
-    Mode spécial utilisé par la commande :
-      python get_data_deeper.py --update
+    Ne récupère QUE la liste des compétitions pour
+    l'option "Compétitions internationales" (idtyp=7),
+    sans aller chercher les résultats détaillés.
     """
-    main_url = f"{BASE_URL}{COMPETITIONS_PATH}"
-    try:
-        resp = http_get_with_retries(main_url, debug=debug)
-        soup = BeautifulSoup(resp.content, "html.parser")
-    except Exception as e:
-        if debug:
-            print(f"Erreur lors de la récupération de la page principale compétitions : {e}")
-        soup = None
-
-    last_update_text: Optional[str] = None
-    last_update_date: Optional[date] = None
-    last_update_span = None
-    if soup is not None:
-        spans = soup.find_all(
-            "span",
-            class_="block rounded-sm bg-white px-4 py-1.5 text-sm font-medium",
+    if debug:
+        print(
+            "Récupération de la liste des compétitions pour "
+            '"Compétitions internationales" (idtyp=7)'
         )
-        # Mois en français pour parser la date dans "Mise à jour du : Lundi 9 Février 2026"
-        mois_fr = {
-            "janvier": 1,
-            "février": 2,
-            "fevrier": 2,
-            "mars": 3,
-            "avril": 4,
-            "mai": 5,
-            "juin": 6,
-            "juillet": 7,
-            "août": 8,
-            "aout": 8,
-            "septembre": 9,
-            "octobre": 10,
-            "novembre": 11,
-            "décembre": 12,
-            "decembre": 12,
-        }
 
-        def _parse_update_date(text: str) -> Optional[date]:
-            m = re_module.search(
-                r"(\d{1,2})\s+([A-Za-zéèêëàâäôöûüùîïçÉÈÊËÀÂÄÔÖÛÜÙÎÏÇ]+)\s+(\d{4})",
-                text,
-            )
-            if not m:
-                return None
-            try:
-                j = int(m.group(1))
-                mois_str = m.group(2).lower()
-                an = int(m.group(3))
-                mois_num = mois_fr.get(mois_str)
-                if not mois_num:
-                    return None
-                return date(an, mois_num, j)
-            except Exception:
-                return None
-
-        for sp in spans:
-            txt = sp.get_text(strip=True)
-            if "Mise à jour du" not in txt:
-                continue
-            d = _parse_update_date(txt)
-            if d is None:
-                continue
-            if last_update_date is None or d > last_update_date:
-                last_update_date = d
-                last_update_text = txt
-                last_update_span = sp
-
-    if debug and last_update_text:
-        print(f"Dernière mise à jour détectée : {last_update_text}")
-        if last_update_date:
-            print(f"Date de mise à jour parsée : {last_update_date.isoformat()}")
-
-    new_competitions: List[Dict] = []
-
-    if soup is not None and last_update_span is not None:
-        from bs4 import Tag
-
-        for elem in last_update_span.next_elements:
-            if (
-                isinstance(elem, Tag)
-                and elem.name == "span"
-                and "block" in elem.get("class", [])
-                and "rounded-sm" in elem.get("class", [])
-                and "bg-white" in elem.get("class", [])
-                and "Mise à jour du" in elem.get_text(strip=True)
-            ):
-                break
-
-            if (
-                not isinstance(elem, Tag)
-                or elem.name != "div"
-                or "border-b" not in elem.get("class", [])
-                or "pb-2" not in elem.get("class", [])
-                or "mt-4" not in elem.get("class", [])
-            ):
-                continue
-
-            comp_div = elem
-            comp_info: Dict = {}
-
-            date_elements = comp_div.find_all("div", class_="text-blue-600")
-            if date_elements:
-                date_long = comp_div.find(
-                    "div",
-                    class_="text-blue-600 text-xs uppercase hidden md:block",
-                )
-                if date_long:
-                    comp_info["date"] = date_long.get_text(strip=True)
-                else:
-                    comp_info["date"] = date_elements[0].get_text(strip=True)
-
-            # Titre + URL
-            title_link = comp_div.find("a", href=True)
-            if title_link:
-                comp_info["name"] = title_link.get_text(strip=True)
-                href = title_link.get("href")
-                if href:
-                    if "idcpt=" in href:
-                        idcpt = href.split("idcpt=")[1].split("&")[0]
-                        comp_info["competition_id"] = idcpt
-                        comp_info["url"] = urljoin(BASE_URL, href)
-                    else:
-                        comp_info["url"] = urljoin(BASE_URL, href)
-
-            # Lieu
-            location_span = comp_div.find(
-                "span",
-                class_=["uppercase", "text-green-700", "font-bold"],
-            )
-            if not location_span:
-                location_span = comp_div.find(
-                    "span", class_="uppercase text-green-700 font-bold"
-                )
-            if location_span:
-                comp_info["location"] = location_span.get_text(strip=True)
-
-            # Titre original
-            title_original = comp_div.find(
-                "div", class_="text-xs text-orange-600"
-            )
-            if title_original:
-                text = title_original.get_text(strip=True)
-                if text.startswith("Titre original :"):
-                    comp_info["original_title"] = (
-                        text.replace("Titre original :", "").strip()
-                    )
-
-            # Type de compétition
-            type_divs = comp_div.find_all(
-                "div", class_="text-xs text-orange-600"
-            )
-            for type_div in type_divs:
-                text = type_div.get_text(strip=True)
-                if text.startswith("Type de compétition :"):
-                    comp_info["competition_type"] = (
-                        text.replace("Type de compétition :", "").strip()
-                    )
-
-            # Taille de bassin
-            bassin_img = comp_div.find("img", alt="taille bassin")
-            if bassin_img:
-                src = bassin_img.get("src", "")
-                if "25m" in src:
-                    comp_info["pool_size"] = "25m"
-                elif "50m" in src:
-                    comp_info["pool_size"] = "50m"
-
-            # Niveau (Régional, Départemental, etc.)
-            level_div = comp_div.find("div", class_="text-red-700 font-light")
-            if level_div:
-                comp_info["level"] = level_div.get_text(strip=True)
-
-            if "competition_id" in comp_info or "url" in comp_info:
-                new_competitions.append(comp_info)
-
-    for idx, comp in enumerate(new_competitions, 1):
-        comp_url = comp.get("url")
-        if not comp_url:
-            continue
-
-        if debug:
-            print(f"[update] ({idx}/{len(new_competitions)}) Récupération résultats : {comp.get('name', 'N/A')}")
-
-        try:
-            epreuves = get_epreuves_for_competition_via_filters(
-                comp_url, debug=debug
-            )
-            comp["epreuves"] = epreuves
-
-            total_perfs = 0
-            for epreuve in epreuves:
-                perfs = epreuve.get("performances", [])
-                if isinstance(perfs, list):
-                    total_perfs += len(perfs)
-            comp["results_count"] = total_perfs
-        except Exception as e:
-            comp["epreuves"] = []
-            comp["results_count"] = 0
-            comp["error"] = str(e)
-            if debug:
-                print(f"[update]   ✗ Erreur lors de la récupération des résultats : {e}")
-
-    payload: Dict = {
-        "generation_date": datetime.now().isoformat(),
-        "last_update_text": last_update_text,
-        "last_update_date": last_update_date.isoformat() if last_update_date else None,
-        "source_url": main_url,
-        "new_competitions_count": len(new_competitions),
-        "competitions": new_competitions,
-    }
-
-    return payload
+    competitions = get_competitions_for_url(INTERNATIONALS_URL, debug=debug)
+    return {"url": INTERNATIONALS_URL, "competitions": competitions}
 
 
-# Génère un résumé des erreurs de collecte (par type et global)
-def generate_resume(data: Dict, output_dir: str = "competitions_per_type", idtyp: Optional[int] = None, type_name: Optional[str] = None) -> Dict:
+# Génère un résumé des erreurs de collecte (par type et global), sauvegarde des JSON de résumé
+# dans output_dir et retourne le dictionnaire résumé.
+def generate_resume(
+    data: Dict,
+    output_dir: str,
+    idtyp: Optional[int] = None,
+    type_name: Optional[str] = None,
+) -> Dict:
+    """
+    Génère un résumé des erreurs de collecte pour chaque type de compétition
+    et le pourcentage global d'erreur.
+    
+    Args:
+        data: Données collectées (soit {"url": ..., "competitions": [...]} pour un type,
+              soit {"types": [...]} pour tous les types)
+        output_dir: Dossier de sortie
+        idtyp: ID du type de compétition (si mode par type)
+        type_name: Nom du type de compétition (si mode par type)
+        
+    Returns:
+        Dictionnaire contenant le résumé avec les pourcentages d'erreur
+    """
+    from datetime import datetime
+    
     resume: Dict = {
         "resume": {},
         "par_type": []
     }
+    
+    # Noms des types de compétitions
     type_names = {
         1: "Interclubs Avenirs (Rég. & Dép.)",
         2: "Interclubs Jeunes (Rég. & Dép.)",
@@ -2114,6 +1845,7 @@ def generate_resume(data: Dict, output_dir: str = "competitions_per_type", idtyp
         
         error_percentage = (total_errors / total_comp * 100) if total_comp > 0 else 0.0
         
+        # Détails des erreurs
         errors_details = []
         for comp in errors:
             errors_details.append({
@@ -2149,6 +1881,7 @@ def generate_resume(data: Dict, output_dir: str = "competitions_per_type", idtyp
             
             error_percentage = (total_errors / total_comp * 100) if total_comp > 0 else 0.0
             
+            # Détails des erreurs (limité aux 10 premières pour éviter un fichier trop volumineux)
             errors_details = []
             for comp in errors[:10]:
                 errors_details.append({
@@ -2189,21 +1922,28 @@ def generate_resume(data: Dict, output_dir: str = "competitions_per_type", idtyp
         "global_error_percentage": f"{round(global_error_percentage, 2)}%"
     }
     
+    # Fonction helper pour convertir un nom de type en nom de fichier valide
     def type_name_to_filename(type_name: str) -> str:
+        """Convertit un nom de type de compétition en nom de fichier valide."""
         if not type_name:
             return "resume_type_inconnu"
         
+        # Convertir en minuscules
         filename = type_name.lower()
         
-        filename = re.sub(r'[^\w\s-]', '', filename) 
-        filename = re.sub(r'[-\s]+', '_', filename) 
-        filename = filename.strip('_')  
+        # Remplacer les caractères spéciaux et espaces par des underscores
+        import re
+        filename = re.sub(r'[^\w\s-]', '', filename)  # Supprimer caractères spéciaux
+        filename = re.sub(r'[-\s]+', '_', filename)  # Remplacer espaces et tirets par underscore
+        filename = filename.strip('_')  # Supprimer underscores en début/fin
         
+        # Nettoyer les caractères interdits pour Windows
         forbidden = '\\/:*?"<>|'
         filename = "".join(("_" if ch in forbidden else ch) for ch in filename)
         
         return f"resume_{filename}"
     
+    # Sauvegarder un fichier de résumé pour chaque type individuellement
     for type_info in resume["par_type"]:
         idtyp_val = type_info.get("idtyp")
         type_name_val = type_info.get("type_name", "")
@@ -2228,67 +1968,59 @@ def generate_resume(data: Dict, output_dir: str = "competitions_per_type", idtyp
             with open(type_resume_path, "w", encoding="utf-8") as f:
                 json.dump(type_resume, f, ensure_ascii=False, indent=2)
     
-    # Sauvegarder aussi le résumé global 
+    # Sauvegarder aussi le résumé global (tous types confondus)
     resume_path = os.path.join(output_dir, "resume.json")
     with open(resume_path, "w", encoding="utf-8") as f:
         json.dump(resume, f, ensure_ascii=False, indent=2)
     
     return resume
+    
+
+# Répertoires de base pour stocker les données Extranat sous app/data/extranat
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+EXTRANAT_DATA_DIR = os.path.join(BASE_DIR, "data", "extranat")
+COMPETITIONS_PER_TYPE_DIR = os.path.join(EXTRANAT_DATA_DIR, "competitions_per_type")
+RESUMES_DIR = os.path.join(EXTRANAT_DATA_DIR, "Resumes")
+COMPETITIONS_PER_DATES_DIR = os.path.join(EXTRANAT_DATA_DIR, "competitions_per_dates")
 
 
-# Point d'entrée CLI : scrape types/compétitions selon les arguments (debug, fast, intl, dates), et sauvegarde les résultats et résumés dans app/data.
+# Point d'entrée CLI : scrape types/compétitions selon les arguments (debug, fast, intl, dates),
+# sauvegarde les résultats et résumés dans les dossiers configurés.
 def main():
-    output_dir = str(_DATA_BASE / "competitions_per_type")
+    """
+    Petit CLI :
+      python get_data_deeper.py              → scrape tous les types et compétitions
+      python get_data_deeper.py debug        → idem avec logs
+    Sauvegarde dans 'competitions_per_type/results_by_type.json'.
+    """
+    import sys
+    from datetime import datetime, date
+    import re
+
+    # Créer le dossier pour stocker les fichiers JSON de résultats détaillés
+    output_dir = COMPETITIONS_PER_TYPE_DIR
     os.makedirs(output_dir, exist_ok=True)
 
-    resumes_dir = str(_DATA_BASE / "Resumes")
+    # Créer le dossier pour stocker uniquement les résumés
+    resumes_dir = RESUMES_DIR
     os.makedirs(resumes_dir, exist_ok=True)
 
-    dates_dir = str(_DATA_BASE / "competitions_per_dates")
+    # Nouveau : dossier pour stocker les résumés par intervalles de dates
+    dates_dir = COMPETITIONS_PER_DATES_DIR
     os.makedirs(dates_dir, exist_ok=True)
 
-    raw_args = sys.argv[1:]
-
-    # Mode spécial : récupération des compétitions marquées « nouvelle compétition » pour la dernière mise à jour 
-    # python get_data_deeper.py --update [debug]
-    lowered_args = [a.lower() for a in raw_args]
-    if "--update" in raw_args or "update" in lowered_args:
-        debug_update = "debug" in lowered_args
-        updates_dir = str(_DATA_BASE / "updates")
-        os.makedirs(updates_dir, exist_ok=True)
-
-        data_update = get_new_competitions_latest_update(debug=debug_update)
-
-        # Si on a réussi à parser la date de dernière mise à jour, on l'utilise pour le nom du fichier.
-        # Sinon, on retombe sur la date du jour.
-        filename_date_str: str
-        last_update_date_str = data_update.get("last_update_date")
-        if isinstance(last_update_date_str, str):
-            try:
-                d = date.fromisoformat(last_update_date_str)
-                filename_date_str = d.strftime("%Y%m%d")
-            except Exception:
-                filename_date_str = date.today().strftime("%Y%m%d")
-        else:
-            filename_date_str = date.today().strftime("%Y%m%d")
-
-        update_filename = os.path.join(updates_dir, f"update_{filename_date_str}.json")
-        with open(update_filename, "w", encoding="utf-8") as f:
-            json.dump(data_update, f, ensure_ascii=False, indent=2)
-
-        print("*" * 60)
-        print("MODE UPDATE - NOUVELLES COMPÉTITIONS")
-        print("*" * 60)
-        print(f"- Date de génération : {data_update.get('generation_date')}")
-        print(f"- Dernière mise à jour détectée : {data_update.get('last_update_text')}")
-        print(f"- Nombre de nouvelles compétitions : {data_update.get('new_competitions_count')}")
-        print(f"- Fichier JSON : {update_filename}")
-        print("*" * 60)
-        return
-
     debug = False
+    # Pas de pause entre compétitions par défaut (0 = rapide). Mettre "slow" en argument pour activer un délai.
     delay_between_comps = 0.0
     only_idtyps: Optional[List[int]] = None
+
+    # Parsing simple des arguments :
+    #   debug           → mode verbeux
+    #   fast            → pas de pause entre compétitions (delay = 0)
+    #   intl/international → par type (idtyp)
+    #   2025            → extraire toutes les compétitions dont la date est en 2025
+    #   02/02/2025 10/10/2025 → extraire les compétitions entre ces deux dates
+    raw_args = sys.argv[1:]
 
     start_date: Optional[date] = None
     end_date: Optional[date] = None
@@ -2310,7 +2042,7 @@ def main():
         except ValueError:
             return None
 
-    non_option = [a for a in raw_args if a.lower() not in ("debug", "fast", "list", "--update", "update")]
+    non_option = [a for a in raw_args if a.lower() not in ("debug", "fast", "list")]
     if non_option:
         if len(non_option) == 1 and _is_year_token(non_option[0]):
             year = int(non_option[0])
@@ -2341,7 +2073,9 @@ def main():
                     raw_args.append("fast")
                 print(f"Mode plage de dates : du {start_date.strftime('%d/%m/%Y')} au {end_date.strftime('%d/%m/%Y')}")
 
-    if not raw_args:
+    # Si aucun argument n'est fourni, ou si on ne passe que "debug",
+    # on enchaîne automatiquement tous les principaux types de compétitions avec debug
+    if (not raw_args) or (len(raw_args) == 1 and raw_args[0].lower() == "debug"):
         raw_args = [
             "intl",
             "1", "2", "3", "4", "5", "6", "7", "8",
@@ -2351,6 +2085,8 @@ def main():
 
     args = [a.lower() for a in raw_args]
 
+    # Parsing éventuel de bornes de dates au format JJ/MM/AAAA (si pas déjà défini par mode année/plage)
+    # Exemple : python get_data_deeper.py intl 15 fast debug 10/01/2026 12/01/2026
     if start_date is None and end_date is None:
         parsed_dates = []
         for raw in raw_args:
@@ -2393,6 +2129,7 @@ def main():
     #      python get_data_deeper.py intl 1 2 3 fast
     idtyp = None
     if "intl" in args or "international" in args:
+        # Chercher tous les nombres dans les arguments (les idtyp)
         id_list: List[int] = []
         for raw_arg in raw_args:
             if raw_arg.isdigit():
@@ -2401,10 +2138,11 @@ def main():
                 except ValueError:
                     continue
 
+        # Si pas d'idtyp spécifié, utiliser [7] par défaut (Compétitions internationales)
         if not id_list:
             id_list = [7]
 
-        # Noms des types de compétitions 
+        # Noms des types de compétitions (pour l'affichage)
         type_names = {
             1: "Interclubs Avenirs (Rég. & Dép.)",
             2: "Interclubs Jeunes (Rég. & Dép.)",
@@ -2420,19 +2158,22 @@ def main():
             15: "Coupes Régionales",
         }
 
+        # Boucle sur tous les idtyp demandés (1, 2, 3, ... ou 7 par défaut)
         for idtyp in id_list:
             type_name = type_names.get(idtyp, f"Type idtyp={idtyp}")
             
-            print("*" * 60)
+            print("=" * 60)
             print(f"RÉCUPÉRATION DES COMPÉTITIONS : {type_name} (idtyp={idtyp})")
-            print("*" * 60)
+            print("=" * 60)
             
             if debug:
                 print(f"Options : delay_between_comps={delay_between_comps}")
             
+            # Construire l'URL pour ce type
             url = get_competitions_url_by_idtyp(idtyp)
             
-            # Pour avoir la liste des compétitions (sans résultats), ajouter "list" dans les arguments
+            # Si l'utilisateur veut seulement la liste des compétitions (sans résultats),
+            # il peut ajouter "list" dans les arguments
             if "list" in args:
                 competitions = get_competitions_for_url(url, debug=debug)
                 data = {"url": url, "competitions": competitions}
@@ -2441,14 +2182,16 @@ def main():
                 with open(filename, "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
             
-                print("\n" + "*" * 60)
+                print("\n" + "=" * 60)
                 print(f"RÉSUMÉ (liste des compétitions - {type_name})")
-                print("*" * 60)
+                print("=" * 60)
                 print(f"- Compétitions : {len(competitions)}")
                 print(f"- Fichier      : {filename}")
-                print("*" * 60)
+                print("=" * 60)
+                # On passe au type suivant le cas échéant
                 continue
             else:
+                # Récupérer les compétitions avec leurs résultats
                 data = get_results_for_competitions_url(
                     url,
                     delay_between_comps=delay_between_comps,
@@ -2456,6 +2199,14 @@ def main():
                 )
             
                 competitions = data.get("competitions", [])
+            
+                # Si des bornes de dates ont été fournies sur la ligne de commande,
+                # filtrer les compétitions sur la date affichée dans
+                # <div class="text-blue-600 text-xs uppercase hidden md:block">
+                # Exemple HTML :
+                #   <div class="text-blue-600 text-xs uppercase hidden md:block">
+                #       Samedi 10/01/2026
+                #   </div>
                 if start_date is not None and end_date is not None:
                     filtered_competitions: List[Dict] = []
                     for comp in competitions:
@@ -2473,18 +2224,39 @@ def main():
                 total_results = sum(c.get("results_count", 0) for c in competitions)
                 total_errors = sum(1 for c in competitions if "error" in c)
             
+                # Nouveau : créer un dossier par type et un fichier JSON par compétition
+                # Exemple demandé : pour idtyp=1 (Interclubs Avenirs (Rég. & Dép.)),
+                # créer un dossier "Interclubs Avenirs" dans "competitions_per_type",
+                # contenant un fichier JSON par compétition.
                 folder_name = type_name.split(" (")[0] if type_name else f"type_{idtyp}"
                 type_dir = os.path.join(output_dir, folder_name)
                 os.makedirs(type_dir, exist_ok=True)
             
+                # Pour éviter d'écraser des fichiers lorsque plusieurs compétitions
+                # ont exactement le même nom (même "Phase qualificative ..." sur
+                # plusieurs régions ou années), on garde en mémoire les bases déjà
+                # utilisées et on ajoute un suffixe (ID ou compteur) en cas de
+                # collision.
                 used_bases: set[str] = set()
             
+                # Nouveau : conserver la liste de tous les fichiers de résultats
+                # générés pour ce type (et cette plage de dates éventuelle), afin
+                # de pouvoir les référencer dans le fichier de résumé par dates
+                # (competitions_per_dates/*.json).
                 competitions_files: List[str] = []
             
                 for comp in competitions:
+                    # Nom brut de la compétition
                     raw_name = comp.get("name", "competition_sans_nom")
             
+                    # Adapter le nom comme demandé pour le fichier :
+                    # ex. "Interclubs départementaux U11 - TARN"
+                    #  → "Interclubs départementaux U11-TARN"
                     name_for_file = raw_name.replace(" - ", "-").strip()
+            
+                    # Nettoyage pour un nom de fichier Windows :
+                    # - supprimer / remplacer les caractères interdits  \ / : * ? " < > |
+                    # - éviter de terminer par un point ou un espace
                     forbidden = '\\/:*?"<>|'
                     safe_base = "".join(
                         ("_" if ch in forbidden else ch) for ch in name_for_file
@@ -2493,6 +2265,10 @@ def main():
                     if not safe_base:
                         safe_base = "competition_sans_nom"
             
+                    # Assurer l'unicité du nom de base dans ce dossier de type :
+                    # si une autre compétition a déjà utilisé le même safe_base,
+                    # on lui ajoute en priorité l'ID de compétition, sinon un
+                    # suffixe numérique.
                     original_base = safe_base
                     if safe_base in used_bases:
                         comp_id = comp.get("competition_id")
@@ -2507,6 +2283,7 @@ def main():
                             safe_base = candidate
                     used_bases.add(safe_base)
             
+                    # Vérifier si results est un dictionnaire avec des filtres (Dames, Messieurs, Mixtes)
                     results = comp.get("results", {})
                     is_filtered = (
                         isinstance(results, dict)
@@ -2518,11 +2295,17 @@ def main():
                     )
             
                     if is_filtered:
+                        # Créer un fichier JSON par filtre
                         for filter_name, filter_results in results.items():
+                            # Ignorer les clés spéciales comme "_info" ou "_error"
                             if filter_name.startswith("_"):
                                 continue
             
+                            # Créer une copie de la compétition sans le champ "results" agrégé
                             comp_filtered = {k: v for k, v in comp.items() if k != "results"}
+            
+                            # Nouveau format pour les compétitions filtrées :
+                            # on stocke les épreuves dans "epreuves" au lieu de "results".
                             if isinstance(filter_results, list):
                                 comp_filtered["epreuves"] = filter_results
             
@@ -2540,15 +2323,12 @@ def main():
             
                             comp_filtered["filter"] = filter_name
                             comp_filtered["name"] = f"{safe_base}-{filter_name}"
-
+            
                             comp_filename = f"{safe_base}-{filter_name}.json"
                             comp_path = os.path.join(type_dir, comp_filename)
-                            try:
-                                comp_model = CompetitionExtranat.model_validate(comp_filtered)
-                                comp_model.to_json_file(comp_path)
-                            except Exception:
-                                with open(comp_path, "w", encoding="utf-8") as f:
-                                    json.dump(comp_filtered, f, ensure_ascii=False, indent=2)
+                            with open(comp_path, "w", encoding="utf-8") as f:
+                                json.dump(comp_filtered, f, ensure_ascii=False, indent=2)
+                            # Sauvegarder le chemin du fichier de résultats
                             competitions_files.append(comp_path)
                     else:
                         def _normalize_event_fields(results_dict: Dict):
@@ -2765,6 +2545,7 @@ def main():
                             comp_gender["filter"] = gender_label
                             comp_gender["epreuves"] = epreuves_list
             
+                            # Recalculer results_count pour ce genre uniquement
                             total_perfs_gender = 0
                             for epreuve in epreuves_list:
                                 perfs = epreuve.get("performances", [])
@@ -2775,14 +2556,12 @@ def main():
                             comp_gender["name"] = f"{safe_base}-{gender_label}"
                             comp_filename = f"{safe_base}-{gender_label}.json"
                             comp_path = os.path.join(type_dir, comp_filename)
-                            try:
-                                comp_model = CompetitionExtranat.model_validate(comp_gender)
-                                comp_model.to_json_file(comp_path)
-                            except Exception:
-                                with open(comp_path, "w", encoding="utf-8") as f:
-                                    json.dump(comp_gender, f, ensure_ascii=False, indent=2)
+                            with open(comp_path, "w", encoding="utf-8") as f:
+                                json.dump(comp_gender, f, ensure_ascii=False, indent=2)
+                            # Sauvegarder le chemin du fichier de résultats
                             competitions_files.append(comp_path)
-        
+            
+                        # Écrire les fichiers filtrés par genre (s'il y a des épreuves)
                         _write_gender_file("Dames", epreuves_dames)
                         _write_gender_file("Messieurs", epreuves_messieurs)
             
@@ -2794,6 +2573,7 @@ def main():
                     type_name=type_name
                 )
                 
+                # Générer le nom de fichier de résumé basé sur le type
                 def _type_name_to_filename(tn: str) -> str:
                     import re
                     if not tn:
@@ -2808,9 +2588,9 @@ def main():
                 
                 resume_filename = _type_name_to_filename(type_name)
                 
-                print("\n" + "*" * 60)
+                print("\n" + "-" * 60)
                 print(f"RÉSUMÉ ({type_name})")
-                print("*" * 60)
+                print("-" * 60)
                 print(f"- Compétitions : {total_competitions}")
                 print(f"- Résultats    : {total_results}")
                 print(f"- Erreurs      : {total_errors}")
@@ -2819,11 +2599,14 @@ def main():
                 print(f"- Dossier type : {type_dir}")
                 print(f"- Fichier résumé (type) : {os.path.join(resumes_dir, f'{resume_filename}.json')}")
                 print(f"- Fichier résumé (global) : {os.path.join(resumes_dir, 'resume.json')}")
-                print("*" * 60)
+                print("-" * 60)
             
+                # Si un intervalle de dates est utilisé, sauvegarder un fichier JSON
+                # de résumé équivalent au bloc ci-dessus dans competitions_per_dates.
                 if start_date is not None and end_date is not None:
                     start_str = start_date.strftime("%d/%m/%Y")
                     end_str = end_date.strftime("%d/%m/%Y")
+                    # Exemple de nom : "Coupes Régionales 10_01_2026 12_01_2026.json"
                     base_label = f"{type_name} {start_str} {end_str}"
                     forbidden = '\\/:*?"<>|'
                     safe_name = "".join(
@@ -2844,7 +2627,11 @@ def main():
                         "dossier_type": type_dir,
                         "fichier_resume_type": os.path.join(resumes_dir, f"{resume_filename}.json"),
                         "fichier_resume_global": os.path.join(resumes_dir, "resume.json"),
+                        # Nouveau : liste de tous les fichiers de résultats JSON
+                        # générés pour ces compétitions (chemins relatifs).
                         "fichiers_competitions": competitions_files,
+                        # Nouveau : inclusion directe des compétitions avec leurs résultats
+                        # dans le fichier de résumé par dates.
                         "competitions": competitions,
                     }
             
@@ -2852,6 +2639,7 @@ def main():
                     with open(summary_path, "w", encoding="utf-8") as f:
                         json.dump(summary_payload, f, ensure_ascii=False, indent=2)
 
+        # On ne continue pas le main() après le mode "intl"
         return
 
     for raw_arg in raw_args:
@@ -2889,10 +2677,11 @@ def main():
         sum(1 for c in t.get("competitions", []) if "error" in c)
         for t in data.get("types", [])
     )
+
     # Le résumé des erreurs (dans le dossier Resumes)
     resume_data = generate_resume(data, output_dir=resumes_dir)
     
-    print("\n" + "*" * 60)
+    print("\n" + "=" * 60)
     print("RÉSUMÉ")
     print(f"- Types de compétitions : {total_types}")
     print(f"- Compétitions          : {total_competitions}")

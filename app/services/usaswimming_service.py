@@ -186,6 +186,8 @@ def make_payload(offset, from_iso: str | None = None, to_iso: str | None = None)
         "metadata": [
             {"jaql": {"title": "Name", "dim": "[BestTimes.FullName]", "datatype": "text"}},
             {"jaql": {"title": "Federation", "dim": "[OrgUnit.TeamName]", "datatype": "text"}},
+            # Club / équipe (Team)
+            {"jaql": {"title": "Team", "dim": "[OrgUnit.TeamAbbr]", "datatype": "text"}},
             {"jaql": {"title": "Event", "dim": "[SwimEvent.EventCode]", "datatype": "text"}},
             {"jaql": {"title": "Gender", "dim": "[EventCompetitionCategory.TypeName]", "datatype": "text"}},
             {"jaql": {"title": "Meet", "dim": "[Meet.MeetName]", "datatype": "text"}},
@@ -204,7 +206,13 @@ def make_payload(offset, from_iso: str | None = None, to_iso: str | None = None)
                 "format": {"mask": {"days": "M/d/yyyy"}}
             },
             {"jaql": {"title": "SwimTime", "dim": "[BestTimes.SwimTimeFormatted]", "datatype": "text"}},
-            {"jaql": {"title": "SwimTimeSeconds", "dim": "[BestTimes.SwimTimeSeconds]", "datatype": "numeric"}}
+            {"jaql": {"title": "SwimTimeSeconds", "dim": "[BestTimes.SwimTimeSeconds]", "datatype": "numeric"}},
+            # Points (ex: power points / FINA points, selon le cube)
+            {"jaql": {"title": "Points", "dim": "[BestTimes.Points]", "datatype": "numeric"}},
+            # Time standard (A, AA, AAA, JR NATS, etc.)
+            {"jaql": {"title": "TimeStandard", "dim": "[BestTimes.TimeStandard]", "datatype": "text"}},
+            # LSC (Local Swimming Committee)
+            {"jaql": {"title": "LSC", "dim": "[OrgUnit.LSC]", "datatype": "text"}},
         ],
         "datasource": "FINA Times",
         "by": "ComposeSDK",
