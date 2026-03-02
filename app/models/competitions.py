@@ -18,17 +18,16 @@ class TypeCompetitionLabel(str, Enum):
     def idtyp(self) -> int:
         mapping = {
             TypeCompetitionLabel.COMPETITIONS_INTERNATIONALES: 7,
-            TypeCompetitionLabel.CHAMPIONNATS_NATIONAUX: 1,
-            TypeCompetitionLabel.MEETINGS_NATIONAUX_LABELLISES: 3,
-            TypeCompetitionLabel.COUPES_NATIONALES: 2,
-            TypeCompetitionLabel.COMPETITIONS_INTERREGIONALES: 4,
+            TypeCompetitionLabel.CHAMPIONNATS_NATIONAUX: 6,
+            TypeCompetitionLabel.MEETINGS_NATIONAUX_LABELLISES: 5,
+            TypeCompetitionLabel.COUPES_NATIONALES: 14,
+            TypeCompetitionLabel.COMPETITIONS_INTERREGIONALES: 8,
             TypeCompetitionLabel.REGIONAUX_WEB_CONFRONTATION: 12,
-            TypeCompetitionLabel.CHAMPIONNATS_REGIONAUX: 5,
-            TypeCompetitionLabel.COUPES_REGIONALES: 6,
-            TypeCompetitionLabel.INTERCLUBS_TC: 13,
-            TypeCompetitionLabel.INTERCLUBS_JEUNES: 14,
-            TypeCompetitionLabel.INTERCLUBS_AVENIRS: 15,
-            TypeCompetitionLabel.ANIMATION_A_VOS_PLOTS: 8,
+            TypeCompetitionLabel.CHAMPIONNATS_REGIONAUX: 4,
+            TypeCompetitionLabel.COUPES_REGIONALES: 15,
+            TypeCompetitionLabel.INTERCLUBS_TC: 3,
+            TypeCompetitionLabel.INTERCLUBS_JEUNES: 2,
+            TypeCompetitionLabel.INTERCLUBS_AVENIRS: 1,
+            TypeCompetitionLabel.ANIMATION_A_VOS_PLOTS: 13,
         }
         return mapping[self]
-
