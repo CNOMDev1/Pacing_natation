@@ -5,6 +5,7 @@ __pycache__/
 app/data/omega/pdfs/
 app/data/omega/pdfs_manifest.json
 app/data/extranat/
+app/data/fusion_usaswimming/
 app/data/usaswimming/
 
 # Fichiers locaux
