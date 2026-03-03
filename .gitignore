@@ -26,3 +26,5 @@ venv/
 
 # OS
 .DS_Store
+
+app/data/scripts/prepare_data.py
