@@ -1,193 +1,77 @@
 import requests
 import json
-import re
 import pandas as pd
 import time
 import os
 import sys
-from playwright.sync_api import sync_playwright
+import re
+import subprocess
 
-# Permet d'importer app quand le script est lancé directement (ex: python3 usaswimming_service.py)
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
-
-from app.models.usaswimming_models import NageurRecord
+# Répertoire de stockage des données 
+USASWIMMING_DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "usaswimming"))
 
 # URL de l'API
 url = "https://usaswimming.sisense.com/api/datasources/USA%20Swimming%20Times%20Elasticube/jaql?trc=sdk-ui-1.11.0"
 
-BASE_DIR = os.path.dirname(__file__)
-TOKEN_FILE = os.path.join(BASE_DIR, "bearer_token.txt")
-STATE_FILE = os.path.join(BASE_DIR, "state.json")
-DATA_HUB_URL = "https://data.usaswimming.org"
-WAIT_FOR = 20  # secondes d'attente pour que le dashboard fasse ses requêtes
-
-
-def run_headed_and_save_state(user_data_dir=None):
-    """
-    Ouvre un navigateur en mode persistant/headed pour te permettre de te connecter,
-    puis sauvegarde le storage_state dans STATE_FILE.
-    """
-    print("Mode interactive: ouverture du navigateur pour te connecter manuellement...")
-    with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=user_data_dir or "playwright_tmp_profile",
-            headless=False,
-            channel="chrome",
-            args=["--start-maximized"]
-        )
-        page = context.new_page()
-        page.goto(DATA_HUB_URL)
-        print(f"Connecte-toi sur {DATA_HUB_URL} puis appuie sur Entrée ici quand c'est fait...")
-        input("Après connexion, appuie Entrée pour continuer et sauvegarder le state...")
-        context.storage_state(path=STATE_FILE)
-        print(f"[OK] state sauvegardé dans {STATE_FILE}")
-        context.close()
-
-
-def capture_token_with_storage_state(headless=True):
-    """
-    Lance un navigateur headless (ou non) en réutilisant STATE_FILE, écoute les requêtes
-    et récupère le header Authorization: Bearer ...
-    """
-    if not os.path.exists(STATE_FILE):
-        raise FileNotFoundError(f"{STATE_FILE} introuvable. Lance d'abord le script en mode interactif pour te connecter.")
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless, channel="chrome")
-        context = browser.new_context(storage_state=STATE_FILE)
-        page = context.new_page()
-
-        found = {"token": None}
-
-        def on_request(request):
-            hdrs = request.headers
-            auth = hdrs.get("authorization") or hdrs.get("Authorization")
-            if auth and auth.startswith("Bearer "):
-                print("Bearer token trouvé :", auth)
-                found["token"] = auth
-                with open(TOKEN_FILE, "w", encoding="utf-8") as f:
-                    f.write(auth)
-
-        page.on("request", on_request)
-        page.goto(DATA_HUB_URL)
-        print(f"Attente {WAIT_FOR} secondes pour laisser le dashboard charger et envoyer les requêtes...")
-        time.sleep(WAIT_FOR)
-
-        if not found["token"]:
-            print("Token non trouvé dans le délai initial, attente supplémentaire de 10s...")
-            time.sleep(10)
-
-        context.close()
-        browser.close()
-
-        if not found["token"]:
-            print("Aucun token trouvé — vérifie que ton state.json est valide et que le compte a les droits pour accéder au Data Hub.")
-        else:
-            print(f"[OK] Token sauvegardé dans {TOKEN_FILE}")
-        # Mise à jour de state.json avec l'état actuel de la session (cookies, etc.)
-        try:
-            context.storage_state(path=STATE_FILE)
-            print(f"[OK] state sauvegardé dans {STATE_FILE}", flush=True)
-        except Exception as e:
-            print(f"Impossible de sauver state: {e}", flush=True)
-
+TOKEN_FILE = os.path.join(os.path.dirname(__file__), "bearer_token.txt")
 
 def load_bearer_token() -> str:
-    """Charge le token Bearer; génère le token via Playwright si le fichier est absent.
+    """Charge le token Bearer ; génère via get_token_usaswimming.py si le fichier est absent.
 
     - Cherche le fichier TOKEN_FILE dans le même dossier que ce script
-    - Si absent et state.json absent: ouvre le navigateur pour connexion manuelle, puis il faut relancer
-    - Si absent et state.json présent: capture le token en headless
-    - Retourne le token (préfixé par 'Bearer ' si nécessaire)
+    - Si absent, exécute get_token_usaswimming.py avec l'interpréteur courant
+    - Relit le fichier et retourne le token (préfixé par 'Bearer ' si nécessaire)
     """
     if not os.path.exists(TOKEN_FILE):
-        if not os.path.exists(STATE_FILE):
-            print(f"{STATE_FILE} non trouvé.")
-            run_headed_and_save_state(user_data_dir=None)
-            print("Capture du token en cours...")
-            try:
-                capture_token_with_storage_state(headless=True)
-            except Exception as e:
-                print("Erreur lors de la capture headless:", e)
-                print("Tentative en mode visible...")
-                capture_token_with_storage_state(headless=False)
-        else:
-            try:
-                capture_token_with_storage_state(headless=True)
-            except Exception as e:
-                print("Erreur lors de la capture headless:", e)
-                print("Tentative de fallback en mode non-headless pour debug...")
-                capture_token_with_storage_state(headless=False)
+        script_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "scripts", "get_token_usaswimming.py")
+        )
+        if not os.path.exists(script_path):
+            raise FileNotFoundError(
+                f"{TOKEN_FILE} introuvable et {script_path} également manquant."
+            )
+        # Tente de générer le token
+        try:
+            subprocess.run([sys.executable, script_path], check=True)
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                f"Échec d'exécution de get_token_usaswimming.py (code {exc.returncode})."
+            ) from exc
 
     if not os.path.exists(TOKEN_FILE):
         raise FileNotFoundError(
-            f"{TOKEN_FILE} introuvable après capture du token."
+            f"{TOKEN_FILE} introuvable après exécution de get_token_usaswimming.py."
         )
 
     with open(TOKEN_FILE, "r", encoding="utf-8") as f:
         raw = f.read().strip()
     return raw if raw.lower().startswith("bearer ") else f"Bearer {raw}"
 
+# Header avec ton token Bearer
+headers = {
+    "accept": "application/json, text/plain, */*",
+    "accept-language": "fr,fr-FR;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
+    "authorization": load_bearer_token(),
+    "content-type": "application/json;charset=UTF-8",
+    "origin": "https://data.usaswimming.org",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0",
+}
 
-def refresh_bearer_token_and_state():
-    """
-    En cas de token expiré (401) : supprime bearer_token.txt, relance la capture
-    via state.json et met à jour bearer_token.txt et state.json.
-    Retourne True si un nouveau token a été capturé, False sinon.
-    """
-    if os.path.exists(TOKEN_FILE):
-        try:
-            os.remove(TOKEN_FILE)
-        except OSError:
-            pass
-    if not os.path.exists(STATE_FILE):
-        print(f"[refresh] {STATE_FILE} introuvable, impossible de mettre à jour le token.", flush=True)
-        return False
-    print("[refresh] Mise à jour du token et du state en cours...", flush=True)
-    try:
-        capture_token_with_storage_state(headless=True)
-    except Exception as e:
-        print(f"[refresh] Erreur capture headless: {e}", flush=True)
-        try:
-            capture_token_with_storage_state(headless=False)
-        except Exception as e2:
-            print(f"[refresh] Erreur capture visible: {e2}", flush=True)
-            return False
-    return os.path.exists(TOKEN_FILE)
-
-
-def get_headers():
-    """Headers pour les requêtes API, avec le token Bearer à jour."""
-    return {
-        "accept": "application/json, text/plain, */*",
-        "accept-language": "fr,fr-FR;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
-        "authorization": load_bearer_token(),
-        "content-type": "application/json;charset=UTF-8",
-        "origin": "https://data.usaswimming.org",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0",
-    }
-
-
-# Compatibilité : headers chargés au premier import (pour scripts qui l'utilisent directement)
-headers = get_headers()
-
-# Plage de dates pour récupérer toutes les années (toutes les données disponibles)
-DATE_FROM = "1900-01-01T00:00:00"
-DATE_TO = "2099-12-31T23:59:59"
+# Taille de page et délais pour limiter la charge côté API (éviter SafeModeException)
+PAGE_SIZE = int(os.getenv("USASWIMMING_PAGE_SIZE", "5000"))
+DELAY_BETWEEN_REQUESTS_S = float(os.getenv("USASWIMMING_DELAY_REQUESTS", "0.5"))
+DELAY_BETWEEN_PERIODS_S = float(os.getenv("USASWIMMING_DELAY_PERIODS", "2.0"))
 
 # Construit le payload JSON pour les requêtes API avec pagination et filtres de dates
-def make_payload(offset, from_iso: str | None = None, to_iso: str | None = None):
-    from_value = from_iso or DATE_FROM
-    to_value = to_iso or DATE_TO
+def make_payload(offset, from_iso: str | None = None, to_iso: str | None = None, count: int | None = None):
+    from_value = from_iso or "1900-01-01T00:00:00"
+    to_value = to_iso or "2025-12-31T23:59:59"
+    page_size = count if count is not None else PAGE_SIZE
     return {
         "metadata": [
             {"jaql": {"title": "Name", "dim": "[BestTimes.FullName]", "datatype": "text"}},
             {"jaql": {"title": "Federation", "dim": "[OrgUnit.TeamName]", "datatype": "text"}},
-            # Club / équipe (Team)
-            {"jaql": {"title": "Team", "dim": "[OrgUnit.TeamAbbr]", "datatype": "text"}},
             {"jaql": {"title": "Event", "dim": "[SwimEvent.EventCode]", "datatype": "text"}},
             {"jaql": {"title": "Gender", "dim": "[EventCompetitionCategory.TypeName]", "datatype": "text"}},
             {"jaql": {"title": "Meet", "dim": "[Meet.MeetName]", "datatype": "text"}},
@@ -206,176 +90,373 @@ def make_payload(offset, from_iso: str | None = None, to_iso: str | None = None)
                 "format": {"mask": {"days": "M/d/yyyy"}}
             },
             {"jaql": {"title": "SwimTime", "dim": "[BestTimes.SwimTimeFormatted]", "datatype": "text"}},
-            {"jaql": {"title": "SwimTimeSeconds", "dim": "[BestTimes.SwimTimeSeconds]", "datatype": "numeric"}},
-            # Points (ex: power points / FINA points, selon le cube)
-            {"jaql": {"title": "Points", "dim": "[BestTimes.Points]", "datatype": "numeric"}},
-            # Time standard (A, AA, AAA, JR NATS, etc.)
-            {"jaql": {"title": "TimeStandard", "dim": "[BestTimes.TimeStandard]", "datatype": "text"}},
-            # LSC (Local Swimming Committee)
-            {"jaql": {"title": "LSC", "dim": "[OrgUnit.LSC]", "datatype": "text"}},
+            {"jaql": {"title": "SwimTimeSeconds", "dim": "[BestTimes.SwimTimeSeconds]", "datatype": "numeric"}}
         ],
         "datasource": "FINA Times",
         "by": "ComposeSDK",
         "queryGuid": f"page-{offset}",
-        "count": 10000,
+        "count": page_size,
         "offset": offset
     }
 
 
-def _row_to_record(row, columns):
-    """Convertit une ligne DataFrame en dict JSON-sérialisable (dates ISO, NaN → null)."""
-    d = {}
-    for k in columns:
-        v = row[k]
-        if pd.isna(v):
-            d[k] = None
-        elif hasattr(v, "isoformat"):
-            d[k] = v.isoformat()
-        else:
-            d[k] = v
-    return d
-
-
-def _meet_to_safe_filename(meet_name: str, used: set) -> str:
-    """Génère un nom de fichier sûr à partir du nom de compétition (Meet)."""
-    s = re.sub(r'[<>:"/\\|?*\x00]', "_", str(meet_name).strip())
-    s = re.sub(r"\s+", "_", s).strip("_")[:100] or "unnamed"
-    base = s
-    filename = f"{s}.json"
-    c = 1
-    while filename in used:
-        filename = f"{base}_{c}.json"
-        c += 1
-    used.add(filename)
-    return filename
-
-
-# Télécharge toutes les données, toutes années (1900–2099), et les sauvegarde par compétition
-# Retourne {"success": True} ou {"success": False, "http_status": int, "message": str}
-def run_one_shot_full_download():
-    all_rows = []
-    columns = None
-    offset = 0
-    last_error = None
-    print("Téléchargement en cours (complet)...", flush=True)
-    request_headers = get_headers()
-    while True:
-        payload = make_payload(offset)
-        response = requests.post(url, headers=request_headers, json=payload)
-        if response.status_code == 401:
-            print(f"Erreur HTTP 401 (token invalide). Tentative de mise à jour de bearer_token.txt et state.json...", flush=True)
-            if refresh_bearer_token_and_state():
-                request_headers = get_headers()
-                print("Nouveau token chargé, nouvelle tentative...", flush=True)
-                response = requests.post(url, headers=request_headers, json=payload)
-            else:
-                print(response.text, flush=True)
-                last_error = {"http_status": 401, "message": response.text.strip() or "Invalid token."}
-                break
+def fetch_min_swim_date_from_api() -> int | None:
+    """
+    Interroge l'API pour obtenir la date de nage la plus ancienne (une ligne triée par date croissante).
+    Retourne l'année (int) ou None si l'API ne répond pas ou ne renvoie pas de donnée.
+    """
+    from_iso = "1900-01-01T00:00:00"
+    to_iso = "2030-12-31T23:59:59"
+    payload = {
+        "metadata": [
+            {"jaql": {"title": "Name", "dim": "[BestTimes.FullName]", "datatype": "text"}},
+            {
+                "jaql": {
+                    "title": "SwimDate",
+                    "dim": "[SeasonCalendar.CalendarDate (Calendar)]",
+                    "datatype": "datetime",
+                    "level": "days",
+                    "sort": "asc",
+                    "filter": {"from": from_iso, "to": to_iso, "inclusive": True},
+                },
+                "format": {"mask": {"days": "M/d/yyyy"}},
+            },
+        ],
+        "datasource": "FINA Times",
+        "by": "ComposeSDK",
+        "queryGuid": "min-date",
+        "count": 1,
+        "offset": 0,
+    }
+    try:
+        response = requests.post(url, headers=headers, json=payload)
         if response.status_code != 200:
-            print(f"Erreur HTTP {response.status_code}", flush=True)
-            print(response.text, flush=True)
-            last_error = {"http_status": response.status_code, "message": response.text.strip() or f"Erreur HTTP {response.status_code}"}
+            return None
+        data = response.json()
+        if not data.get("values") or not data["values"]:
+            return None
+        headers_list = data.get("headers") or []
+        row = data["values"][0]
+        date_idx = next((i for i, h in enumerate(headers_list) if h == "SwimDate"), 0)
+        date_cell = row[date_idx]["data"] if date_idx < len(row) else (row[0]["data"] if row else None)
+        if not date_cell:
+            return None
+        ts = pd.to_datetime(date_cell, errors="coerce")
+        if pd.isna(ts):
+            return None
+        return int(ts.year)
+    except Exception:
+        return None
+
+
+# Fichier state pour le polling (dernière date vue), dans data/usaswimming
+LATEST_SWIMDATE_FILE = os.path.join(USASWIMMING_DATA_DIR, "_latest_swimdate.txt")
+
+
+def _read_latest_swimdate() -> pd.Timestamp | None:
+    """Lit la dernière date de nage enregistrée (pour le polling)."""
+    if not os.path.exists(LATEST_SWIMDATE_FILE):
+        return None
+    try:
+        with open(LATEST_SWIMDATE_FILE, "r", encoding="utf-8") as f:
+            raw = f.read().strip()
+        return pd.to_datetime(raw, errors="coerce")
+    except Exception:
+        return None
+
+
+def _write_latest_swimdate(ts: pd.Timestamp) -> None:
+    """Enregistre la dernière date de nage (pour le polling)."""
+    os.makedirs(USASWIMMING_DATA_DIR, exist_ok=True)
+    with open(LATEST_SWIMDATE_FILE, "w", encoding="utf-8") as f:
+        f.write(ts.isoformat())
+
+
+KEY_COLUMNS = [
+    "Name",
+    "Federation",
+    "Event",
+    "Gender",
+    "Meet",
+    "SwimDate",
+    "SwimTimeSeconds",
+]
+
+
+def _sanitize_meet_filename(meet_name: str, max_length: int = 120) -> str:
+    """Retourne un nom de fichier sûr à partir du nom de compétition."""
+    if pd.isna(meet_name) or meet_name == "":
+        return "_unknown"
+    s = re.sub(r'[<>:"/\\|?*]', "", str(meet_name).strip())
+    s = re.sub(r"\s+", "_", s)
+    s = s[:max_length].rstrip("_") or "_unknown"
+    return s or "_unknown"
+
+
+def save_data_by_competition(df: pd.DataFrame, append: bool = False) -> None:
+    """Enregistre le DataFrame dans data/usaswimming, groupé par date (année) puis par compétition.
+
+    Structure : data/usaswimming/<année>/<compétition>.json
+    - Chaque sous-dossier est une année (ex. 2020, 2021).
+    - Chaque fichier JSON correspond à une compétition (Meet) pour cette année.
+
+    - append=False : écrase les fichiers existants pour chaque (année, Meet).
+    - append=True  : charge le fichier existant si présent, fusionne, déduplique selon KEY_COLUMNS, ré-enregistre.
+    """
+    if df.empty:
+        return
+    df = df.copy()
+    df["SwimDate"] = pd.to_datetime(df["SwimDate"], errors="coerce")
+    df["_year"] = df["SwimDate"].dt.year
+
+    for (year, meet_name), group in df.groupby(["_year", "Meet"], dropna=False):
+        year_dir = os.path.join(USASWIMMING_DATA_DIR, str(int(year)))
+        os.makedirs(year_dir, exist_ok=True)
+        fname = _sanitize_meet_filename(meet_name) + ".json"
+        path = os.path.join(year_dir, fname)
+        if append and os.path.exists(path):
+            try:
+                existing = pd.read_json(path, orient="records")
+                existing["SwimDate"] = pd.to_datetime(existing["SwimDate"], errors="coerce")
+                combined = pd.concat([existing, group], ignore_index=True)
+                combined = combined.drop_duplicates(subset=KEY_COLUMNS, keep="last")
+            except Exception:
+                combined = group
+        else:
+            combined = group
+        combined = combined.drop(columns=["_year"], errors="ignore")
+        combined.to_json(path, orient="records", date_format="iso", force_ascii=False, indent=2)
+    print(f"Données enregistrées par année et compétition dans {USASWIMMING_DATA_DIR}")
+
+
+# Récupère les données depuis une date donnée jusqu'à maintenant
+def fetch_since(from_ts: pd.Timestamp) -> pd.DataFrame:
+    all_rows: list[list] = []
+    columns: list[str] | None = None
+    offset = 0
+    from_iso = from_ts.strftime("%Y-%m-%dT%H:%M:%S")
+    to_iso = pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+    while True:
+        payload = make_payload(offset, from_iso=from_iso, to_iso=to_iso)
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code != 200:
+            print(f"Erreur HTTP {response.status_code}")
+            print(response.text)
             break
         data = response.json()
         if "values" not in data:
-            print("Aucune clé 'values' dans la réponse.", flush=True)
-            print(json.dumps(data, indent=2), flush=True)
-            last_error = {"http_status": 502, "message": "Réponse API invalide (pas de 'values')."}
+            print("Aucune clé 'values' dans la réponse.")
+            print(json.dumps(data, indent=2))
             break
         if columns is None:
             columns = data["headers"]
         rows = [[cell["data"] for cell in row] for row in data["values"]]
         if not rows:
-            print("Fin des données atteinte.", flush=True)
             break
         all_rows.extend(rows)
-        print(f"Page récupérée : {len(rows)} lignes (offset {offset})", flush=True)
         offset += len(rows)
-        time.sleep(0.5)
+        time.sleep(0.2)
     if not all_rows:
-        print("Aucune donnée récupérée.", flush=True)
-        if last_error:
-            return {"success": False, "http_status": last_error["http_status"], "message": last_error["message"]}
-        return {"success": False, "http_status": 503, "message": "Aucune donnée récupérée."}
+        return pd.DataFrame(columns=columns or [])
     df = pd.DataFrame(all_rows, columns=columns)
     df["SwimDate"] = pd.to_datetime(df["SwimDate"], errors="coerce")
-    df = df.sort_values(by="SwimDate", ascending=False)
-    print(f"\nTotal de lignes récupérées : {len(df)}", flush=True)
-    print(df.head(20), flush=True)
+    return df
 
-    # Dossier de sortie : un fichier JSON par compétition (Meet)
-    out_dir = os.path.join(BASE_DIR, "..", "data", "usaswimming")
-    os.makedirs(out_dir, exist_ok=True)
-    indent = 2 if os.getenv("JSON_INDENT", "1").lower() in ("1", "true", "yes") else None
-    used_filenames = set()
-    index = []
-
-    for meet_name, group in df.groupby("Meet", sort=False):
-        raw_records = [_row_to_record(row, df.columns) for _, row in group.iterrows()]
-        records = [
-            NageurRecord(**r).model_dump(mode="json") for r in raw_records
-        ]
-        filename = _meet_to_safe_filename(meet_name, used_filenames)
-        json_path = os.path.join(out_dir, filename)
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(records, f, ensure_ascii=False, indent=indent, allow_nan=False)
-        index.append({"meet": meet_name, "file": filename, "count": len(records)})
-
-    # Fichier index : liste des compétitions et leurs fichiers
-    index_path = os.path.join(out_dir, "_index.json")
-    with open(index_path, "w", encoding="utf-8") as f:
-        json.dump(index, f, ensure_ascii=False, indent=2, allow_nan=False)
-
-    # Affichage du nombre de données collectées
-    total_donnees = len(df)
-    nb_competitions = len(index)
-    print(f"\n--- Données collectées ---", flush=True)
-    print(f"Nombre total de résultats : {total_donnees}", flush=True)
-    print(f"Nombre de compétitions     : {nb_competitions}", flush=True)
-    print(f"Données enregistrées dans '{out_dir}/' ({nb_competitions} fichiers + _index.json).", flush=True)
-    return {"success": True}
-
-
-def get_all_results():
+def _fetch_date_range(from_iso: str, to_iso: str, columns_ref: list | None) -> tuple[list, list | None]:
     """
-    Charge tous les résultats USA Swimming depuis le dossier data/usaswimming.
-    Retourne l'index des compétitions et, pour chacune, la liste des résultats.
+    Récupère toutes les pages pour une plage de dates.
+    Retourne (all_rows, columns). En cas d'erreur API (ex. SafeMode), retourne ([], None).
     """
-    out_dir = os.path.join(os.path.dirname(__file__), "..", "data", "usaswimming")
-    index_path = os.path.join(out_dir, "_index.json")
-    if not os.path.exists(index_path):
-        return {"count_competitions": 0, "count_results": 0, "index": [], "competitions": []}
-    with open(index_path, encoding="utf-8") as f:
-        index = json.load(f)
-    competitions = []
-    total_results = 0
-    for item in index:
-        filepath = os.path.join(out_dir, item["file"])
-        if os.path.exists(filepath):
-            with open(filepath, encoding="utf-8") as f:
-                records = json.load(f)
-            competitions.append({
-                "meet": item["meet"],
-                "file": item["file"],
-                "count": len(records),
-                "results": records,
-            })
-            total_results += len(records)
+    all_rows = []
+    columns = columns_ref
+    offset = 0
+    while True:
+        payload = make_payload(offset, from_iso=from_iso, to_iso=to_iso)
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code != 200:
+            print(f"  Erreur HTTP {response.status_code}")
+            return ([], None)
+        data = response.json()
+        if "values" not in data:
+            if data.get("error"):
+                print(f"  Erreur API (ex. SafeMode): {data.get('details', data)[:200]}...")
+            return ([], None)
+        if columns is None:
+            columns = data["headers"]
+        rows = [[cell["data"] for cell in row] for row in data["values"]]
+        if not rows:
+            break
+        all_rows.extend(rows)
+        offset += len(rows)
+        time.sleep(DELAY_BETWEEN_REQUESTS_S)
+    return (all_rows, columns)
+
+
+# Télécharge les données pour toutes les années par tranches annuelles (puis semestrielles en secours) pour éviter SafeMode
+def run_one_shot_full_download():
+    """Récupère toutes les données : année min détectée via l'API (ou 1900 par défaut) → année en cours."""
+    to_year = int(os.getenv("USASWIMMING_TO_YEAR", str(pd.Timestamp.utcnow().year)))
+    from_year_env = os.getenv("USASWIMMING_FROM_YEAR")
+    if from_year_env is not None:
+        from_year = int(from_year_env)
+        print(f"Année de début (env USASWIMMING_FROM_YEAR) : {from_year}")
+    else:
+        print("Détection de la date minimale dans l'API...", end=" ", flush=True)
+        from_year = fetch_min_swim_date_from_api()
+        if from_year is None:
+            from_year = 1900
+            print(f"indisponible, utilisation de {from_year} par défaut.")
         else:
-            competitions.append({
-                "meet": item["meet"],
-                "file": item["file"],
-                "count": 0,
-                "results": [],
-            })
+            print(f"première donnée en {from_year}.")
+    all_rows = []
+    columns = None
+
+    print(f"Récupération des données pour toutes les années ({from_year} → {to_year}), page size={PAGE_SIZE}...")
+    for year in range(from_year, to_year + 1):
+        from_iso = f"{year}-01-01T00:00:00"
+        to_iso = f"{year}-12-31T23:59:59"
+        print(f"  Année {year}...", end=" ", flush=True)
+        rows, columns = _fetch_date_range(from_iso, to_iso, columns)
+        if rows:
+            all_rows.extend(rows)
+            print(f"{len(rows)} lignes")
+        elif columns is None:
+            # Erreur API sur l'année entière : tenter par semestre
+            print("erreur, tentative par semestre...")
+            for start_month, end_month in [(1, 6), (7, 12)]:
+                from_iso = f"{year}-{start_month:02d}-01T00:00:00"
+                to_iso = f"{year}-{end_month:02d}-{pd.Timestamp(year, end_month, 1).days_in_month:02d}T23:59:59"
+                rows, columns = _fetch_date_range(from_iso, to_iso, columns)
+                if rows:
+                    all_rows.extend(rows)
+                    print(f"    S{start_month}-S{end_month}: {len(rows)} lignes")
+            if columns is None:
+                print(f"    Année {year} ignorée (API en erreur).")
+        else:
+            print("0 lignes")
+        time.sleep(DELAY_BETWEEN_PERIODS_S)
+
+    if not all_rows:
+        print("Aucune donnée récupérée.")
+        return
+    df = pd.DataFrame(all_rows, columns=columns or [])
+    df["SwimDate"] = pd.to_datetime(df["SwimDate"], errors="coerce")
+    df = df.sort_values(by="SwimDate", ascending=False)
+    print(f"\nTotal : {len(df)} lignes récupérées.")
+    print(df.head(20))
+    save_data_by_competition(df, append=False)
+
+
+# Boucle de surveillance continue pour récupérer les nouvelles données (stockage JSON uniquement)
+def run_polling_loop():
+    latest = _read_latest_swimdate()
+    if latest is None:
+        days = int(os.getenv("POLL_SINCE_DAYS", "30"))
+        from_ts = pd.Timestamp.utcnow() - pd.Timedelta(days=days)
+    else:
+        from_ts = latest - pd.Timedelta(days=1)
+
+    interval_s = int(os.getenv("POLL_INTERVAL_SECONDS", "300"))
+    print(f"Démarrage du polling: from={from_ts.isoformat()} interval={interval_s}s")
+    while True:
+        try:
+            df_new = fetch_since(from_ts)
+            if df_new.empty:
+                print("Aucune nouvelle donnée.")
+            else:
+                save_data_by_competition(df_new, append=True)
+                max_new = df_new["SwimDate"].max()
+                if pd.notna(max_new):
+                    from_ts = max_new
+                    _write_latest_swimdate(from_ts)
+                print(f"Nouvelles lignes enregistrées: {len(df_new)}")
+        except Exception as e:
+            print(f"Erreur pendant le polling: {e}")
+        time.sleep(interval_s)
+
+
+def get_all_results() -> dict:
+    """
+    Agrège tous les résultats stockés dans USASWIMMING_DATA_DIR.
+
+    Retourne un dict de la forme :
+    {
+        "count_competitions": <nombre de fichiers JSON de compétitions>,
+        "count_results": <nombre total de lignes>,
+        "competitions": [
+            {
+                "year": "<année>",
+                "file": "<chemin relatif du fichier>",
+                "meet": "<nom de la compétition ou None>",
+                "count_results": <nombre de lignes dans ce fichier>,
+            },
+            ...
+        ],
+    }
+    """
+    if not os.path.isdir(USASWIMMING_DATA_DIR):
+        return {
+            "count_competitions": 0,
+            "count_results": 0,
+            "competitions": [],
+        }
+
+    competitions: list[dict] = []
+    total_results = 0
+
+    for root, _dirs, files in os.walk(USASWIMMING_DATA_DIR):
+        for fname in files:
+            if not fname.endswith(".json"):
+                continue
+            # Fichiers techniques exclus (commençant par "_")
+            if fname.startswith("_"):
+                continue
+
+            path = os.path.join(root, fname)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                # Fichier illisible ou JSON invalide : on l'ignore
+                continue
+
+            if isinstance(data, dict):
+                records = [data]
+            elif isinstance(data, list):
+                records = data
+            else:
+                records = []
+
+            if not records:
+                continue
+
+            nb = len(records)
+            total_results += nb
+
+            rel_path = os.path.relpath(path, USASWIMMING_DATA_DIR)
+            year = os.path.basename(os.path.dirname(path))
+            first = records[0] if isinstance(records, list) else None
+            meet_name = first.get("Meet") if isinstance(first, dict) else None
+
+            competitions.append(
+                {
+                    "year": year,
+                    "file": rel_path,
+                    "meet": meet_name,
+                    "count_results": nb,
+                }
+            )
+
     return {
         "count_competitions": len(competitions),
         "count_results": total_results,
-        "index": index,
         "competitions": competitions,
     }
 
 
 if __name__ == "__main__":
-    run_one_shot_full_download()
+    polling_on = os.getenv("POLLING_ENABLED", "false").lower() in {"1", "true", "yes"}
+    if polling_on:
+        run_polling_loop()
+    else:
+        run_one_shot_full_download()
