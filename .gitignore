@@ -3,6 +3,7 @@ __pycache__/
 app/services/playwright_tmp_profile/
 app/scripts/playwright_tmp_profile/
 playwright_tmp_profile/
+Tour_list.txt
 
 # Données générées 
 app/data/omega/pdfs/

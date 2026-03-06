@@ -1084,9 +1084,12 @@ def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) 
                                 split_info["distance"] = distance_match.group(1) + "m"
                         splits.append(split_info)
 
-            # Si cette ligne n'a pas de classement ET qu'il y a une performance précédente,
-            # ajouter ce nageur à la liste des nageurs de la performance précédente
-            if not has_ranking and last_performance is not None and swimmer_name:
+            # Si cette ligne n'a pas de classement ET qu'il y a une performance précédente
+            # ET que la colonne de classement est réellement vide, on ajoute ce nageur
+            # à la liste des nageurs de la performance précédente.
+            # Si la colonne contient une valeur non vide (par ex. '---', 'DNS', etc.),
+            # on considère que c'est une nouvelle performance indépendante.
+            if (not has_ranking) and (not rank) and last_performance is not None and swimmer_name:
                 nageur = parse_swimmer(
                     swimmer_name, current_epreuve.get("categorie", "")
                 )
