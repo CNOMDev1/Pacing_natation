@@ -511,6 +511,12 @@ def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
 
     cleaned["Status"] = status
 
+    # Vitesse en m/s si Distance et SwimTimeSeconds sont disponibles et cohérents
+    distance_val = cleaned.get("Distance")
+    time_seconds_val = cleaned.get("SwimTimeSeconds")
+    if isinstance(distance_val, (int, float)) and isinstance(time_seconds_val, (int, float)) and time_seconds_val > 0:
+        cleaned["Speed"] = round(distance_val / time_seconds_val, 4)
+
     return cleaned
 
 
@@ -810,6 +816,16 @@ def clean_extranat_competition(data: Dict[str, Any]) -> Dict[str, Any]:
                             perf_clean["SwimTimeSeconds"] = None
 
                         perf_clean["Status"] = status
+
+                        # Vitesse en m/s si Distance et SwimTimeSeconds sont disponibles
+                        event_distance = epreuve_clean.get("Distance")
+                        swim_seconds = perf_clean.get("SwimTimeSeconds")
+                        if (
+                            isinstance(event_distance, (int, float))
+                            and isinstance(swim_seconds, (int, float))
+                            and swim_seconds > 0
+                        ):
+                            perf_clean["Speed"] = round(event_distance / swim_seconds, 4)
                     else:
                         # Pas de temps renseigné
                         perf_clean["SwimTime"] = "NaN"
