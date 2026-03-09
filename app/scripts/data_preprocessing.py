@@ -640,7 +640,23 @@ def format_extranat_event_name(raw_name: str, pool_length: Optional[int]) -> str
     return name
 
 
-def clean_extranat_competition(data: Dict[str, Any]) -> Dict[str, Any]:
+def infer_extranat_gender_from_filename(path: Path) -> Optional[str]:
+    """
+    Déduit un genre par défaut à partir du nom de fichier Extranat.
+    Règle demandée :
+      - si le nom de fichier (sans extension) se termine par "-Dames" -> "F"
+      - sinon -> "M"
+    """
+    stem_lower = path.stem.lower()
+    if stem_lower.endswith("-dames"):
+        return "F"
+    return "M"
+
+
+def clean_extranat_competition(
+    data: Dict[str, Any],
+    default_gender: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Nettoie la structure d'un fichier compétition Extranat.
     - Trim des chaînes
@@ -649,6 +665,7 @@ def clean_extranat_competition(data: Dict[str, Any]) -> Dict[str, Any]:
       et conversion des splits en secondes.
     """
     cleaned: Dict[str, Any] = {}
+    pool_length: Optional[int] = None
 
     for key, value in data.items():
         if key in {"epreuves", "original_title", "level"}:
@@ -689,11 +706,11 @@ def clean_extranat_competition(data: Dict[str, Any]) -> Dict[str, Any]:
             if isinstance(value, str):
                 txt = value.strip().lower().replace(" ", "")
                 if txt.startswith("25"):
-                    cleaned["PoolLength"] = 25
+                    pool_length = 25
                 elif txt.startswith("50"):
-                    cleaned["PoolLength"] = 50
+                    pool_length = 50
             else:
-                cleaned["PoolLength"] = value
+                pool_length = value
             continue
 
         # Normalisation spécifique de la date de compétition
@@ -711,8 +728,6 @@ def clean_extranat_competition(data: Dict[str, Any]) -> Dict[str, Any]:
 
     epreuves = data.get("epreuves")
     cleaned_epreuves: List[Dict[str, Any]] = []
-
-    pool_length = cleaned.get("PoolLength")
 
     if isinstance(epreuves, list):
         for epreuve in epreuves:
@@ -803,7 +818,20 @@ def clean_extranat_competition(data: Dict[str, Any]) -> Dict[str, Any]:
                     temps = perf.get("temps")
                     if isinstance(temps, str) and temps.strip():
                         t_txt = temps.strip()
+
+                        # Cas particulier : temps cumulés du type
+                        # "(00:27.24 + 00:27.48)= 00:54.72"
+                        # -> on ne garde que le résultat final "00:54.72".
+                        m_cumul = re.search(
+                            r"=\s*(\d{1,2}:\d{2}\.\d+)\s*$",
+                            t_txt,
+                        )
+                        if m_cumul:
+                            t_txt = m_cumul.group(1)
+
                         status = compute_status_from_swim_time(t_txt)
+                        has_letters = bool(re.search(r"[A-Za-z]", t_txt))
+                        is_zero_time = t_txt == "00:00.00"
 
                         # SwimTime & secondes normalisés suivant le statut
                         if status == "OK":
@@ -826,6 +854,11 @@ def clean_extranat_competition(data: Dict[str, Any]) -> Dict[str, Any]:
                             and swim_seconds > 0
                         ):
                             perf_clean["Speed"] = round(event_distance / swim_seconds, 4)
+
+                        # Si SwimTime n'est pas une durée (contient des lettres)
+                        # ou correspond exactement à "00:00.00", on force Speed à 0.
+                        if has_letters or is_zero_time:
+                            perf_clean["Speed"] = 0.0
                     else:
                         # Pas de temps renseigné
                         perf_clean["SwimTime"] = "NaN"
@@ -871,6 +904,13 @@ def clean_extranat_competition(data: Dict[str, Any]) -> Dict[str, Any]:
                         sexe = n.get("sexe")
                         if isinstance(sexe, str):
                             nageur_clean["Gender"] = sexe.strip().upper()
+
+                        # Si aucun genre n'a pu être déterminé depuis les données brutes,
+                        # on utilise le genre par défaut déduit du nom de fichier.
+                        if default_gender is not None:
+                            current_gender = nageur_clean.get("Gender")
+                            if not (isinstance(current_gender, str) and current_gender.strip()):
+                                nageur_clean["Gender"] = default_gender
 
                         # Année de naissance :
                         # - si "annee_naissance" est vide/nulle, on utilise celle extraite du nom
@@ -961,6 +1001,63 @@ def clean_extranat_competition(data: Dict[str, Any]) -> Dict[str, Any]:
             epreuve_clean["performances"] = cleaned_perfs
             cleaned_epreuves.append(epreuve_clean)
 
+    def _build_swimmer_pairs(epreuve_data: Dict[str, Any]) -> set[Tuple[str, str]]:
+        """
+        Construit l'ensemble des couples (Name, SwimTime) pour une épreuve.
+        Utilisé pour détecter les doublons entre une épreuve "1 LCM/SCM"
+        et l'épreuve précédente.
+        """
+        pairs: set[Tuple[str, str]] = set()
+        perfs = epreuve_data.get("performances")
+        if not isinstance(perfs, list):
+            return pairs
+
+        for perf in perfs:
+            if not isinstance(perf, dict):
+                continue
+            swim_time = perf.get("SwimTime")
+            if not (isinstance(swim_time, str) and swim_time.strip()):
+                continue
+
+            swimmers_obj = perf.get("swimmer")
+            if isinstance(swimmers_obj, dict):
+                swimmers_iter = [swimmers_obj]
+            elif isinstance(swimmers_obj, list):
+                swimmers_iter = [s for s in swimmers_obj if isinstance(s, dict)]
+            else:
+                swimmers_iter = []
+
+            for s in swimmers_iter:
+                name = s.get("Name")
+                if isinstance(name, str) and name.strip():
+                    pairs.add((name.strip(), swim_time))
+
+        return pairs
+
+    # Suppression des épreuves dont l'Event est exactement "1 LCM" ou "1 SCM"
+    # si au moins deux de leurs nageurs ont le même (Name, SwimTime)
+    # que dans l'épreuve précédente.
+    if cleaned_epreuves:
+        filtered_epreuves: List[Dict[str, Any]] = []
+        for idx, ep_clean in enumerate(cleaned_epreuves):
+            event_val = ep_clean.get("Event")
+            if (
+                isinstance(event_val, str)
+                and event_val.strip() in {"1 LCM", "1 SCM"}
+                and idx > 0
+            ):
+                prev_ep = cleaned_epreuves[idx - 1]
+                curr_pairs = _build_swimmer_pairs(ep_clean)
+                prev_pairs = _build_swimmer_pairs(prev_ep)
+                common_pairs = curr_pairs & prev_pairs
+                if len(common_pairs) >= 2:
+                    # On ignore cette épreuve "1 LCM/SCM" considérée comme doublon.
+                    continue
+
+            filtered_epreuves.append(ep_clean)
+
+        cleaned_epreuves = filtered_epreuves
+
     cleaned["epreuves"] = cleaned_epreuves
     return cleaned
 
@@ -998,7 +1095,8 @@ def clean_extranat_directory() -> None:
             print(f"  [WARN] {relative} ne contient pas un objet JSON racine, ignoré.")
             continue
 
-        cleaned = clean_extranat_competition(raw)
+        default_gender = infer_extranat_gender_from_filename(input_path)
+        cleaned = clean_extranat_competition(raw, default_gender=default_gender)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with output_path.open("w", encoding="utf-8") as f_out:
             json.dump(cleaned, f_out, ensure_ascii=False, indent=2)
