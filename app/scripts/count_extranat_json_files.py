@@ -1,16 +1,4 @@
-"""
-Pour chaque fichier JSON sous `app/data/extranat/competitions_per_type`,
-compte le nombre d'éléments dans le champ `results`.
-
-Affiche :
-- un bloc par sous-dossier direct de `competitions_per_type`
-- pour chaque fichier JSON, le nombre d'éléments dans `results`
-- un total global du nombre d'éléments `results` sur tous les fichiers
-
-À exécuter depuis la racine du projet :
-
-    python -m app.scripts.count_extranat_json_files
-"""
+"""Compte le nombre d'éléments dans le champ `results`."""
 
 import json
 import os
@@ -20,7 +8,6 @@ from pathlib import Path
 def count_results_in_file(json_path: Path) -> int:
     """
     Retourne un nombre d'éléments de résultats pour un fichier de compétition.
-
     Stratégie (dans l'ordre) :
     - si `results` est une liste, retourne len(results)
     - sinon si `results_count` est un entier, retourne cette valeur
@@ -58,12 +45,11 @@ def count_results_in_file(json_path: Path) -> int:
 
 
 def main() -> None:
-    # Le script est dans app/scripts, donc parent.parent == app
     base_dir = (
         Path(__file__)
         .resolve()
-        .parent  # scripts
-        .parent  # app
+        .parent  
+        .parent  
         / "data"
         / "extranat"
         / "competitions_per_type"

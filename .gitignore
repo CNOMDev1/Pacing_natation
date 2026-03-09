@@ -1,5 +1,9 @@
 # Python
 __pycache__/
+app/services/playwright_tmp_profile/
+app/scripts/playwright_tmp_profile/
+playwright_tmp_profile/
+Tour_list.txt
 
 # Données générées 
 app/data/omega/pdfs/
@@ -7,6 +11,9 @@ app/data/omega/pdfs_manifest.json
 app/data/extranat/
 app/data/fusion_usaswimming/
 app/data/usaswimming/
+app/data/usaswimming/merged_usaswimming.json
+app/data/cleaned_data/usaswimming/
+app/data/cleaned_data/extranat/
 
 # Fichiers locaux
 cookies_omegatiming.txt
@@ -20,3 +27,4 @@ venv/
 
 # OS
 .DS_Store
+
