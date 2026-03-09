@@ -106,6 +106,55 @@ def count_swimtime_usa_file(file_path: Path) -> Tuple[int, int]:
 
     return count_swimtime_in_obj(data)
 
+
+def count_swimtime_seconds_in_obj(obj: Any) -> Tuple[int, int]:
+    """
+    Retourne (nb_zero, nb_non_zero) pour la clé 'SwimTimeSeconds'
+    trouvée récursivement dans un objet JSON.
+    """
+    nb_zero = 0
+    nb_non_zero = 0
+
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key == "SwimTimeSeconds":
+                try:
+                    v = float(value)
+                except (TypeError, ValueError):
+                    v = None
+
+                if v is not None:
+                    if v == 0:
+                        nb_zero += 1
+                    else:
+                        nb_non_zero += 1
+
+            z, nz = count_swimtime_seconds_in_obj(value)
+            nb_zero += z
+            nb_non_zero += nz
+
+    elif isinstance(obj, list):
+        for item in obj:
+            z, nz = count_swimtime_seconds_in_obj(item)
+            nb_zero += z
+            nb_non_zero += nz
+
+    return nb_zero, nb_non_zero
+
+
+def count_swimtime_seconds_file(file_path: Path) -> Tuple[int, int]:
+    """
+    Compte les SwimTimeSeconds == 0 / != 0 dans un fichier JSON.
+    """
+    try:
+        with file_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"Impossible de lire/parcer le fichier {file_path} pour SwimTimeSeconds: {e}")
+        return 0, 0
+
+    return count_swimtime_seconds_in_obj(data)
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Compter les SwimTime vides / non vides "
@@ -161,6 +210,8 @@ def main() -> None:
 
     total_empty_global = 0
     total_non_empty_global = 0
+    total_seconds_zero_global = 0
+    total_seconds_non_zero_global = 0
 
     results = []
     extranat_empty_files: List[Tuple[Path, int, List[Tuple[int, str]]]] = []
@@ -172,9 +223,12 @@ def main() -> None:
 
         dir_empty = 0
         dir_non_empty = 0
+        dir_seconds_zero = 0
+        dir_seconds_non_zero = 0
 
         for path in extranat_dir.rglob("*.json"):
             file_empty, file_non_empty = count_swimtime_extranat_file(path)
+            file_seconds_zero, file_seconds_non_zero = count_swimtime_seconds_file(path)
 
             if file_empty > 0 or file_non_empty > 0:
                 print(
@@ -189,10 +243,14 @@ def main() -> None:
 
             dir_empty += file_empty
             dir_non_empty += file_non_empty
+            dir_seconds_zero += file_seconds_zero
+            dir_seconds_non_zero += file_seconds_non_zero
 
-        results.append(("Extranat", dir_empty, dir_non_empty))
+        results.append(("Extranat", dir_empty, dir_non_empty, dir_seconds_zero))
         total_empty_global += dir_empty
         total_non_empty_global += dir_non_empty
+        total_seconds_zero_global += dir_seconds_zero
+        total_seconds_non_zero_global += dir_seconds_non_zero
 
     else:
         print(f"Dossier Extranat introuvable: {extranat_dir}")
@@ -203,9 +261,12 @@ def main() -> None:
 
         dir_empty = 0
         dir_non_empty = 0
+        dir_seconds_zero = 0
+        dir_seconds_non_zero = 0
 
         for path in usaswimming_dir.rglob("*.json"):
             file_empty, file_non_empty = count_swimtime_usa_file(path)
+            file_seconds_zero, file_seconds_non_zero = count_swimtime_seconds_file(path)
 
             if file_empty > 0 or file_non_empty > 0:
                 print(
@@ -220,10 +281,14 @@ def main() -> None:
 
             dir_empty += file_empty
             dir_non_empty += file_non_empty
+            dir_seconds_zero += file_seconds_zero
+            dir_seconds_non_zero += file_seconds_non_zero
 
-        results.append(("USA Swimming", dir_empty, dir_non_empty))
+        results.append(("USA Swimming", dir_empty, dir_non_empty, dir_seconds_zero))
         total_empty_global += dir_empty
         total_non_empty_global += dir_non_empty
+        total_seconds_zero_global += dir_seconds_zero
+        total_seconds_non_zero_global += dir_seconds_non_zero
 
     else:
         print(f"Dossier USA Swimming introuvable: {usaswimming_dir}")
@@ -231,7 +296,7 @@ def main() -> None:
     #  RÉCAP 
     print("\n================ RÉCAPITULATIF ================")
 
-    for label, dir_empty, dir_non_empty in results:
+    for label, dir_empty, dir_non_empty, dir_seconds_zero in results:
         total = dir_empty + dir_non_empty
         percentage = (dir_empty / total * 100) if total > 0 else 0
 
@@ -240,6 +305,7 @@ def main() -> None:
             f"\n  ➤ {dir_empty} SwimTime vides"
             f"\n  ➤ {dir_non_empty} SwimTime non vides"
             f"\n  ➤ {percentage:.2f}% de SwimTime manquants"
+            f"\n  ➤ {dir_seconds_zero} SwimTimeSeconds == 0"
         )
 
     total_all = total_empty_global + total_non_empty_global
@@ -288,6 +354,7 @@ def main() -> None:
     print(f"{total_empty_global} SwimTime vides")
     print(f"{total_non_empty_global} SwimTime non vides")
     print(f"{global_percentage:.2f}% de SwimTime manquants")
+    print(f"{total_seconds_zero_global} SwimTimeSeconds == 0")
 
 
 if __name__ == "__main__":
