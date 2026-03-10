@@ -360,7 +360,8 @@ def format_seconds_to_extranat_time(seconds: Optional[float]) -> Optional[str]:
 def parse_event(raw_event: str) -> Tuple[Optional[int], Optional[str], Optional[str]]:
     """
     À partir d'un Event comme "1500 FR LCM" ou "100 BK SCM",
-    extrait (distance_en_m, stroke_normalisé, course_code).
+    extrait (distance_en_m, stroke_code, course_code).
+    Le stroke_code est directement la valeur présente dans Event (FR, BK, BR, FL, MD, IM, ...).
     """
     if not raw_event:
         return None, None, None
@@ -381,14 +382,15 @@ def parse_event(raw_event: str) -> Tuple[Optional[int], Optional[str], Optional[
     if tokens[-1] in COURSE_CODES:
         course = tokens[-1]
 
-    # Stroke = premier token connu dans STROKE_MAP après la distance
-    stroke_name: Optional[str] = None
+    # Stroke = premier code de nage reconnu après la distance (FR, BK, BR, FL, MD, IM, ...)
+    stroke_code: Optional[str] = None
+    STROKE_CODES = {"FR", "BK", "BR", "FL", "MD", "IM"}
     for t in tokens[1:]:
-        if t in STROKE_MAP:
-            stroke_name = STROKE_MAP[t]
+        if t in STROKE_CODES:
+            stroke_code = t
             break
 
-    return distance, stroke_name, course
+    return distance, stroke_code, course
 
 
 def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
@@ -586,11 +588,19 @@ def format_extranat_event_name(raw_name: str, pool_length: Optional[int]) -> str
     if not name:
         return name
 
-    # Distance = premier entier trouvé dans la chaîne
-    m_dist = re.search(r"(\d+)", name)
-    if not m_dist:
-        return name
-    distance = m_dist.group(1)
+    # Distance : gérer d'abord les relais de type "4x50", "4x100", etc.
+    # Exemple : "4x50 4 Nages" -> distance totale 200.
+    m_relay = re.search(r"(\d+)\s*[xX]\s*(\d+)", name)
+    if m_relay:
+        nb_legs = int(m_relay.group(1))
+        leg_dist = int(m_relay.group(2))
+        distance = str(nb_legs * leg_dist)
+    else:
+        # Sinon, on prend simplement le premier entier trouvé dans la chaîne
+        m_dist = re.search(r"(\d+)", name)
+        if not m_dist:
+            return name
+        distance = m_dist.group(1)
 
     # Normalisation simple des styles en français -> abréviations anglaises
     lowered = (
@@ -622,7 +632,7 @@ def format_extranat_event_name(raw_name: str, pool_length: Optional[int]) -> str
     elif "papillon" in lowered:
         stroke_code = "FL"
     elif "4 nages" in lowered or "quatre nages" in lowered:
-        stroke_code = "IM"
+        stroke_code = "MD"
 
     # Type de bassin 
     course_code: Optional[str] = None
@@ -752,16 +762,14 @@ def clean_extranat_competition(
                     epreuve_clean["Event"] = event_str
 
                     # Extraction Distance, Stroke, Course à partir de Event
-                    distance, stroke_name, course = parse_event(event_str)
+                    # Distance = premier nombre dans Event, ex. "100 FL SCM" -> 100
+                    distance_match = re.search(r"(\d+)", event_str)
+                    distance = int(distance_match.group(1)) if distance_match else None
 
-                    # Cas spécial relais "4x200" : Distance = 4 * 200 = 800...
-                    relay_match = re.search(r"(\d+)\s*x\s*(\d+)", raw_name.replace(" ", ""))
-                    if relay_match:
-                        legs = int(relay_match.group(1))
-                        leg_distance = int(relay_match.group(2))
-                        total_distance = legs * leg_distance
-                        epreuve_clean["Distance"] = total_distance
-                    elif distance is not None:
+                    # On continue d'utiliser parse_event pour Stroke et Course
+                    _parsed_distance, stroke_name, course = parse_event(event_str)
+
+                    if distance is not None:
                         epreuve_clean["Distance"] = distance
                     if stroke_name is not None:
                         epreuve_clean["Stroke"] = stroke_name
