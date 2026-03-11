@@ -963,12 +963,15 @@ def clean_extranat_competition(
                                 continue
                             split_clean: Dict[str, Any] = {}
                             for sk, sv in split.items():
-                                # Renommage de "distance" en "SplitDistance" pour plus de clarté
+                                # Renommage de "distance" en "split_distance" pour plus de clarté
                                 if sk == "distance":
                                     if isinstance(sv, str):
-                                        split_clean["SplitDistance"] = sv.strip()
+                                        split_clean["split_distance"] = sv.strip()
                                     else:
-                                        split_clean["SplitDistance"] = sv
+                                        split_clean["split_distance"] = sv
+                                    continue
+
+                                if sk in {"cumul", "split"}:
                                     continue
 
                                 if isinstance(sv, str):
@@ -981,11 +984,30 @@ def clean_extranat_competition(
                             split_seconds: Optional[float] = None
                             if isinstance(split_time_raw, str) and split_time_raw.strip():
                                 fixed_split_str = clean_extranat_split_time(split_time_raw)
-                                split_clean["split"] = fixed_split_str
+                                split_clean["split_time"] = fixed_split_str
                                 split_seconds = parse_extranat_time_to_seconds(
                                     fixed_split_str
                                 )
                                 split_clean["split_seconds"] = split_seconds
+
+                            # Vitesse sur le split (m/s) si possible
+                            if split_seconds is not None and split_seconds > 0:
+                                distance_raw = split_clean.get("split_distance")
+                                distance_val: Optional[float] = None
+                                if isinstance(distance_raw, (int, float)):
+                                    distance_val = float(distance_raw)
+                                elif isinstance(distance_raw, str):
+                                    m_dist = re.search(r"(\d+)", distance_raw)
+                                    if m_dist:
+                                        try:
+                                            distance_val = float(m_dist.group(1))
+                                        except ValueError:
+                                            distance_val = None
+
+                                if distance_val is not None:
+                                    split_clean["split_speed"] = round(
+                                        distance_val / split_seconds, 4
+                                    )
 
                             # Recalcul du cumul à partir des split_seconds successifs
                             if split_seconds is not None:
@@ -997,7 +1019,7 @@ def clean_extranat_competition(
                                     cumulative_seconds
                                 )
                                 if formatted_cumul is not None:
-                                    split_clean["cumul"] = formatted_cumul
+                                    split_clean["split_time_cumul"] = formatted_cumul
 
                             cleaned_splits.append(split_clean)
 
