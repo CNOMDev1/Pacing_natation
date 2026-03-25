@@ -14,6 +14,8 @@ app/data/usaswimming/
 app/data/usaswimming/merged_usaswimming.json
 app/data/cleaned_data/usaswimming/
 app/data/cleaned_data/extranat/
+app/data/usaswimming_2024_olympic_trials.json
+app/data/*
 
 # Fichiers locaux
 cookies_omegatiming.txt
