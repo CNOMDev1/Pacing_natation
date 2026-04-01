@@ -560,6 +560,19 @@ def clean_extranat_competition(
         else:
             cleaned[key] = value
 
+    # Extraction de l'année de SwimDate pour calculer l'âge à la performance.
+    # On utilise la règle demandée : Age_at_Performance = SwimDate_year - Year_of_birth.
+    swim_date_year: Optional[int] = None
+    swim_date_val = cleaned.get("SwimDate")
+    if isinstance(swim_date_val, str) and swim_date_val.strip():
+        # Format attendu après normalisation : "YYYY-MM-DD"
+        m = re.match(r"^(?P<year>\d{4})-", swim_date_val.strip())
+        if m:
+            try:
+                swim_date_year = int(m.group("year"))
+            except (TypeError, ValueError):
+                swim_date_year = None
+
     epreuves = data.get("epreuves")
     cleaned_epreuves: List[Dict[str, Any]] = []
 
@@ -761,6 +774,16 @@ def clean_extranat_competition(
                                 nageur_clean["Year_of_birth"] = None
                         elif "annee_naissance" in n:
                             nageur_clean["Year_of_birth"] = None
+
+                        # Age à la performance (basé sur l'année uniquement).
+                        yob_int_val = nageur_clean.get("Year_of_birth")
+                        if (
+                            swim_date_year is not None
+                            and isinstance(yob_int_val, int)
+                        ):
+                            nageur_clean["Age_at_Performance"] = swim_date_year - yob_int_val
+                        else:
+                            nageur_clean["Age_at_Performance"] = None
 
                         # Nationalité :
                         # - priorité au champ "nationalite" s'il existe

@@ -3,6 +3,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from collections import defaultdict
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "usaswimming"
 OUTPUT_DIR = Path(__file__).resolve().parents[1] / "data" / "cleaned_data" / "usaswimming"
@@ -108,11 +109,22 @@ def parse_swim_time_to_seconds(raw: str) -> float:
     Returns float("nan") if format is not recognized.
     """
     raw = raw.strip()
-    mm_ss = re.match(r"^(\d+):(\d{1,2}\.\d+)$", raw)
+    hh_mm_ss = re.match(r"^(\d+):(\d{1,2}):(\d{1,2}(?:\.\d+)?)$", raw)
+    if hh_mm_ss:
+        hours = int(hh_mm_ss.group(1))
+        minutes = int(hh_mm_ss.group(2))
+        seconds = float(hh_mm_ss.group(3))
+        if 0 <= minutes < 60 and 0 <= seconds < 60:
+            return hours * 3600 + minutes * 60 + seconds
+        return float("nan")
+
+    mm_ss = re.match(r"^(\d+):(\d{1,2}(?:\.\d+)?)$", raw)
     if mm_ss:
         minutes = int(mm_ss.group(1))
         seconds = float(mm_ss.group(2))
-        return minutes * 60 + seconds
+        if 0 <= seconds < 60:
+            return minutes * 60 + seconds
+        return float("nan")
 
     ss = re.match(r"^(\d+\.\d+)$", raw)
     if ss:
@@ -123,6 +135,33 @@ def parse_swim_time_to_seconds(raw: str) -> float:
         return float(plain.group(1))
 
     return float("nan")
+
+
+def sanitize_swim_time(raw: Any) -> str:
+    """
+    Keep only digits, ':' and '.' in SwimTime.
+    Also normalize duplicate separators.
+    """
+    if raw is None:
+        return ""
+
+    value = str(raw).strip()
+    if not value:
+        return ""
+
+    # Decimal comma -> decimal point.
+    value = value.replace(",", ".")
+
+    # Keep only allowed characters.
+    value = re.sub(r"[^0-9:.]", "", value)
+
+    # Remove repeated separators that can appear in noisy source values.
+    value = re.sub(r"\.{2,}", ".", value)
+    value = re.sub(r":{2,}", ":", value)
+
+    # Remove leading/trailing separators.
+    value = value.strip(":.")
+    return value
 
 
 def normalize_date(raw: str) -> str:
@@ -182,8 +221,25 @@ def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     meet = str(rec.get("Meet", "")).strip()
     swim_date = str(rec.get("SwimDate", "")).strip()
     swim_time_raw = rec.get("SwimTime", "")
-    swim_time = str(swim_time_raw).strip()
+    swim_time = sanitize_swim_time(swim_time_raw)
     swim_time_seconds = rec.get("SwimTimeSeconds")
+    session_raw = rec.get("Session")
+    agegroup_raw = rec.get("AgeGroup")
+    time_standard_raw = rec.get("TimeStandard")
+    rank_raw = rec.get("Rank", rec.get("Place"))
+
+    session = str(session_raw).strip() if session_raw is not None else None
+    age_group = str(agegroup_raw).strip() if agegroup_raw is not None else None
+    time_standard = str(time_standard_raw).strip() if time_standard_raw is not None else None
+
+    rank: Any = None
+    if rank_raw is not None:
+        rank_str = str(rank_raw).strip()
+        if rank_str and rank_str.upper().replace("\\", "") not in {"N/A", "NA", "NONE"}:
+            try:
+                rank = int(float(rank_str))
+            except ValueError:
+                rank = rank_raw
 
     base_name, inferred_year, inferred_nat = parse_name_year_nationality(name)
     if base_name:
@@ -211,7 +267,7 @@ def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     nat_value = nationality_raw or inferred_nat
     if isinstance(nat_value, str) and nat_value.strip():
         cleaned["Nationality"] = nat_value.strip().upper()
-    elif "Nationality" in rec:
+    else:
         cleaned["Nationality"] = None
 
     if federation:
@@ -236,6 +292,15 @@ def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
 
     if meet:
         cleaned["Meet"] = meet.strip()
+
+    if session:
+        cleaned["Session"] = session
+    if age_group:
+        cleaned["AgeGroup"] = age_group
+    if time_standard:
+        cleaned["TimeStandard"] = time_standard
+    if rank is not None:
+        cleaned["Rank"] = rank
 
     g = gender.lower()
     if g in {"f", "female", "femme", "girl", "women"}:
@@ -290,6 +355,18 @@ def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     return cleaned
 
 
+def _age_at_performance(swim_date_iso: Optional[str], year_of_birth: Any) -> Optional[int]:
+    if not swim_date_iso or year_of_birth is None:
+        return None
+    if not isinstance(year_of_birth, int):
+        return None
+    try:
+        swim_year = int(str(swim_date_iso).split("-")[0])
+    except Exception:
+        return None
+    return swim_year - year_of_birth
+
+
 def clean_file(input_path: Path, output_path: Path) -> None:
     with input_path.open("r", encoding="utf-8") as f:
         data = json.load(f)
@@ -297,27 +374,93 @@ def clean_file(input_path: Path, output_path: Path) -> None:
     if not isinstance(data, list):
         raise ValueError(f"Le fichier {input_path} ne contient pas une liste JSON.")
 
-    cleaned_records: List[Dict[str, Any]] = []
+    cleaned_performances: List[Dict[str, Any]] = []
     for rec in data:
-        if not isinstance(rec, dict):
-            continue
-        cleaned = clean_record(rec)
+        try:
+            cleaned = clean_record(rec)
+        except Exception:
+            cleaned = {"_raw": rec}
+        cleaned_performances.append(cleaned)
 
-        if not cleaned.get("Name") or not cleaned.get("Event") or not cleaned.get("SwimTimeSeconds"):
-            continue
+    if not cleaned_performances:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        competition = {"SwimDate": None, "Meet": None, "location": None, "Country": None, "epreuves": []}
+        with output_path.open("w", encoding="utf-8") as f:
+            json.dump(competition, f, ensure_ascii=False, indent=2)
+        return
 
-        cleaned_records.append(cleaned)
+    meet = cleaned_performances[0].get("Meet")
+    swim_date = cleaned_performances[0].get("SwimDate")
+    country = next((p.get("Country") for p in cleaned_performances if p.get("Country")), None)
+
+    # Group by (Event, Session) -> correspond au couple (Event + tour) côté Extranat.
+    grouped: dict[tuple[str, Optional[str]], list[Dict[str, Any]]] = defaultdict(list)
+    for p in cleaned_performances:
+        grouped[(p.get("Event"), p.get("Session"))].append(p)
+
+    epreuves: List[Dict[str, Any]] = []
+    for (event, session), perfs in grouped.items():
+        first = perfs[0]
+        epreuve = {
+            "Event": event,
+            "Distance": first.get("Distance"),
+            "Stroke": first.get("Stroke"),
+            "Course": first.get("Course"),
+            "PoolLength": first.get("PoolLength"),
+            # Mapping : côté USA, `Session` correspond au "tour" (Final / Prelim / Unknown, etc.)
+            "tour": session,
+            "performances": [],
+        }
+
+        def _rank_key(p: Dict[str, Any]) -> Any:
+            r = p.get("Rank")
+            if r is None:
+                return 10**12
+            return r
+
+        for perf in sorted(perfs, key=_rank_key):
+            swimmer = {
+                "Name": perf.get("Name"),
+                "Gender": perf.get("Gender"),
+                "Year_of_birth": perf.get("Year_of_birth"),
+                "Age_at_Performance": _age_at_performance(perf.get("SwimDate"), perf.get("Year_of_birth")),
+                "Nationality": perf.get("Nationality"),
+            }
+
+            epreuve["performances"].append(
+                {
+                    "Rank": perf.get("Rank"),
+                    "club": perf.get("Club"),
+                    "SwimTime": perf.get("SwimTime"),
+                    "SwimTimeSeconds": perf.get("SwimTimeSeconds"),
+                    "Status": perf.get("Status"),
+                    "Speed": perf.get("Speed"),
+                    "TimeStandard": perf.get("TimeStandard"),
+                    "AgeGroup": perf.get("AgeGroup"),
+                    "Session": perf.get("Session"),
+                    "swimmer": swimmer,
+                }
+            )
+
+        epreuves.append(epreuve)
+
+    competition = {
+        "SwimDate": swim_date,
+        "Meet": meet,
+        "location": None,
+        "Country": country,
+        "epreuves": epreuves,
+    }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as f:
-        json.dump(cleaned_records, f, ensure_ascii=False, indent=2)
+        json.dump(competition, f, ensure_ascii=False, indent=2)
 
 
 def clean_usaswimming_directory() -> None:
     """
-    Parcourt tous les fichiers JSON sous data/usaswimming et écrit les données
-    nettoyées dans data/cleaned_data/usaswimming en conservant
-    la même arborescence.
+    Parcourt tous les fichiers JSON sous `app/data/usaswimming` et écrit les données nettoyées
+    dans `app/data/cleaned_data/usaswimming` en conservant la même arborescence.
     """
     if not DATA_DIR.exists():
         raise FileNotFoundError(f"Dossier introuvable: {DATA_DIR}")

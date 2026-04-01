@@ -1,6 +1,6 @@
 """Modèles Pydantic pour les données générées par l'API USA Swimming"""
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field, RootModel
 
@@ -11,10 +11,15 @@ class NageurRecord(BaseModel):
     Name: Optional[str] = Field(None, description="Nom du nageur")
     Federation: Optional[str] = Field(None, description="Fédération / pays du nageur")
     Team: Optional[str] = Field(None, description="Club / équipe du nageur")
+    DateOfBirth: Optional[datetime] = Field(None, description="Date de naissance (si disponible)")
     Event: Optional[str] = Field(None, description="Code de l'épreuve (ex: 800 FR SCM, 50 FR LCM)")
     Gender: Optional[str] = Field(None, description="Catégorie (Male / Female)")
+    Session: Optional[str] = Field(None, description="Session (Prelim / TimedFinal / Final, etc.)")
     LSC: Optional[str] = Field(None, description="LSC (Local Swimming Committee)")
+    AgeGroup: Optional[str] = Field(None, description="Catégorie d'âge (AgeGroup1)")
     Meet: Optional[str] = Field(None, description="Nom de la compétition")
+    Place: Optional[Any] = Field(None, description="Place / finish position (si disponible)")
+    Rank: Optional[Any] = Field(None, description="Rang (normalisé à partir de Place)")
     SwimDate: Optional[datetime] = Field(None, description="Date de la nage")
     SwimTime: Optional[str] = Field(None, description="Temps formaté (ex: 9:41.49)")
     SwimTimeSeconds: Optional[float] = Field(None, description="Temps en secondes", ge=0)

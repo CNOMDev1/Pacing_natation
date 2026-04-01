@@ -97,7 +97,10 @@ def make_payload(offset, from_iso: str | None = None, to_iso: str | None = None,
             # on supprime donc temporairement la colonne Federation pour éviter les erreurs API.
             {"jaql": {"title": "Event", "dim": "[SwimEvent.EventCode]", "datatype": "text"}},
             {"jaql": {"title": "Gender", "dim": "[EventCompetitionCategory.TypeName]", "datatype": "text"}},
+            {"jaql": {"title": "Session", "dim": "[Session.SessionName]", "datatype": "text"}},
+            {"jaql": {"title": "AgeGroup", "dim": "[Age.AgeGroup1]", "datatype": "text"}},
             {"jaql": {"title": "Meet", "dim": "[Meet.MeetName]", "datatype": "text"}},
+            {"jaql": {"title": "TimeStandard", "dim": "[TimeStandard.TimeStandardName]", "datatype": "text"}},
             {
                 "jaql": {
                     "title": "SwimDate",
@@ -206,7 +209,12 @@ KEY_COLUMNS = [
     "Federation",
     "Event",
     "Gender",
+    "Session",
+    "AgeGroup",
     "Meet",
+    "TimeStandard",
+    "Place",
+    "Rank",
     "SwimDate",
     "SwimTimeSeconds",
 ]
@@ -534,6 +542,176 @@ def run_one_shot_full_download(from_year: int | None = None, to_year: int | None
         }
 
 
+def _fetch_single_calendar_month(
+    year: int, month: int, columns: list | None
+) -> tuple[list[dict], list | None]:
+    """Récupère toutes les lignes pour un mois calendaire (avec fallback demi-mois si besoin)."""
+    last_day = pd.Timestamp(year, month, 1).days_in_month
+    from_iso = f"{year}-{month:02d}-01T00:00:00"
+    to_iso = f"{year}-{month:02d}-{last_day:02d}T23:59:59"
+    all_records: list[dict] = []
+
+    rows, columns = _fetch_date_range(from_iso, to_iso, columns)
+    if rows:
+        all_records.extend(rows)
+    else:
+        mid_day = max(1, last_day // 2)
+        ranges = [
+            (f"{year}-{month:02d}-01T00:00:00", f"{year}-{month:02d}-{mid_day:02d}T23:59:59"),
+            (
+                f"{year}-{month:02d}-{mid_day+1:02d}T00:00:00",
+                f"{year}-{month:02d}-{last_day:02d}T23:59:59",
+            )
+            if mid_day + 1 <= last_day
+            else None,
+        ]
+        for r in ranges:
+            if r is None:
+                continue
+            rows_part, columns = _fetch_date_range(r[0], r[1], columns)
+            if rows_part:
+                all_records.extend(rows_part)
+
+    return (all_records, columns)
+
+
+def run_one_shot_month_download(year: int, month: int) -> dict:
+    """
+    Télécharge uniquement un mois (année + mois) et enregistre dans data/usaswimming/<year>/.
+
+    Sert à éviter SafeMode quand on veut un intervalle plus petit qu'une année.
+    """
+    try:
+        if month < 1 or month > 12:
+            return {
+                "success": False,
+                "http_status": 400,
+                "message": f"Mois invalide: {month}. Attendu 1-12.",
+                "count_results": 0,
+            }
+
+        last_day = pd.Timestamp(year, month, 1).days_in_month
+        from_iso = f"{year}-{month:02d}-01T00:00:00"
+        to_iso = f"{year}-{month:02d}-{last_day:02d}T23:59:59"
+
+        print(f"Téléchargement des données USA Swimming pour {from_iso} → {to_iso}")
+
+        columns: list | None = None
+        all_records, columns = _fetch_single_calendar_month(year, month, columns)
+
+        if not all_records:
+            return {
+                "success": False,
+                "http_status": 502,
+                "message": f"Aucune donnée récupérée pour {year}-{month:02d}.",
+                "count_results": 0,
+            }
+
+        df = pd.DataFrame(all_records)
+        if "SwimDate" in df.columns:
+            df["SwimDate"] = pd.to_datetime(df["SwimDate"], errors="coerce")
+            df = df.sort_values(by="SwimDate", ascending=False)
+
+        # Enregistre groupé par Meet (et par année via SwimDate)
+        save_data_by_competition(df, append=False)
+
+        return {
+            "success": True,
+            "http_status": 200,
+            "message": f"{len(df)} lignes récupérées pour {year}-{month:02d} et enregistrées.",
+            "count_results": int(len(df)),
+        }
+    except Exception as exc:
+        msg = f"Exception pendant le téléchargement mensuel USA Swimming : {exc}"
+        print(msg)
+        return {
+            "success": False,
+            "http_status": 500,
+            "message": msg,
+            "count_results": 0,
+        }
+
+
+def run_one_shot_month_range_download(
+    from_year: int, from_month: int, to_year: int, to_month: int
+) -> dict:
+    """
+    Télécharge de (from_year, from_month) à (to_year, to_month) inclus,
+    mois par mois (même stratégie SafeMode que le téléchargement mensuel).
+    """
+    try:
+        for m in (from_month, to_month):
+            if m < 1 or m > 12:
+                return {
+                    "success": False,
+                    "http_status": 400,
+                    "message": f"Mois invalide: {m}. Attendu 1-12.",
+                    "count_results": 0,
+                }
+        start = pd.Period(f"{from_year}-{from_month:02d}", freq="M")
+        end = pd.Period(f"{to_year}-{to_month:02d}", freq="M")
+        if start > end:
+            return {
+                "success": False,
+                "http_status": 400,
+                "message": (
+                    f"Date de début après la fin : {from_year}-{from_month:02d} > {to_year}-{to_month:02d}."
+                ),
+                "count_results": 0,
+            }
+
+        print(
+            f"Téléchargement USA Swimming du mois {from_year}-{from_month:02d} "
+            f"au mois {to_year}-{to_month:02d} (inclus)..."
+        )
+        all_records: list[dict] = []
+        columns: list | None = None
+        for period in pd.period_range(start, end, freq="M"):
+            y, mo = period.year, period.month
+            print(f"  {y}-{mo:02d}...", end=" ", flush=True)
+            chunk, columns = _fetch_single_calendar_month(y, mo, columns)
+            all_records.extend(chunk)
+            print(f"{len(chunk)} lignes")
+            time.sleep(DELAY_BETWEEN_REQUESTS_S)
+
+        if not all_records:
+            return {
+                "success": False,
+                "http_status": 502,
+                "message": (
+                    f"Aucune donnée pour la plage {from_year}-{from_month:02d} → "
+                    f"{to_year}-{to_month:02d}."
+                ),
+                "count_results": 0,
+            }
+
+        df = pd.DataFrame(all_records)
+        if "SwimDate" in df.columns:
+            df["SwimDate"] = pd.to_datetime(df["SwimDate"], errors="coerce")
+            df = df.sort_values(by="SwimDate", ascending=False)
+
+        save_data_by_competition(df, append=False)
+
+        return {
+            "success": True,
+            "http_status": 200,
+            "message": (
+                f"{len(df)} lignes pour {from_year}-{from_month:02d} → {to_year}-{to_month:02d} "
+                "enregistrées."
+            ),
+            "count_results": int(len(df)),
+        }
+    except Exception as exc:
+        msg = f"Exception pendant le téléchargement par plage de mois : {exc}"
+        print(msg)
+        return {
+            "success": False,
+            "http_status": 500,
+            "message": msg,
+            "count_results": 0,
+        }
+
+
 # Boucle de surveillance continue pour récupérer les nouvelles données (stockage JSON uniquement)
 def run_polling_loop():
     latest = _read_latest_swimdate()
@@ -755,25 +933,47 @@ if __name__ == "__main__":
         #   python3 usaswimming_service.py          -> toutes les années (comportement historique)
         #   python3 usaswimming_service.py 2002     -> uniquement l'année 2002
         #   python3 usaswimming_service.py 2000 2005 -> de 2000 à 2005 inclus
-        from_arg: int | None = None
-        to_arg: int | None = None
-        if len(sys.argv) >= 2:
+        #   python3 usaswimming_service.py 2024 01 -> uniquement janvier 2024
+        #   python3 usaswimming_service.py 2024 01 2024 05 -> janv. à mai 2024 inclus
+        if len(sys.argv) == 5:
             try:
-                from_arg = int(sys.argv[1])
+                y_start = int(sys.argv[1])
+                m_start = int(sys.argv[2])
+                y_end = int(sys.argv[3])
+                m_end = int(sys.argv[4])
             except ValueError:
-                print(f"Argument d'année invalide: {sys.argv[1]!r}. Ignoré.")
-                from_arg = None
-        if len(sys.argv) >= 3:
-            try:
-                to_arg = int(sys.argv[2])
-            except ValueError:
-                print(f"Second argument d'année invalide: {sys.argv[2]!r}. Ignoré.")
-                to_arg = from_arg
-        if from_arg is not None and to_arg is None:
-            to_arg = from_arg
-
-        if from_arg is not None and to_arg is not None:
-            print(f"Téléchargement des données USA Swimming pour {from_arg} → {to_arg}")
-            run_one_shot_full_download(from_arg, to_arg)
+                print(
+                    "Arguments invalides. Attendu : "
+                    "python3 usaswimming_service.py <année_début> <mois_début> <année_fin> <mois_fin> "
+                    "(mois 1-12)."
+                )
+                sys.exit(1)
+            print(run_one_shot_month_range_download(y_start, m_start, y_end, m_end))
         else:
-            run_one_shot_full_download()
+            from_arg: int | None = None
+            to_arg: int | None = None
+            if len(sys.argv) >= 2:
+                try:
+                    from_arg = int(sys.argv[1])
+                except ValueError:
+                    print(f"Argument d'année invalide: {sys.argv[1]!r}. Ignoré.")
+                    from_arg = None
+            if len(sys.argv) >= 3:
+                try:
+                    to_arg = int(sys.argv[2])
+                except ValueError:
+                    print(f"Second argument d'année invalide: {sys.argv[2]!r}. Ignoré.")
+                    to_arg = from_arg
+            if from_arg is not None and to_arg is None:
+                to_arg = from_arg
+
+            if from_arg is not None and to_arg is not None:
+                # Cas "AAAA MM" : on interprète le 2e argument comme un mois si 1..12
+                if 1 <= to_arg <= 12 and len(sys.argv) == 3:
+                    month_result = run_one_shot_month_download(from_arg, to_arg)
+                    print(month_result)
+                else:
+                    print(f"Téléchargement des données USA Swimming pour {from_arg} → {to_arg}")
+                    run_one_shot_full_download(from_arg, to_arg)
+            else:
+                run_one_shot_full_download()
