@@ -172,6 +172,30 @@ def normalize_date(raw: str) -> str:
     return raw
 
 
+def extract_competition_year_from_raw(data: Dict[str, Any]) -> Optional[int]:
+    """
+    Année civile de la compétition à partir du champ « date » des données brutes.
+    Utilise la même normalisation que pour SwimDate (indépendant de l’ordre des clés JSON).
+    """
+    for k, v in data.items():
+        if k.lower() != "date":
+            continue
+        if isinstance(v, str):
+            iso = normalize_date(v)
+        else:
+            iso = str(v).strip() if v is not None else ""
+        if not iso:
+            return None
+        m = re.match(r"^(\d{4})", iso.strip())
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                return None
+        return None
+    return None
+
+
 def normalize_extranat_round_date(raw: str) -> str:
     """Normalise une chaîne de type "SériesDimanche 4 Février 2024"
     vers une date ISO YYYY-MM-DD en extrayant le jour, le mois et l'année."""
@@ -560,21 +584,9 @@ def clean_extranat_competition(
         else:
             cleaned[key] = value
 
-    # Extraction de l'année de SwimDate pour calculer l'âge à la performance.
-    # On utilise la règle demandée : Age_at_Performance = SwimDate_year - Year_of_birth.
-    swim_date_year: Optional[int] = None
-    swim_date_val = cleaned.get("SwimDate")
-    if isinstance(swim_date_val, str) and swim_date_val.strip():
-        # Format attendu après normalisation : "YYYY-MM-DD"
-        m = re.match(r"^(?P<year>\d{4})-", swim_date_val.strip())
-        if m:
-            try:
-                swim_date_year = int(m.group("year"))
-            except (TypeError, ValueError):
-                swim_date_year = None
-
     epreuves = data.get("epreuves")
     cleaned_epreuves: List[Dict[str, Any]] = []
+    competition_year = extract_competition_year_from_raw(data)
 
     if isinstance(epreuves, list):
         for epreuve in epreuves:
@@ -775,15 +787,16 @@ def clean_extranat_competition(
                         elif "annee_naissance" in n:
                             nageur_clean["Year_of_birth"] = None
 
-                        # Age à la performance (basé sur l'année uniquement).
-                        yob_int_val = nageur_clean.get("Year_of_birth")
-                        if (
-                            swim_date_year is not None
-                            and isinstance(yob_int_val, int)
-                        ):
-                            nageur_clean["Age_at_Performance"] = swim_date_year - yob_int_val
-                        else:
-                            nageur_clean["Age_at_Performance"] = None
+                        # Âge tel que fourni par Extranat (champ source "age").
+                        if "age" in n:
+                            age_src = n.get("age")
+                            if age_src is not None:
+                                try:
+                                    nageur_clean["Age"] = int(age_src)
+                                except (TypeError, ValueError):
+                                    nageur_clean["Age"] = age_src
+                            else:
+                                nageur_clean["Age"] = None
 
                         # Nationalité :
                         # - priorité au champ "nationalite" s'il existe
@@ -793,6 +806,15 @@ def clean_extranat_competition(
                             nageur_clean["Nationality"] = nat_value.strip().upper()
                         elif "nationalite" in n:
                             nageur_clean["Nationality"] = None
+
+                        # Âge cohérent avec l’année de SwimDate et Year_of_birth
+                        if competition_year is not None:
+                            yob_for_age = nageur_clean.get("Year_of_birth")
+                            if isinstance(yob_for_age, int):
+                                expected_age = competition_year - yob_for_age
+                                current_age = nageur_clean.get("Age")
+                                if not isinstance(current_age, int) or current_age != expected_age:
+                                    nageur_clean["Age"] = expected_age
 
                         swimmers.append(nageur_clean)
 
