@@ -172,6 +172,22 @@ def normalize_date(raw: str) -> str:
     return raw
 
 
+def swim_year_from_swim_date(swim_date: Any) -> Optional[int]:
+    """Année civile extraite de SwimDate (format ISO YYYY-MM-DD après normalisation)."""
+    if swim_date is None:
+        return None
+    s = str(swim_date).strip()
+    if not s:
+        return None
+    m = re.match(r"^(\d{4})", s)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
+
+
 def extract_competition_year_from_raw(data: Dict[str, Any]) -> Optional[int]:
     """
     Année civile de la compétition à partir du champ « date » des données brutes.
@@ -577,6 +593,7 @@ def clean_extranat_competition(
                 cleaned["SwimDate"] = normalize_date(value)
             else:
                 cleaned["SwimDate"] = str(value)
+            cleaned["SwimYear"] = swim_year_from_swim_date(cleaned["SwimDate"])
             continue
 
         if isinstance(value, str):
@@ -862,7 +879,7 @@ def clean_extranat_competition(
                             # Vitesse sur le split (m/s) : 50 m / durée du segment en secondes
                             if split_seconds is not None and split_seconds > 0:
                                 split_clean["split_speed"] = round(
-                                    50.0 / split_seconds, 4
+                                    50.0 / split_seconds, 3
                                 )
 
                             # Recalcul du cumul à partir des split_seconds successifs
