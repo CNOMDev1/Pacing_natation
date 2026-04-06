@@ -859,24 +859,11 @@ def clean_extranat_competition(
                                 )
                                 split_clean["split_seconds"] = split_seconds
 
-                            # Vitesse sur le split (m/s) si possible
+                            # Vitesse sur le split (m/s) : 50 m / durée du segment en secondes
                             if split_seconds is not None and split_seconds > 0:
-                                distance_raw = split_clean.get("split_distance")
-                                distance_val: Optional[float] = None
-                                if isinstance(distance_raw, (int, float)):
-                                    distance_val = float(distance_raw)
-                                elif isinstance(distance_raw, str):
-                                    m_dist = re.search(r"(\d+)", distance_raw)
-                                    if m_dist:
-                                        try:
-                                            distance_val = float(m_dist.group(1))
-                                        except ValueError:
-                                            distance_val = None
-
-                                if distance_val is not None:
-                                    split_clean["split_speed"] = round(
-                                        distance_val / split_seconds, 4
-                                    )
+                                split_clean["split_speed"] = round(
+                                    50.0 / split_seconds, 4
+                                )
 
                             # Recalcul du cumul à partir des split_seconds successifs
                             if split_seconds is not None:
