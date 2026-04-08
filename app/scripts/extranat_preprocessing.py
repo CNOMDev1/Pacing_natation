@@ -540,6 +540,7 @@ def clean_extranat_competition(
     """
     cleaned: Dict[str, Any] = {}
     pool_length: Optional[int] = None
+    current_year = datetime.now().year
 
     for key, value in data.items():
         if key in {"epreuves", "original_title", "level"}:
@@ -898,6 +899,30 @@ def clean_extranat_competition(
 
                     if cleaned_splits:
                         perf_clean["splits"] = cleaned_splits
+
+                    # Supprime les performances avec Year_of_birth invalide
+                    # (absent/non entier) ou supérieur à l'année actuelle.
+                    swimmers_obj = perf_clean.get("swimmer")
+                    if isinstance(swimmers_obj, dict):
+                        swimmers_to_check = [swimmers_obj]
+                    elif isinstance(swimmers_obj, list):
+                        swimmers_to_check = [s for s in swimmers_obj if isinstance(s, dict)]
+                    else:
+                        swimmers_to_check = []
+
+                    invalid_yob = False
+                    if swimmers_to_check:
+                        for swimmer_obj in swimmers_to_check:
+                            yob_candidate = swimmer_obj.get("Year_of_birth")
+                            if not isinstance(yob_candidate, int):
+                                invalid_yob = True
+                                break
+                            if yob_candidate <= 0 or yob_candidate > current_year:
+                                invalid_yob = True
+                                break
+
+                    if invalid_yob:
+                        continue
 
                     cleaned_perfs.append(perf_clean)
 
