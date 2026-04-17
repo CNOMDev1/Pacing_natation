@@ -34,6 +34,10 @@ STROKE_MAP: Dict[str, str] = {
 
 COURSE_CODES = {"LCM", "SCM", "SCY"}
 
+# Intervalle acceptable pour split_seconds (secondes par segment de 50 m typiquement).
+SPLIT_SECONDS_MIN = 20.0
+SPLIT_SECONDS_MAX = 120.0
+
 
 def compute_status_from_swim_time(swim_time: Any) -> str:
     """Détermine le statut à partir de la valeur de SwimTime."""
@@ -514,6 +518,31 @@ def format_extranat_event_name(raw_name: str, pool_length: Optional[int]) -> str
     return name
 
 
+def performance_splits_seconds_in_range(perf_clean: Dict[str, Any]) -> bool:
+    """
+    True si aucun split n'a de split_seconds numérique hors [SPLIT_SECONDS_MIN, SPLIT_SECONDS_MAX].
+    Les splits sans split_seconds (None) ou non numériques sont ignorés pour ce filtre.
+    """
+    splits = perf_clean.get("splits")
+    if not isinstance(splits, list):
+        return True
+    for sp in splits:
+        if not isinstance(sp, dict):
+            continue
+        ss = sp.get("split_seconds")
+        if ss is None:
+            continue
+        try:
+            v = float(ss)
+        except (TypeError, ValueError):
+            continue
+        if v != v:  # NaN
+            continue
+        if v < SPLIT_SECONDS_MIN or v > SPLIT_SECONDS_MAX:
+            return False
+    return True
+
+
 def infer_extranat_gender_from_filename(path: Path) -> Optional[str]:
     """
     Déduit un genre par défaut à partir du nom de fichier Extranat.
@@ -922,6 +951,9 @@ def clean_extranat_competition(
                                 break
 
                     if invalid_yob:
+                        continue
+
+                    if not performance_splits_seconds_in_range(perf_clean):
                         continue
 
                     cleaned_perfs.append(perf_clean)

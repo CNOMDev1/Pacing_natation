@@ -22,6 +22,7 @@ cookies_omegatiming.txt
 .env
 bearer_token.txt
 state.json
+app/dashboards/desktop_app.py
 
 # Environnement virtuel
 .venv/
