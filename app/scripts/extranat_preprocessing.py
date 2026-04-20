@@ -4,9 +4,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "usaswimming"
-OUTPUT_DIR = Path(__file__).resolve().parents[1] / "data" / "cleaned_data" / "usaswimming"
-
 # Dossiers pour Extranat
 EXTRANAT_BASE_DIR = (
     Path(__file__).resolve().parents[1]
@@ -36,6 +33,10 @@ STROKE_MAP: Dict[str, str] = {
 }
 
 COURSE_CODES = {"LCM", "SCM", "SCY"}
+
+# Intervalle acceptable pour split_seconds (secondes par segment de 50 m typiquement).
+SPLIT_SECONDS_MIN = 20.0
+SPLIT_SECONDS_MAX = 120.0
 
 
 def compute_status_from_swim_time(swim_time: Any) -> str:
@@ -173,6 +174,46 @@ def normalize_date(raw: str) -> str:
             pass
 
     return raw
+
+
+def swim_year_from_swim_date(swim_date: Any) -> Optional[int]:
+    """Année civile extraite de SwimDate (format ISO YYYY-MM-DD après normalisation)."""
+    if swim_date is None:
+        return None
+    s = str(swim_date).strip()
+    if not s:
+        return None
+    m = re.match(r"^(\d{4})", s)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
+
+
+def extract_competition_year_from_raw(data: Dict[str, Any]) -> Optional[int]:
+    """
+    Année civile de la compétition à partir du champ « date » des données brutes.
+    Utilise la même normalisation que pour SwimDate (indépendant de l’ordre des clés JSON).
+    """
+    for k, v in data.items():
+        if k.lower() != "date":
+            continue
+        if isinstance(v, str):
+            iso = normalize_date(v)
+        else:
+            iso = str(v).strip() if v is not None else ""
+        if not iso:
+            return None
+        m = re.match(r"^(\d{4})", iso.strip())
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                return None
+        return None
+    return None
 
 
 def normalize_extranat_round_date(raw: str) -> str:
@@ -360,7 +401,8 @@ def format_seconds_to_extranat_time(seconds: Optional[float]) -> Optional[str]:
 def parse_event(raw_event: str) -> Tuple[Optional[int], Optional[str], Optional[str]]:
     """
     À partir d'un Event comme "1500 FR LCM" ou "100 BK SCM",
-    extrait (distance_en_m, stroke_normalisé, course_code).
+    extrait (distance_en_m, stroke_code, course_code).
+    Le stroke_code est directement la valeur présente dans Event (FR, BK, BR, FL, MD, IM, ...).
     """
     if not raw_event:
         return None, None, None
@@ -381,188 +423,16 @@ def parse_event(raw_event: str) -> Tuple[Optional[int], Optional[str], Optional[
     if tokens[-1] in COURSE_CODES:
         course = tokens[-1]
 
-    # Stroke = premier token connu dans STROKE_MAP après la distance
-    stroke_name: Optional[str] = None
+    # Stroke = premier code de nage reconnu après la distance (FR, BK, BR, FL, MD, IM, ...)
+    stroke_code: Optional[str] = None
+    STROKE_CODES = {"FR", "BK", "BR", "FL", "MD", "IM"}
     for t in tokens[1:]:
-        if t in STROKE_MAP:
-            stroke_name = STROKE_MAP[t]
+        if t in STROKE_CODES:
+            stroke_code = t
             break
 
-    return distance, stroke_name, course
+    return distance, stroke_code, course
 
-
-def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Nettoie un enregistrement de nage :
-    - Trim des strings
-    - Normalisation du nom, fédération, épreuve, sexe
-    - Cohérence SwimTime / SwimTimeSeconds
-    - Normalisation de SwimDate
-    """
-    cleaned: Dict[str, Any] = {}
-
-    name = str(rec.get("Name", "")).strip()
-    year_of_birth_raw = rec.get("Year_of_birth")
-    nationality_raw = rec.get("Nationality")
-    federation = str(rec.get("Federation", "")).strip()
-    event = str(rec.get("Event", "")).strip()
-    gender = str(rec.get("Gender", "")).strip()
-    meet = str(rec.get("Meet", "")).strip()
-    swim_date = str(rec.get("SwimDate", "")).strip()
-    swim_time_raw = rec.get("SwimTime", "")
-    swim_time = str(swim_time_raw).strip()
-    swim_time_seconds = rec.get("SwimTimeSeconds")
-
-    base_name, inferred_year, inferred_nat = parse_name_year_nationality(name)
-    if base_name:
-        name = base_name
-
-    if name:
-        cleaned["Name"] = name.title()
-
-    yob_value = year_of_birth_raw
-    if yob_value is None or (isinstance(yob_value, str) and not yob_value.strip()):
-        yob_value = inferred_year
-
-    if yob_value is not None:
-        try:
-            yob_int = int(yob_value)
-        except (TypeError, ValueError):
-            yob_int = None
-        if yob_int is not None:
-            cleaned["Year_of_birth"] = yob_int
-        elif "Year_of_birth" in rec:
-            cleaned["Year_of_birth"] = None
-    elif "Year_of_birth" in rec:
-        cleaned["Year_of_birth"] = None
-
-    # Nationality : priorité à la valeur déjà présente, sinon on utilise celle extraite du Name
-    nat_value = nationality_raw or inferred_nat
-    if isinstance(nat_value, str) and nat_value.strip():
-        cleaned["Nationality"] = nat_value.strip().upper()
-    elif "Nationality" in rec:
-        cleaned["Nationality"] = None
-
-    if federation:
-        cleaned["Country"] = normalize_country(federation)
-    if event:
-        norm_event = event.upper()
-        cleaned["Event"] = norm_event
-
-        distance, stroke_name, course = parse_event(norm_event)
-        if distance is not None:
-            cleaned["Distance"] = distance
-        if stroke_name is not None:
-            cleaned["Stroke"] = stroke_name
-        if course is not None:
-            cleaned["Course"] = course
-            if course == "SCM":
-                cleaned["PoolLength"] = 25
-            elif course == "LCM":
-                cleaned["PoolLength"] = 50
-            elif course == "SCY":
-                cleaned["PoolLength"] = 22.86 
-    if meet:
-        cleaned["Meet"] = meet.strip()
-
-    # Normalisation du genre
-    g = gender.lower()
-    if g in {"f", "female", "femme", "girl", "women"}:
-        cleaned["Gender"] = "F"
-    elif g in {"m", "male", "homme", "boy", "men"}:
-        cleaned["Gender"] = "M"
-    elif gender:
-        cleaned["Gender"] = gender
-
-    if swim_date:
-        cleaned["SwimDate"] = normalize_date(swim_date)
-
-    # Statut d'abord pour SwimTime
-    status = compute_status_from_swim_time(swim_time_raw)
-
-    if status == "OK" and swim_time:
-        cleaned["SwimTime"] = swim_time
-        computed = parse_swim_time_to_seconds(swim_time)
-    else:
-        # Cas DNS / DSQ / DNF / vide -> SwimTime normalisé à "NaN"
-        cleaned["SwimTime"] = "NaN"
-        computed = float("nan")
-
-    if status == "OK":
-        if swim_time_seconds is not None:
-            try:
-                original_seconds = float(swim_time_seconds)
-            except (TypeError, ValueError):
-                original_seconds = float("nan")
-        else:
-            original_seconds = float("nan")
-
-        chosen_seconds = original_seconds
-        if not (isinstance(original_seconds, float) and not (original_seconds != original_seconds)):
-            chosen_seconds = original_seconds
-        elif not (isinstance(computed, float) and computed != computed):
-            chosen_seconds = computed
-
-        if isinstance(chosen_seconds, float) and not (chosen_seconds != chosen_seconds):
-            cleaned["SwimTimeSeconds"] = round(chosen_seconds, 2)
-    else:
-        # Cas DSQ / DNS / DNF / vide -> secondes null 
-        cleaned["SwimTimeSeconds"] = None
-
-    cleaned["Status"] = status
-
-    # Vitesse en m/s si Distance et SwimTimeSeconds sont disponibles et cohérents
-    distance_val = cleaned.get("Distance")
-    time_seconds_val = cleaned.get("SwimTimeSeconds")
-    if isinstance(distance_val, (int, float)) and isinstance(time_seconds_val, (int, float)) and time_seconds_val > 0:
-        cleaned["Speed"] = round(distance_val / time_seconds_val, 4)
-
-    return cleaned
-
-
-def clean_file(input_path: Path, output_path: Path) -> None:
-    with input_path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    if not isinstance(data, list):
-        raise ValueError(f"Le fichier {input_path} ne contient pas une liste JSON.")
-
-    cleaned_records: List[Dict[str, Any]] = []
-    for rec in data:
-        if not isinstance(rec, dict):
-            continue
-        cleaned = clean_record(rec)
-
-        if not cleaned.get("Name") or not cleaned.get("Event") or not cleaned.get("SwimTimeSeconds"):
-            continue
-
-        cleaned_records.append(cleaned)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as f:
-        json.dump(cleaned_records, f, ensure_ascii=False, indent=2)
-
-
-def clean_usaswimming_directory() -> None:
-    """
-    Parcourt tous les fichiers JSON sous data/usaswimming et écrit les données
-    nettoyées dans data/cleaned_data/usaswimming en conservant
-    la même arborescence (donc groupées par années).
-    """
-    if not DATA_DIR.exists():
-        raise FileNotFoundError(f"Dossier introuvable: {DATA_DIR}")
-
-    # Parcourt récursivement tous les fichiers JSON
-    json_files = sorted(DATA_DIR.rglob("*.json"))
-    print(f"{len(json_files)} fichiers trouvés dans {DATA_DIR} (tous sous-dossiers confondus)")
-
-    for idx, input_path in enumerate(json_files, start=1):
-        relative = input_path.relative_to(DATA_DIR)
-        output_path = OUTPUT_DIR / relative
-        print(f"[{idx}/{len(json_files)}] Nettoyage de {relative} -> {output_path}")
-        clean_file(input_path, output_path)
-
-    print(f"Nettoyage terminé. Fichiers écrits dans {OUTPUT_DIR}")
 
 #  Nettoyage EXTRANAT
 
@@ -586,11 +456,19 @@ def format_extranat_event_name(raw_name: str, pool_length: Optional[int]) -> str
     if not name:
         return name
 
-    # Distance = premier entier trouvé dans la chaîne
-    m_dist = re.search(r"(\d+)", name)
-    if not m_dist:
-        return name
-    distance = m_dist.group(1)
+    # Distance : gérer d'abord les relais de type "4x50", "4x100", etc.
+    # Exemple : "4x50 4 Nages" -> distance totale 200.
+    m_relay = re.search(r"(\d+)\s*[xX]\s*(\d+)", name)
+    if m_relay:
+        nb_legs = int(m_relay.group(1))
+        leg_dist = int(m_relay.group(2))
+        distance = str(nb_legs * leg_dist)
+    else:
+        # Sinon, on prend simplement le premier entier trouvé dans la chaîne
+        m_dist = re.search(r"(\d+)", name)
+        if not m_dist:
+            return name
+        distance = m_dist.group(1)
 
     # Normalisation simple des styles en français -> abréviations anglaises
     lowered = (
@@ -622,7 +500,7 @@ def format_extranat_event_name(raw_name: str, pool_length: Optional[int]) -> str
     elif "papillon" in lowered:
         stroke_code = "FL"
     elif "4 nages" in lowered or "quatre nages" in lowered:
-        stroke_code = "IM"
+        stroke_code = "MD"
 
     # Type de bassin 
     course_code: Optional[str] = None
@@ -638,6 +516,31 @@ def format_extranat_event_name(raw_name: str, pool_length: Optional[int]) -> str
     if course_code:
         return f"{distance} {course_code}"
     return name
+
+
+def performance_splits_seconds_in_range(perf_clean: Dict[str, Any]) -> bool:
+    """
+    True si aucun split n'a de split_seconds numérique hors [SPLIT_SECONDS_MIN, SPLIT_SECONDS_MAX].
+    Les splits sans split_seconds (None) ou non numériques sont ignorés pour ce filtre.
+    """
+    splits = perf_clean.get("splits")
+    if not isinstance(splits, list):
+        return True
+    for sp in splits:
+        if not isinstance(sp, dict):
+            continue
+        ss = sp.get("split_seconds")
+        if ss is None:
+            continue
+        try:
+            v = float(ss)
+        except (TypeError, ValueError):
+            continue
+        if v != v:  # NaN
+            continue
+        if v < SPLIT_SECONDS_MIN or v > SPLIT_SECONDS_MAX:
+            return False
+    return True
 
 
 def infer_extranat_gender_from_filename(path: Path) -> Optional[str]:
@@ -666,6 +569,7 @@ def clean_extranat_competition(
     """
     cleaned: Dict[str, Any] = {}
     pool_length: Optional[int] = None
+    current_year = datetime.now().year
 
     for key, value in data.items():
         if key in {"epreuves", "original_title", "level"}:
@@ -719,6 +623,7 @@ def clean_extranat_competition(
                 cleaned["SwimDate"] = normalize_date(value)
             else:
                 cleaned["SwimDate"] = str(value)
+            cleaned["SwimYear"] = swim_year_from_swim_date(cleaned["SwimDate"])
             continue
 
         if isinstance(value, str):
@@ -728,6 +633,7 @@ def clean_extranat_competition(
 
     epreuves = data.get("epreuves")
     cleaned_epreuves: List[Dict[str, Any]] = []
+    competition_year = extract_competition_year_from_raw(data)
 
     if isinstance(epreuves, list):
         for epreuve in epreuves:
@@ -752,16 +658,14 @@ def clean_extranat_competition(
                     epreuve_clean["Event"] = event_str
 
                     # Extraction Distance, Stroke, Course à partir de Event
-                    distance, stroke_name, course = parse_event(event_str)
+                    # Distance = premier nombre dans Event, ex. "100 FL SCM" -> 100
+                    distance_match = re.search(r"(\d+)", event_str)
+                    distance = int(distance_match.group(1)) if distance_match else None
 
-                    # Cas spécial relais "4x200" : Distance = 4 * 200 = 800...
-                    relay_match = re.search(r"(\d+)\s*x\s*(\d+)", raw_name.replace(" ", ""))
-                    if relay_match:
-                        legs = int(relay_match.group(1))
-                        leg_distance = int(relay_match.group(2))
-                        total_distance = legs * leg_distance
-                        epreuve_clean["Distance"] = total_distance
-                    elif distance is not None:
+                    # On continue d'utiliser parse_event pour Stroke et Course
+                    _parsed_distance, stroke_name, course = parse_event(event_str)
+
+                    if distance is not None:
                         epreuve_clean["Distance"] = distance
                     if stroke_name is not None:
                         epreuve_clean["Stroke"] = stroke_name
@@ -930,6 +834,17 @@ def clean_extranat_competition(
                         elif "annee_naissance" in n:
                             nageur_clean["Year_of_birth"] = None
 
+                        # Âge tel que fourni par Extranat (champ source "age").
+                        if "age" in n:
+                            age_src = n.get("age")
+                            if age_src is not None:
+                                try:
+                                    nageur_clean["Age"] = int(age_src)
+                                except (TypeError, ValueError):
+                                    nageur_clean["Age"] = age_src
+                            else:
+                                nageur_clean["Age"] = None
+
                         # Nationalité :
                         # - priorité au champ "nationalite" s'il existe
                         # - sinon on utilise celle extraite du nom
@@ -938,6 +853,15 @@ def clean_extranat_competition(
                             nageur_clean["Nationality"] = nat_value.strip().upper()
                         elif "nationalite" in n:
                             nageur_clean["Nationality"] = None
+
+                        # Âge cohérent avec l’année de SwimDate et Year_of_birth
+                        if competition_year is not None:
+                            yob_for_age = nageur_clean.get("Year_of_birth")
+                            if isinstance(yob_for_age, int):
+                                expected_age = competition_year - yob_for_age
+                                current_age = nageur_clean.get("Age")
+                                if not isinstance(current_age, int) or current_age != expected_age:
+                                    nageur_clean["Age"] = expected_age
 
                         swimmers.append(nageur_clean)
 
@@ -955,12 +879,15 @@ def clean_extranat_competition(
                                 continue
                             split_clean: Dict[str, Any] = {}
                             for sk, sv in split.items():
-                                # Renommage de "distance" en "SplitDistance" pour plus de clarté
+                                # Renommage de "distance" en "split_distance" pour plus de clarté
                                 if sk == "distance":
                                     if isinstance(sv, str):
-                                        split_clean["SplitDistance"] = sv.strip()
+                                        split_clean["split_distance"] = sv.strip()
                                     else:
-                                        split_clean["SplitDistance"] = sv
+                                        split_clean["split_distance"] = sv
+                                    continue
+
+                                if sk in {"cumul", "split"}:
                                     continue
 
                                 if isinstance(sv, str):
@@ -973,11 +900,17 @@ def clean_extranat_competition(
                             split_seconds: Optional[float] = None
                             if isinstance(split_time_raw, str) and split_time_raw.strip():
                                 fixed_split_str = clean_extranat_split_time(split_time_raw)
-                                split_clean["split"] = fixed_split_str
+                                split_clean["split_time"] = fixed_split_str
                                 split_seconds = parse_extranat_time_to_seconds(
                                     fixed_split_str
                                 )
                                 split_clean["split_seconds"] = split_seconds
+
+                            # Vitesse sur le split (m/s) : 50 m / durée du segment en secondes
+                            if split_seconds is not None and split_seconds > 0:
+                                split_clean["split_speed"] = round(
+                                    50.0 / split_seconds, 3
+                                )
 
                             # Recalcul du cumul à partir des split_seconds successifs
                             if split_seconds is not None:
@@ -989,12 +922,39 @@ def clean_extranat_competition(
                                     cumulative_seconds
                                 )
                                 if formatted_cumul is not None:
-                                    split_clean["cumul"] = formatted_cumul
+                                    split_clean["split_time_cumul"] = formatted_cumul
 
                             cleaned_splits.append(split_clean)
 
                     if cleaned_splits:
                         perf_clean["splits"] = cleaned_splits
+
+                    # Supprime les performances avec Year_of_birth invalide
+                    # (absent/non entier) ou supérieur à l'année actuelle.
+                    swimmers_obj = perf_clean.get("swimmer")
+                    if isinstance(swimmers_obj, dict):
+                        swimmers_to_check = [swimmers_obj]
+                    elif isinstance(swimmers_obj, list):
+                        swimmers_to_check = [s for s in swimmers_obj if isinstance(s, dict)]
+                    else:
+                        swimmers_to_check = []
+
+                    invalid_yob = False
+                    if swimmers_to_check:
+                        for swimmer_obj in swimmers_to_check:
+                            yob_candidate = swimmer_obj.get("Year_of_birth")
+                            if not isinstance(yob_candidate, int):
+                                invalid_yob = True
+                                break
+                            if yob_candidate <= 0 or yob_candidate > current_year:
+                                invalid_yob = True
+                                break
+
+                    if invalid_yob:
+                        continue
+
+                    if not performance_splits_seconds_in_range(perf_clean):
+                        continue
 
                     cleaned_perfs.append(perf_clean)
 
@@ -1105,5 +1065,4 @@ def clean_extranat_directory() -> None:
 
 
 if __name__ == "__main__":
-    clean_usaswimming_directory()
     clean_extranat_directory()
