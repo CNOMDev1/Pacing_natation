@@ -31,7 +31,7 @@ GRAPH_CATEGORIES: Dict[str, List[str]] = {
         "Histogramme cumulatif",
     ],
     "Effectifs et répartition par sexe": [
-        "Nombre de performances par épreuve (LCM)",
+        "Nombre de performances par épreuve",
         "Nombre de performances par épreuve (LCM + SCM)",
         "Comptage par sexe (global)",
         "Camembert par sexe (global)",
@@ -484,7 +484,7 @@ def _build_scope_and_widgets_data(
         "Max Speed per Split Distance and Stroke",
         "Heatmap vitesse moyenne (distance x nage)",
     }
-    pool_only_graphs = {"Nombre de performances par épreuve (LCM)"}
+    pool_only_graphs = {"Nombre de performances par épreuve"}
     no_stroke_graphs = {"Distribution des temps par type de nage (boxplot)"}
 
     if selected_graph in no_filter_graphs:
@@ -933,6 +933,9 @@ class PacingDesktopApp:
         self.selected_heatmap_swimmer: Optional[str] = None
         self.selected_corridor_swimmer_name: Optional[str] = None
         self.selected_corridor_swimmer_yob: Optional[int] = None
+        self.selected_pacing_swimmers: List[str] = []
+        self.selected_chronos_sample_size: int = 5000
+        self._last_corridor_filter: Optional[Tuple[Optional[str], Optional[int], Optional[str]]] = None
 
         # Widgets Flet
         self.category_dd: ft.Dropdown
@@ -942,6 +945,11 @@ class PacingDesktopApp:
         self.pool_dd: ft.Dropdown
         self.heatmap_swimmer_dd: ft.Dropdown
         self.corridor_swimmer_dd: ft.Dropdown
+        self.pacing_swimmer_dd_1: ft.Dropdown
+        self.pacing_swimmer_dd_2: ft.Dropdown
+        self.pacing_swimmer_dd_3: ft.Dropdown
+        self.chronos_sample_text: ft.Text
+        self.chronos_sample_slider: ft.Slider
 
         self.image = ft.Image(
             src="",
@@ -1066,6 +1074,52 @@ class PacingDesktopApp:
             menu_width=dropdown_menu_width,
             visible=False,
         )
+        self.pacing_swimmer_dd_1 = ft.Dropdown(
+            label="Nageur cible 1 (pacing)",
+            options=[],
+            on_select=self._on_pacing_swimmer_change,
+            filled=True,
+            menu_height=320,
+            width=dropdown_width,
+            menu_width=dropdown_menu_width,
+            visible=False,
+        )
+        self.pacing_swimmer_dd_2 = ft.Dropdown(
+            label="Nageur cible 2 (pacing)",
+            options=[],
+            on_select=self._on_pacing_swimmer_change,
+            filled=True,
+            menu_height=320,
+            width=dropdown_width,
+            menu_width=dropdown_menu_width,
+            visible=False,
+        )
+        self.pacing_swimmer_dd_3 = ft.Dropdown(
+            label="Nageur cible 3 (pacing)",
+            options=[],
+            on_select=self._on_pacing_swimmer_change,
+            filled=True,
+            menu_height=320,
+            width=dropdown_width,
+            menu_width=dropdown_menu_width,
+            visible=False,
+        )
+        self.chronos_sample_text = ft.Text(
+            "",
+            size=12,
+            color="#cbd5e1",
+            visible=False,
+        )
+        self.chronos_sample_slider = ft.Slider(
+            min=0,
+            max=5000,
+            value=float(self.selected_chronos_sample_size),
+            round=0,
+            on_change=self._on_chronos_sample_change,
+            label="{value}",
+            visible=False,
+            width=dropdown_width,
+        )
 
         dark_toggle = ft.IconButton(
             icon=ft.icons.Icons.LIGHT_MODE,
@@ -1092,8 +1146,13 @@ class PacingDesktopApp:
                     self.stroke_dd,
                     self.distance_dd,
                     self.pool_dd,
+                    self.pacing_swimmer_dd_1,
+                    self.pacing_swimmer_dd_2,
+                    self.pacing_swimmer_dd_3,
                     self.heatmap_swimmer_dd,
                     self.corridor_swimmer_dd,
+                    self.chronos_sample_text,
+                    self.chronos_sample_slider,
                     ft.Divider(),
                     ft.Row(
                         [self.loader],
@@ -1174,6 +1233,33 @@ class PacingDesktopApp:
         self.selected_heatmap_swimmer = e.control.value
         self._update_chart()
 
+    def _on_pacing_swimmer_change(self, e: ft.ControlEvent) -> None:
+        selected = [
+            self.pacing_swimmer_dd_1.value,
+            self.pacing_swimmer_dd_2.value,
+            self.pacing_swimmer_dd_3.value,
+        ]
+        # Nettoyage: ignore vides et doublons, conserve l'ordre
+        cleaned: List[str] = []
+        for s in selected:
+            if s and s not in cleaned:
+                cleaned.append(s)
+        self.selected_pacing_swimmers = cleaned[:3]
+        self._update_chart()
+
+    def _on_chronos_sample_change(self, e: ft.ControlEvent) -> None:
+        try:
+            self.selected_chronos_sample_size = int(float(e.control.value or 0))
+        except (TypeError, ValueError):
+            self.selected_chronos_sample_size = 0
+        self.chronos_sample_text.value = (
+            f"Taille échantillon chronos: {self.selected_chronos_sample_size:,}".replace(
+                ",", " "
+            )
+        )
+        self.page.update()
+        self._update_chart()
+
     def _on_corridor_swimmer_change(self, e: ft.ControlEvent) -> None:
         label = e.control.value
         name, yob = self._parse_corridor_swimmer_label(label)
@@ -1202,9 +1288,26 @@ class PacingDesktopApp:
         return None, None
 
     # ------------------------------------------------------------------ Data-driven filters
+    @staticmethod
+    def _menu_height_for_count(option_count: int) -> int:
+        # 56px ~ hauteur visuelle par ligne dans ce thème/material.
+        return max(72, min(320, 56 * max(1, option_count)))
+
     def _refresh_filters_from_data(self) -> None:
         """Met à jour les listes d'options des filtres en fonction du graphique choisi."""
         df_nav = self.df_nav
+
+        no_filter_graphs = {
+            "Nombre de performances par épreuve (LCM + SCM)",
+            "Comptage par sexe (global)",
+            "Camembert par sexe (global)",
+            "Line Plot of Swim Times by Stroke Type Over Time for a Sample of 5000",
+            "Swimming Speed by Distance and Stroke Type",
+            "Max Speed per Split Distance and Stroke",
+            "Heatmap vitesse moyenne (distance x nage)",
+        }
+        pool_only_graphs = {"Nombre de performances par épreuve"}
+        no_stroke_graphs = {"Distribution des temps par type de nage (boxplot)"}
 
         # Stroke / distance / pool
         df_scope, stroke, distance, pool = _build_scope_and_widgets_data(
@@ -1225,35 +1328,82 @@ class PacingDesktopApp:
         # Stroke options
         stroke_vals = list(combos.keys())
         self.stroke_dd.options = [ft.dropdown.Option(s) for s in stroke_vals]
+        self.stroke_dd.menu_height = self._menu_height_for_count(len(stroke_vals))
         if self.selected_stroke not in stroke_vals:
             self.selected_stroke = stroke_vals[0] if stroke_vals else None
         self.stroke_dd.value = self.selected_stroke
 
-        # Distance options strictement liées au stroke choisi
-        dist_vals = (
-            list(combos.get(self.selected_stroke, {}).keys())
-            if self.selected_stroke
-            else []
-        )
+        # Distance options:
+        # - graphes "no stroke": distances globales
+        # - sinon: liées au stroke choisi
+        if self.selected_graph in no_stroke_graphs:
+            dist_vals = sorted(
+                pd.to_numeric(df_nav["Distance"], errors="coerce")
+                .dropna()
+                .astype(int)
+                .unique()
+                .tolist()
+            )
+        else:
+            dist_vals = (
+                list(combos.get(self.selected_stroke, {}).keys())
+                if self.selected_stroke
+                else []
+            )
         self.distance_dd.options = [ft.dropdown.Option(str(d)) for d in dist_vals]
+        self.distance_dd.menu_height = self._menu_height_for_count(len(dist_vals))
         if self.selected_distance not in dist_vals:
             self.selected_distance = dist_vals[0] if dist_vals else None
         self.distance_dd.value = (
             str(self.selected_distance) if self.selected_distance is not None else None
         )
 
-        # Pool options strictement liées au couple stroke+distance choisi
-        pool_vals = (
-            combos.get(self.selected_stroke, {}).get(self.selected_distance, [])
-            if (self.selected_stroke and self.selected_distance is not None)
-            else []
-        )
+        # Pool options:
+        # - graphe "pool only": options globales (SCM/LCM disponibles)
+        # - graphes "no stroke": liées à la distance choisie (tous strokes confondus)
+        # - sinon: liées au couple stroke+distance choisi
+        if self.selected_graph in pool_only_graphs:
+            pool_vals = sorted(df_nav["PoolLabel"].dropna().unique().tolist())
+        elif self.selected_graph in no_stroke_graphs:
+            if self.selected_distance is not None:
+                df_dist = df_nav[
+                    pd.to_numeric(df_nav["Distance"], errors="coerce")
+                    == self.selected_distance
+                ].copy()
+                pool_vals = sorted(df_dist["PoolLabel"].dropna().unique().tolist())
+            else:
+                pool_vals = []
+        else:
+            pool_vals = (
+                combos.get(self.selected_stroke, {}).get(self.selected_distance, [])
+                if (self.selected_stroke and self.selected_distance is not None)
+                else []
+            )
         self.pool_dd.options = [
             ft.dropdown.Option(key=p, text=_pool_display_label(p)) for p in pool_vals
         ]
+        self.pool_dd.menu_height = self._menu_height_for_count(len(pool_vals))
         if self.selected_pool not in pool_vals:
             self.selected_pool = pool_vals[0] if pool_vals else None
         self.pool_dd.value = self.selected_pool
+
+        # Affichage conditionnel des filtres principaux selon le graphe
+        if self.selected_graph in no_filter_graphs:
+            self.stroke_dd.visible = False
+            self.distance_dd.visible = False
+            self.pool_dd.visible = False
+        elif self.selected_graph in pool_only_graphs:
+            self.stroke_dd.visible = False
+            self.distance_dd.visible = False
+            self.pool_dd.visible = True
+        elif self.selected_graph in no_stroke_graphs:
+            self.stroke_dd.visible = False
+            self.distance_dd.visible = True
+            self.pool_dd.visible = True
+        else:
+            self.stroke_dd.visible = True
+            self.distance_dd.visible = True
+            self.pool_dd.visible = True
 
         # Options spécifiques pour heatmap
         if self.selected_graph == "Heatmap vitesse moyenne (distance x nage)":
@@ -1269,17 +1419,33 @@ class PacingDesktopApp:
             self.heatmap_swimmer_dd.options = [
                 ft.dropdown.Option(name) for name in swimmer_options
             ]
+            self.heatmap_swimmer_dd.menu_height = self._menu_height_for_count(
+                len(swimmer_options)
+            )
             if swimmer_options and not self.selected_heatmap_swimmer:
                 self.selected_heatmap_swimmer = swimmer_options[0]
             self.heatmap_swimmer_dd.value = self.selected_heatmap_swimmer
         else:
             self.heatmap_swimmer_dd.options = []
             self.heatmap_swimmer_dd.value = None
+            self.heatmap_swimmer_dd.menu_height = self._menu_height_for_count(1)
             self.heatmap_swimmer_dd.visible = False
 
         # Options spécifiques pour couloir de performance
         if self.selected_graph == "Couloir de performance (âge) - nageur cible":
             self.corridor_swimmer_dd.visible = True
+            current_corridor_filter = (
+                self.selected_stroke,
+                self.selected_distance,
+                self.selected_pool,
+            )
+            if self._last_corridor_filter != current_corridor_filter:
+                # Force la remise à zéro de la sélection quand les filtres changent
+                # pour que la mise à jour de liste soit immédiatement visible.
+                self.corridor_swimmer_dd.value = None
+                self.selected_corridor_swimmer_name = None
+                self.selected_corridor_swimmer_yob = None
+                self._last_corridor_filter = current_corridor_filter
             nom_event = (
                 f"{self.selected_distance} {self.selected_stroke} {self.selected_pool}"
                 if self.selected_distance and self.selected_stroke and self.selected_pool
@@ -1306,9 +1472,15 @@ class PacingDesktopApp:
                 self.corridor_swimmer_dd.options = [
                     ft.dropdown.Option(label) for label in labels
                 ]
+                self.corridor_swimmer_dd.label = (
+                    f"Nageur cible (couloir) — {len(labels)} disponibles"
+                )
+                self.corridor_swimmer_dd.menu_height = self._menu_height_for_count(
+                    len(labels)
+                )
                 if labels:
-                    # Si on n'a rien de sélectionné, on prend le premier.
-                    if not self.corridor_swimmer_dd.value:
+                    # Garde la valeur choisie si elle reste valide, sinon fallback.
+                    if self.corridor_swimmer_dd.value not in labels:
                         self.corridor_swimmer_dd.value = labels[0]
                     name, yob = self._parse_corridor_swimmer_label(
                         self.corridor_swimmer_dd.value
@@ -1318,14 +1490,102 @@ class PacingDesktopApp:
             else:
                 self.corridor_swimmer_dd.options = []
                 self.corridor_swimmer_dd.value = None
+                self.corridor_swimmer_dd.label = "Nageur cible (couloir) — 0 disponible"
+                self.corridor_swimmer_dd.menu_height = self._menu_height_for_count(1)
                 self.selected_corridor_swimmer_name = None
                 self.selected_corridor_swimmer_yob = None
         else:
             self.corridor_swimmer_dd.options = []
             self.corridor_swimmer_dd.value = None
+            self.corridor_swimmer_dd.label = "Nageur cible (couloir de perf.)"
+            self.corridor_swimmer_dd.menu_height = self._menu_height_for_count(1)
             self.corridor_swimmer_dd.visible = False
             self.selected_corridor_swimmer_name = None
             self.selected_corridor_swimmer_yob = None
+
+        # Option spécifique pacing comparatif (nageur cible)
+        if self.selected_graph == "Split speed - F vs M + nageurs cibles":
+            swimmer_options = sorted(
+                {
+                    n
+                    for n in df_scope["swimmer"].apply(_primary_swimmer_name).tolist()
+                    if n
+                },
+                key=lambda x: _normalize_text(x),
+            )
+            options = [ft.dropdown.Option(key="", text="(aucun)")] + [
+                ft.dropdown.Option(name) for name in swimmer_options
+            ]
+            for dd in [self.pacing_swimmer_dd_1, self.pacing_swimmer_dd_2, self.pacing_swimmer_dd_3]:
+                dd.options = options
+                dd.menu_height = self._menu_height_for_count(len(options))
+                dd.visible = True
+
+            # Valeurs initiales par défaut: 3 premiers nageurs dispo
+            default_vals = swimmer_options[:3]
+            while len(default_vals) < 3:
+                default_vals.append("")
+
+            current = self.selected_pacing_swimmers[:]
+            while len(current) < 3:
+                current.append("")
+            # Si une valeur n'existe plus, retombe sur défaut
+            for i in range(3):
+                if current[i] and current[i] not in swimmer_options:
+                    current[i] = default_vals[i]
+            if not any(current) and swimmer_options:
+                current = default_vals
+
+            self.pacing_swimmer_dd_1.value = current[0]
+            self.pacing_swimmer_dd_2.value = current[1]
+            self.pacing_swimmer_dd_3.value = current[2]
+
+            cleaned: List[str] = []
+            for s in current:
+                if s and s not in cleaned:
+                    cleaned.append(s)
+            self.selected_pacing_swimmers = cleaned[:3]
+        else:
+            for dd in [self.pacing_swimmer_dd_1, self.pacing_swimmer_dd_2, self.pacing_swimmer_dd_3]:
+                dd.options = []
+                dd.value = None
+                dd.menu_height = self._menu_height_for_count(1)
+                dd.visible = False
+            self.selected_pacing_swimmers = []
+
+        # Option spécifique Chronos dans le temps (taille échantillon)
+        if self.selected_graph == "Line Plot of Swim Times by Stroke Type Over Time for a Sample of 5000":
+            df_plot_max = self.df.copy()
+            df_plot_max["SwimDate"] = pd.to_datetime(df_plot_max["SwimDate"], errors="coerce")
+            df_plot_max = df_plot_max[
+                (df_plot_max["SwimDate"].notna())
+                & (df_plot_max["SwimTimeSeconds"].notna())
+                & (df_plot_max["SwimDate"].dt.year >= 2000)
+            ].copy()
+            max_count = int(len(df_plot_max))
+            if max_count < 0:
+                max_count = 0
+            if self.selected_chronos_sample_size > max_count:
+                self.selected_chronos_sample_size = max_count
+            if self.selected_chronos_sample_size < 0:
+                self.selected_chronos_sample_size = 0
+            self.chronos_sample_slider.min = 0
+            self.chronos_sample_slider.max = float(max_count)
+            self.chronos_sample_slider.value = float(self.selected_chronos_sample_size)
+            self.chronos_sample_text.value = (
+                f"Taille échantillon chronos: {self.selected_chronos_sample_size:,} / {max_count:,}".replace(
+                    ",", " "
+                )
+            )
+            self.chronos_sample_text.visible = True
+            self.chronos_sample_slider.visible = True
+        else:
+            self.chronos_sample_text.visible = False
+            self.chronos_sample_slider.visible = False
+
+        # Catégorie / Graphique
+        self.category_dd.menu_height = self._menu_height_for_count(len(self.category_dd.options))
+        self.graph_dd.menu_height = self._menu_height_for_count(len(self.graph_dd.options))
 
         self.page.update()
 
@@ -1367,7 +1627,7 @@ class PacingDesktopApp:
                 if res_hist:
                     fig, chart_title = res_hist
 
-            elif self.selected_graph == "Nombre de performances par épreuve (LCM)":
+            elif self.selected_graph == "Nombre de performances par épreuve":
                 if pool:
                     chart_title = f"Nombre de performances par épreuve ({pool})"
                 df_tmp = df_scope.copy()
@@ -1562,21 +1822,23 @@ class PacingDesktopApp:
                 ].copy()
                 if not df_plot.empty:
                     df_plot["SwimTimeMinutes"] = df_plot["SwimTimeSeconds"] / 60.0
-                    df_sample = df_plot.sample(min(5000, len(df_plot)), random_state=42)
-                    fig, ax = plt.subplots(figsize=(20, 6))
-                    sns.lineplot(
-                        x="SwimDate",
-                        y="SwimTimeMinutes",
-                        data=df_sample,
-                        hue="Stroke",
-                        alpha=0.7,
-                        ax=ax,
-                    )
-                    ax.set_title(chart_title)
-                    ax.set_xlabel("Année")
-                    ax.set_ylabel("Temps de nage (minutes)")
-                    ax.legend(title="Stroke")
-                    plt.tight_layout()
+                    sample_size = max(0, min(self.selected_chronos_sample_size, len(df_plot)))
+                    if sample_size > 0:
+                        df_sample = df_plot.sample(sample_size, random_state=42)
+                        fig, ax = plt.subplots(figsize=(20, 6))
+                        sns.lineplot(
+                            x="SwimDate",
+                            y="SwimTimeMinutes",
+                            data=df_sample,
+                            hue="Stroke",
+                            alpha=0.7,
+                            ax=ax,
+                        )
+                        ax.set_title(chart_title)
+                        ax.set_xlabel("Année")
+                        ax.set_ylabel("Temps de nage (minutes)")
+                        ax.legend(title="Stroke")
+                        plt.tight_layout()
 
             elif self.selected_graph == "Swimming Speed by Distance and Stroke Type":
                 chart_title = "Swimming Speed by Distance and Stroke Type"
@@ -1673,10 +1935,7 @@ class PacingDesktopApp:
                                 d["split_distance"], d["mean"], marker="o", linestyle="-", color=color,
                                 alpha=0.9, label=f"Moyenne — {gender}",
                             )
-                        swimmer_options = sorted(
-                            df_splits["Name"].dropna().unique().tolist()
-                        )
-                        selected_target_swimmers = swimmer_options[:3]
+                        selected_target_swimmers = self.selected_pacing_swimmers[:3]
                         if selected_target_swimmers:
                             target_colors = sns.color_palette(
                                 "Dark2", n_colors=len(selected_target_swimmers)

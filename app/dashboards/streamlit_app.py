@@ -394,7 +394,10 @@ def _pool_label_from_length(value: object) -> str | None:
 
 
 def _render_titles_below_chart(total_rows: int, chart_title: str) -> None:
-    st.text(chart_title)
+    if chart_title == "Distribution des temps de nage":
+        st.markdown(f"## {chart_title}")
+    else:
+        st.text(chart_title)
     st.markdown(
         f"Nombre de performances disponibles : **{total_rows:,}**".replace(",", " ")
     )
