@@ -1,6 +1,8 @@
 import base64
+import datetime as dt
 import io
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -75,6 +77,31 @@ GRAPH_CATEGORIES: Dict[str, List[str]] = {
         "Couloir de performance (âge) - nageur cible",
     ],
 }
+
+GRAPH_EXPORT_PATH = APP_DIR / "data" / "exports" / "prefetched_graphs.json"
+ENABLE_STARTUP_WARMUP = False
+EXPORT_IMAGE_BASE64_TO_JSON = True
+ENABLE_PERSISTENT_GRAPH_CACHE = True
+
+
+def build_graph_definitions() -> List[Dict[str, str]]:
+    """
+    Construit une liste d'objets décrivant chaque graphe UI:
+    - name: nom du graphe
+    - group: catégorie (groupe)
+    - ui_method: nom de la méthode UI associée
+    """
+    graph_definitions: List[Dict[str, str]] = []
+    for group_name, graph_names in GRAPH_CATEGORIES.items():
+        for graph_name in graph_names:
+            graph_definitions.append(
+                {
+                    "name": graph_name,
+                    "group": group_name,
+                    "ui_method": f"render_{_slugify(graph_name)}",
+                }
+            )
+    return graph_definitions
 
 
 def _to_float(value: Any) -> Optional[float]:
@@ -236,6 +263,12 @@ def _normalize_text(value: Any) -> str:
     text = unicodedata.normalize("NFD", text)
     text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
     return " ".join(text.split())
+
+
+def _slugify(text: str) -> str:
+    value = _normalize_text(text)
+    value = re.sub(r"[^a-z0-9]+", "-", value)
+    return value.strip("-")
 
 
 @lru_cache(maxsize=1)
@@ -936,6 +969,9 @@ class PacingDesktopApp:
         self.selected_pacing_swimmers: List[str] = []
         self.selected_chronos_sample_size: int = 5000
         self._last_corridor_filter: Optional[Tuple[Optional[str], Optional[int], Optional[str]]] = None
+        self.graph_render_registry: Dict[str, Dict[str, Any]] = {}
+        self.chart_image_cache: Dict[str, str] = {}
+        self.graph_definitions: List[Dict[str, str]] = build_graph_definitions()
 
         # Widgets Flet
         self.category_dd: ft.Dropdown
@@ -978,8 +1014,188 @@ class PacingDesktopApp:
         )
         self.loader = ft.ProgressRing(visible=False, width=32, height=32, color="#22c55e")
 
+        if ENABLE_PERSISTENT_GRAPH_CACHE:
+            self._load_graph_registry_json()
+
         self._build_ui()
+        if ENABLE_STARTUP_WARMUP:
+            self._warmup_graph_registry()
         self._update_chart()
+
+    def _graph_method_name(self, graph_name: str) -> str:
+        return f"render_{_slugify(graph_name)}"
+
+    def _chart_id(self, category: str, graph_name: str) -> str:
+        return f"{_slugify(category)}__{_slugify(graph_name)}"
+
+    def _build_render_key(
+        self,
+        category: str,
+        graph_name: str,
+        stroke: Optional[str],
+        distance: Optional[int],
+        pool: Optional[str],
+    ) -> Tuple[str, Dict[str, Any], str]:
+        options = self._current_render_options(stroke, distance, pool)
+        chart_id = self._chart_id(category, graph_name)
+        render_key = (
+            f"{chart_id}::"
+            f"{json.dumps(options, sort_keys=True, ensure_ascii=False, separators=(',', ':'))}"
+        )
+        return chart_id, options, render_key
+
+    def _current_render_options(
+        self,
+        stroke: Optional[str],
+        distance: Optional[int],
+        pool: Optional[str],
+    ) -> Dict[str, Any]:
+        return {
+            "stroke": stroke,
+            "distance": int(distance) if distance is not None else None,
+            "pool": pool,
+            "heatmap_swimmer": self.selected_heatmap_swimmer,
+            "corridor_swimmer_name": self.selected_corridor_swimmer_name,
+            "corridor_swimmer_yob": self.selected_corridor_swimmer_yob,
+            "pacing_swimmers": self.selected_pacing_swimmers[:3],
+            "chronos_sample_size": int(self.selected_chronos_sample_size),
+        }
+
+    def _write_graph_registry_json(self) -> None:
+        GRAPH_EXPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        renders = list(self.graph_render_registry.values())
+        if not EXPORT_IMAGE_BASE64_TO_JSON:
+            renders = [
+                {k: v for k, v in item.items() if k != "image_base64"}
+                for item in renders
+            ]
+        payload = {
+            "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "total_renders": len(self.graph_render_registry),
+            "renders": sorted(
+                renders,
+                key=lambda item: (item["category"], item["name"], item["rendered_at"]),
+            ),
+        }
+        with GRAPH_EXPORT_PATH.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    def _load_graph_registry_json(self) -> None:
+        if not GRAPH_EXPORT_PATH.exists():
+            return
+        try:
+            with GRAPH_EXPORT_PATH.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception:
+            return
+
+        raw_renders = payload.get("renders")
+        if not isinstance(raw_renders, list):
+            return
+
+        loaded_registry: Dict[str, Dict[str, Any]] = {}
+        loaded_cache: Dict[str, str] = {}
+        for item in raw_renders:
+            if not isinstance(item, dict):
+                continue
+            category = item.get("category")
+            name = item.get("name")
+            options = item.get("options")
+            if not isinstance(category, str) or not isinstance(name, str) or not isinstance(options, dict):
+                continue
+
+            chart_id = self._chart_id(category, name)
+            render_key = (
+                f"{chart_id}::"
+                f"{json.dumps(options, sort_keys=True, ensure_ascii=False, separators=(',', ':'))}"
+            )
+            loaded_registry[render_key] = item
+            image_base64 = item.get("image_base64")
+            status = item.get("status")
+            if status == "ok" and isinstance(image_base64, str) and image_base64:
+                loaded_cache[render_key] = image_base64
+
+        self.graph_render_registry = loaded_registry
+        self.chart_image_cache = loaded_cache
+
+    def _register_graph_render(
+        self,
+        *,
+        category: str,
+        graph_name: str,
+        stroke: Optional[str],
+        distance: Optional[int],
+        pool: Optional[str],
+        chart_title: str,
+        status: str,
+        row_count: int,
+        image_base64: Optional[str],
+        warmup: bool,
+        error: Optional[str] = None,
+    ) -> None:
+        chart_id, options, render_key = self._build_render_key(
+            category,
+            graph_name,
+            stroke,
+            distance,
+            pool,
+        )
+        self.graph_render_registry[render_key] = {
+            "id": chart_id,
+            "name": graph_name,
+            "category": category,
+            "method": self._graph_method_name(graph_name),
+            "status": status,
+            "chart_title": chart_title,
+            "row_count": int(row_count),
+            "warmup": bool(warmup),
+            "error": error,
+            "rendered_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "options": options,
+            "image_base64": image_base64,
+        }
+        if image_base64:
+            self.chart_image_cache[render_key] = image_base64
+        self._write_graph_registry_json()
+
+    def _warmup_graph_registry(self) -> None:
+        if self.df.empty:
+            self._write_graph_registry_json()
+            return
+
+        saved_state = (
+            self.selected_category,
+            self.selected_graph,
+            self.selected_stroke,
+            self.selected_distance,
+            self.selected_pool,
+            self.selected_heatmap_swimmer,
+            self.selected_corridor_swimmer_name,
+            self.selected_corridor_swimmer_yob,
+            self.selected_pacing_swimmers[:],
+            self.selected_chronos_sample_size,
+        )
+
+        for category, graphs in GRAPH_CATEGORIES.items():
+            self.selected_category = category
+            for graph_name in graphs:
+                self.selected_graph = graph_name
+                self._refresh_filters_from_data(update_ui=False)
+                self._update_chart(update_ui=False, warmup=True)
+
+        (
+            self.selected_category,
+            self.selected_graph,
+            self.selected_stroke,
+            self.selected_distance,
+            self.selected_pool,
+            self.selected_heatmap_swimmer,
+            self.selected_corridor_swimmer_name,
+            self.selected_corridor_swimmer_yob,
+            self.selected_pacing_swimmers,
+            self.selected_chronos_sample_size,
+        ) = saved_state
+        self._refresh_filters_from_data(update_ui=False)
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
@@ -1293,7 +1509,7 @@ class PacingDesktopApp:
         # 56px ~ hauteur visuelle par ligne dans ce thème/material.
         return max(72, min(320, 56 * max(1, option_count)))
 
-    def _refresh_filters_from_data(self) -> None:
+    def _refresh_filters_from_data(self, update_ui: bool = True) -> None:
         """Met à jour les listes d'options des filtres en fonction du graphique choisi."""
         df_nav = self.df_nav
 
@@ -1587,13 +1803,15 @@ class PacingDesktopApp:
         self.category_dd.menu_height = self._menu_height_for_count(len(self.category_dd.options))
         self.graph_dd.menu_height = self._menu_height_for_count(len(self.graph_dd.options))
 
-        self.page.update()
+        if update_ui:
+            self.page.update()
 
     # ------------------------------------------------------------------ Chart rendering
-    def _update_chart(self) -> None:
-        self.loader.visible = True
-        self.status_text.value = ""
-        self.page.update()
+    def _update_chart(self, update_ui: bool = True, warmup: bool = False) -> None:
+        if update_ui:
+            self.loader.visible = True
+            self.status_text.value = ""
+            self.page.update()
 
         try:
             df_scope, stroke, distance, pool = _build_scope_and_widgets_data(
@@ -1603,10 +1821,47 @@ class PacingDesktopApp:
                 self.selected_distance,
                 self.selected_pool,
             )
+            _, _, render_key = self._build_render_key(
+                self.selected_category,
+                self.selected_graph,
+                stroke,
+                distance,
+                pool,
+            )
+            cached = self.graph_render_registry.get(render_key)
+            cached_image = self.chart_image_cache.get(render_key)
+            if (
+                cached is not None
+                and cached.get("status") == "ok"
+                and cached_image is not None
+            ):
+                if update_ui:
+                    self.image.visible = True
+                    self.image.src = cached_image
+                    self.chart_title_text.value = str(cached.get("chart_title", self.selected_graph))
+                    row_count = int(cached.get("row_count", 0))
+                    self.row_count_text.value = (
+                        f"Nombre de performances disponibles : {row_count:,}".replace(",", " ")
+                    )
+                return
+
             if df_scope.empty:
-                self.image.visible = False
-                self.chart_title_text.value = self.selected_graph
-                self.row_count_text.value = "Aucune donnée pour les filtres sélectionnés."
+                if update_ui:
+                    self.image.visible = False
+                    self.chart_title_text.value = self.selected_graph
+                    self.row_count_text.value = "Aucune donnée pour les filtres sélectionnés."
+                self._register_graph_render(
+                    category=self.selected_category,
+                    graph_name=self.selected_graph,
+                    stroke=stroke,
+                    distance=distance,
+                    pool=pool,
+                    chart_title=self.selected_graph,
+                    status="empty_scope",
+                    row_count=0,
+                    image_base64=None,
+                    warmup=warmup,
+                )
                 return
 
             df_filtered = df_scope[df_scope["SwimTimeSeconds"].notna()].copy()
@@ -2096,30 +2351,73 @@ class PacingDesktopApp:
                             plt.tight_layout()
 
             if fig is None:
-                self.image.visible = False
-                self.chart_title_text.value = chart_title
-                self.row_count_text.value = (
-                    "Graphique non encore implémenté dans la version PyFlet "
-                    "ou aucune donnée exploitable pour ces filtres."
+                if update_ui:
+                    self.image.visible = False
+                    self.chart_title_text.value = chart_title
+                    self.row_count_text.value = (
+                        "Graphique non encore implémenté dans la version PyFlet "
+                        "ou aucune donnée exploitable pour ces filtres."
+                    )
+                self._register_graph_render(
+                    category=self.selected_category,
+                    graph_name=self.selected_graph,
+                    stroke=stroke,
+                    distance=distance,
+                    pool=pool,
+                    chart_title=chart_title,
+                    status="no_figure",
+                    row_count=len(df_scope),
+                    image_base64=None,
+                    warmup=warmup,
                 )
             else:
-                self.image.visible = True
-                self.image.src = _figure_to_base64(fig)
-                self.chart_title_text.value = chart_title
-                self.row_count_text.value = (
-                    f"Nombre de performances disponibles : {len(df_scope):,}".replace(
-                        ",", " "
+                image_base64 = _figure_to_base64(fig)
+                if update_ui:
+                    self.image.visible = True
+                    self.image.src = image_base64
+                    self.chart_title_text.value = chart_title
+                    self.row_count_text.value = (
+                        f"Nombre de performances disponibles : {len(df_scope):,}".replace(
+                            ",", " "
+                        )
                     )
+                self._register_graph_render(
+                    category=self.selected_category,
+                    graph_name=self.selected_graph,
+                    stroke=stroke,
+                    distance=distance,
+                    pool=pool,
+                    chart_title=chart_title,
+                    status="ok",
+                    row_count=len(df_scope),
+                    image_base64=image_base64,
+                    warmup=warmup,
                 )
+                plt.close(fig)
 
         except Exception as exc:  # type: ignore[bare-except]
-            self.image.visible = False
-            self.chart_title_text.value = self.selected_graph
-            self.row_count_text.value = ""
-            self.status_text.value = f"Erreur lors de la génération du graphique: {exc}"
+            if update_ui:
+                self.image.visible = False
+                self.chart_title_text.value = self.selected_graph
+                self.row_count_text.value = ""
+                self.status_text.value = f"Erreur lors de la génération du graphique: {exc}"
+            self._register_graph_render(
+                category=self.selected_category,
+                graph_name=self.selected_graph,
+                stroke=self.selected_stroke,
+                distance=self.selected_distance,
+                pool=self.selected_pool,
+                chart_title=self.selected_graph,
+                status="error",
+                row_count=0,
+                image_base64=None,
+                warmup=warmup,
+                error=str(exc),
+            )
         finally:
-            self.loader.visible = False
-            self.page.update()
+            if update_ui:
+                self.loader.visible = False
+                self.page.update()
 
 
 def main(page: ft.Page) -> None:
