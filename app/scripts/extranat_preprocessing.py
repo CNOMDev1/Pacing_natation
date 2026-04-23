@@ -6,15 +6,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # Dossiers pour Extranat
 EXTRANAT_BASE_DIR = (
-    Path(__file__).resolve().parents[1]
+    Path(__file__).resolve().parents[2]
     / "data"
+    / "raw"
     / "extranat"
     / "competitions_per_type"
 )
 EXTRANAT_OUTPUT_BASE_DIR = (
-    Path(__file__).resolve().parents[1]
+    Path(__file__).resolve().parents[2]
     / "data"
-    / "cleaned_data"
+    / "processed"
     / "extranat"
     / "competitions_per_type"
 )
@@ -1025,9 +1026,9 @@ def clean_extranat_competition(
 def clean_extranat_directory() -> None:
     """
     Parcourt tous les fichiers JSON sous
-    data/extranat/competitions_per_type
+    data/raw/extranat/competitions_per_type
     et écrit des versions nettoyées sous
-    data/clean_data/extranat/competitions_per_type
+    data/processed/extranat/competitions_per_type
     en conservant la même arborescence.
     """
     base_dir = EXTRANAT_BASE_DIR

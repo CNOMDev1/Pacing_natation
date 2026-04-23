@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from collections import defaultdict
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "usaswimming"
-OUTPUT_DIR = Path(__file__).resolve().parents[1] / "data" / "cleaned_data" / "usaswimming"
+DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "raw" / "usaswimming"
+OUTPUT_DIR = Path(__file__).resolve().parents[2] / "data" / "processed" / "usaswimming"
 
 COURSE_CODES = {"LCM", "SCM", "SCY"}
 
@@ -459,8 +459,8 @@ def clean_file(input_path: Path, output_path: Path) -> None:
 
 def clean_usaswimming_directory() -> None:
     """
-    Parcourt tous les fichiers JSON sous `app/data/usaswimming` et écrit les données nettoyées
-    dans `app/data/cleaned_data/usaswimming` en conservant la même arborescence.
+    Parcourt tous les fichiers JSON sous `data/raw/usaswimming` et écrit les données nettoyées
+    dans `data/processed/usaswimming` en conservant la même arborescence.
     """
     if not DATA_DIR.exists():
         raise FileNotFoundError(f"Dossier introuvable: {DATA_DIR}")

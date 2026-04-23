@@ -1,4 +1,4 @@
-"""Count Omega PDF files under app/data/omega/pdfs (recursive).
+"""Count Omega PDF files under data/raw/omega/pdfs (recursive).
 
 Usage:
   python3 count_omega_pdf_files.py
@@ -17,7 +17,7 @@ def _project_root() -> Path:
 
 
 def _default_pdfs_dir() -> Path:
-    return _project_root() / "app" / "data" / "omega" / "pdfs"
+    return _project_root() / "data" / "raw" / "omega" / "pdfs"
 
 
 def count_pdfs(root: Path, end_year: int | None = None) -> int:

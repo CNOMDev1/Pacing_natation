@@ -14,11 +14,11 @@ def _project_root() -> Path:
 
 
 def _default_data_dir() -> Path:
-    return _project_root() / "app" / "data" / "usaswimming"
+    return _project_root() / "data" / "raw" / "usaswimming"
 
 
 def _infer_year(path: Path) -> int | None:
-    # Expected: app/data/usaswimming/<year>/<meet>.json
+    # Expected: data/raw/usaswimming/<year>/<meet>.json
     try:
         parent = path.parent.name
         return int(parent) if parent.isdigit() else None

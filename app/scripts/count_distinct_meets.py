@@ -36,7 +36,7 @@ def main() -> None:
     parser.add_argument(
         "directory",
         nargs="?",
-        default="/Users/nouhailaimaneabbassi/Desktop/Pacing/app/data/cleaned_data/usaswimming",
+        default="/Users/nouhailaimaneabbassi/Desktop/Pacing/data/processed/usaswimming",
         help="Dossier racine contenant les fichiers JSON (par défaut: usaswimming).",
     )
     args = parser.parse_args()

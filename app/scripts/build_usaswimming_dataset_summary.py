@@ -14,11 +14,11 @@ def _project_root() -> Path:
 
 
 def _default_data_dir() -> Path:
-    return _project_root() / "app" / "data" / "usaswimming"
+    return _project_root() / "data" / "raw" / "usaswimming"
 
 
 def _default_output_path() -> Path:
-    return _project_root() / "app" / "data" / "usaswimming_summary.json"
+    return _project_root() / "data" / "processed" / "usaswimming_summary.json"
 
 
 def _normalize_text(value: Any) -> str:
