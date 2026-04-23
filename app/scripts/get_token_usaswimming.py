@@ -2,7 +2,7 @@
 from playwright.sync_api import sync_playwright
 import time, os, sys
 
-# Fichiers token/state dans app/services/ (utilisés par usaswimming_service.py)
+# Fichiers token/state dans services/ (utilisés par usaswimming_service.py)
 _SCRIPT_DIR = os.path.dirname(__file__)
 _SERVICES_DIR = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", "services"))
 STATE_FILE = os.path.join(_SERVICES_DIR, "state.json")

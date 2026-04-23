@@ -1,4 +1,4 @@
-"""Count performances in app/data/omega_json_endpoint_single (recursive).
+"""Count performances in data/raw/omega_json_endpoint_single (recursive).
 
 Definition used:
 - Each JSON file is expected to contain a key `results` which is a list.
@@ -17,7 +17,7 @@ def _project_root() -> Path:
 
 
 def _default_json_dir() -> Path:
-    return _project_root() / "app" / "data" / "omega_json_endpoint_single"
+    return _project_root() / "data" / "raw" / "omega_json_endpoint_single"
 
 
 def _is_json_file(p: Path) -> bool:

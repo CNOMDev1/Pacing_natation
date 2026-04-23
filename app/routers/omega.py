@@ -1,7 +1,7 @@
 """Endpoints Omega"""
 import asyncio
 from fastapi import APIRouter, Query
-from app.services.omega_service import get_all_pdfs_response, get_pdfs_by_years_response
+from services.omega_service import get_all_pdfs_response, get_pdfs_by_years_response
 
 router = APIRouter(prefix="/omega", tags=["omega"])
 

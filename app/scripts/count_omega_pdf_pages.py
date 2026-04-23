@@ -1,6 +1,6 @@
 """Count pages for Omega PDFs (recursive).
 
-Parcourt récursivement le dossier `app/data/omega/pdfs` et calcule:
+Parcourt récursivement le dossier `data/raw/omega/pdfs` et calcule:
 - le nombre de pages de chaque PDF
 - le total de pages (somme)
 - le nombre de PDFs valides et le nombre d'erreurs
@@ -26,7 +26,7 @@ def _project_root() -> Path:
 
 
 def _default_pdfs_dir() -> Path:
-    return _project_root() / "app" / "data" / "omega" / "pdfs"
+    return _project_root() / "data" / "raw" / "omega" / "pdfs"
 
 
 def _parse_year_from_path(p: Path, pdfs_root: Path) -> Optional[int]:

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from app.services.usaswimming_service import run_one_shot_full_download, get_all_results
+from services.usaswimming_service import run_one_shot_full_download, get_all_results
 import asyncio
 
 router = APIRouter(prefix="/usaswimming", tags=["usaswimming"])

@@ -5,7 +5,7 @@ import json
 import os
 
 from app.models.competitions import TypeCompetitionLabel
-from app.services.extranat_service import (
+from services.extranat_service import (
     get_all_results_grouped_by_event_by_type,
     COMPETITIONS_PER_TYPE_DIR,
 )

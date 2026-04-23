@@ -1,28 +1,24 @@
 # Python
 __pycache__/
-app/services/playwright_tmp_profile/
+services/playwright_tmp_profile/
 app/scripts/playwright_tmp_profile/
 playwright_tmp_profile/
 Tour_list.txt
 
-# Données générées 
-app/data/omega/pdfs/
-app/data/omega/pdfs_manifest.json
-app/data/extranat/
-app/data/fusion_usaswimming/
-app/data/usaswimming/
-app/data/usaswimming/merged_usaswimming.json
-app/data/cleaned_data/usaswimming/
-app/data/cleaned_data/extranat/
-app/data/usaswimming_2024_olympic_trials.json
-app/data/*
+# Données générées
+data/cleaned_data/
+data/exports/prefetched_graphs.json
+app/data/exports/prefetched_graphs.json
+data/omega_json_endpoint_single/
+data/raw/
+data/processed/
 
 # Fichiers locaux
 cookies_omegatiming.txt
 .env
 bearer_token.txt
 state.json
-app/dashboards/desktop_app.py
+app/visualization/desktop_app.py
 
 # Environnement virtuel
 .venv/
