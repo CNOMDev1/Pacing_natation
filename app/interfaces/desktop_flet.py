@@ -129,8 +129,7 @@ class PacingDesktopApp:
 
         self._startup_graph_target = len(GRAPHES_NOTEBOOK) if ENABLE_NOTEBOOK_PREFETCH_ON_START else 0
         self._startup_graph_done = 0
-        startup_units = self._startup_graph_target
-        self.loading_bar: Optional[LoadingBar] = LoadingBar(self.page, total_units=startup_units)
+        self.loading_bar: Optional[LoadingBar] = LoadingBar(self.page, total_units=self._startup_graph_target)
         self.loading_bar.mount()
         self.page.run_thread(self._bootstrap_startup)
 
@@ -266,21 +265,6 @@ class PacingDesktopApp:
             "chronos_sample_size": int(self.selected_chronos_sample_size),
         }
 
-    def _schedule_graph_registry_persist(self) -> None:
-        """Enregistre ``prefetched_graphs.json`` après un court délai (évite de bloquer l'UI)."""
-        if not ENABLE_PERSISTENT_GRAPH_CACHE:
-            return
-        with self._registry_json_lock:
-            if self._registry_json_timer is not None:
-                self._registry_json_timer.cancel()
-            t = threading.Timer(
-                GRAPH_REGISTRY_DEBOUNCE_S,
-                self._persist_graph_registry_json_worker,
-            )
-            t.daemon = True
-            self._registry_json_timer = t
-            t.start()
-
     def _persist_graph_registry_json_worker(self) -> None:
         with self._registry_json_lock:
             self._registry_json_timer = None
@@ -382,7 +366,6 @@ class PacingDesktopApp:
         self._touch_prefetched_json_mtime()
 
     def _notebook_prefetch_options(self, spec_key: str) -> Dict[str, Any]:
-        """Options JSON alignées sur ``_current_render_options`` + clé stable du notebook."""
         return {
             "stroke": None,
             "distance": None,
@@ -579,7 +562,7 @@ class PacingDesktopApp:
         }
         if image_base64:
             self.chart_image_cache[render_key] = image_base64
-        self._schedule_graph_registry_persist()
+        self._flush_graph_registry_json_now()
 
     def _build_ui(self) -> None:
         if self.df.empty:
