@@ -4,11 +4,11 @@ services/playwright_tmp_profile/
 app/scripts/playwright_tmp_profile/
 playwright_tmp_profile/
 Tour_list.txt
+.mplconfig/fontlist-v390.json
 
 # Données générées
 data/cleaned_data/
 data/exports/prefetched_graphs.json
-app/data/exports/prefetched_graphs.json
 data/omega_json_endpoint_single/
 data/raw/
 data/processed/
