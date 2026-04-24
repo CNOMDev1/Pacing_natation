@@ -3,10 +3,13 @@ from dataclasses import dataclass
 import re
 import unicodedata
 from typing import Any, Callable, Dict, List, Optional, Tuple
+import matplotlib
+matplotlib.use("Agg", force=True)
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from matplotlib.colors import to_hex
 
 
 @dataclass(frozen=True)
@@ -16,6 +19,111 @@ class GraphSpec:
     name: str
     category: str
     method_name: str
+
+
+@dataclass(frozen=True)
+class DesktopGraphCategory:
+    """Une rubrique du menu graphes (UI desktop Flet)."""
+
+    title: str
+    graph_names: Tuple[str, ...]
+
+
+DESKTOP_GRAPH_MENU: Tuple[DesktopGraphCategory, ...] = (
+    DesktopGraphCategory(
+        "Distributions de temps",
+        (
+            "Histogramme simple",
+            "Histogramme + densité",
+            "Histogramme cumulatif",
+        ),
+    ),
+    DesktopGraphCategory(
+        "Effectifs et répartition par sexe",
+        (
+            "Nombre de performances par épreuve",
+            "Nombre de performances par épreuve (LCM + SCM)",
+            "Comptage par sexe (global)",
+            "Camembert par sexe (global)",
+            "Camembert par sexe (épreuve)",
+        ),
+    ),
+    DesktopGraphCategory(
+        "Comparaison des temps par nage",
+        ("Distribution des temps par type de nage (boxplot)",),
+    ),
+    DesktopGraphCategory(
+        "Clubs",
+        (
+            "Top 10 clubs par participation (épreuve)",
+            "Temps médian des 10 meilleurs clubs",
+        ),
+    ),
+    DesktopGraphCategory(
+        "Chronos dans le temps",
+        (
+            "Line Plot of Swim Times by Stroke Type Over Time for a Sample of 5000",
+        ),
+    ),
+    DesktopGraphCategory(
+        "Vitesse globale",
+        (
+            "Swimming Speed by Distance and Stroke Type",
+            "Max Speed per Split Distance and Stroke",
+        ),
+    ),
+    DesktopGraphCategory(
+        "Pacing comparatif",
+        ("Split speed - F vs M + nageurs cibles",),
+    ),
+    DesktopGraphCategory(
+        "Synthèse des vitesses par distance et nage",
+        ("Heatmap vitesse moyenne (distance x nage)",),
+    ),
+    DesktopGraphCategory(
+        "Évolution de la vitesse par splits",
+        (
+            "Lineplot of Speed ​​per split for a precise Swimmer and Event",
+            "Lineplot of split speed for the best swimmer for a specific event",
+            "Lineplot of split speed for the best swimmers for a specific event (women vs men)",
+            "Line plot of Split Speed Progression of Top 10 Swimmers in a given Event (Women vs Men)",
+        ),
+    ),
+    DesktopGraphCategory(
+        "Comparaisons de pacing par splits (à partir de la médiane)",
+        (
+            "Temps médian vs meilleur nageur",
+            "Temps médian vs Top 10 nageurs",
+            "Vitesse médiane par split selon le genre",
+        ),
+    ),
+    DesktopGraphCategory(
+        "Pacing en relais",
+        ("Split Speed vs Distance (Relay Events) with Mean Trend Line",),
+    ),
+    DesktopGraphCategory(
+        "Couloirs de performance",
+        ("Couloir de performance (âge) - nageur cible",),
+    ),
+)
+
+GRAPH_CATEGORIES: Dict[str, List[str]] = {
+    block.title: list[str](block.graph_names) for block in DESKTOP_GRAPH_MENU
+}
+
+SCOPE_NO_FILTER_GRAPHS = frozenset(
+    {
+        "Nombre de performances par épreuve (LCM + SCM)",
+        "Comptage par sexe (global)",
+        "Camembert par sexe (global)",
+        "Line Plot of Swim Times by Stroke Type Over Time for a Sample of 5000",
+        "Swimming Speed by Distance and Stroke Type",
+        "Max Speed per Split Distance and Stroke",
+        "Heatmap vitesse moyenne (distance x nage)",
+    }
+)
+SCOPE_POOL_ONLY_GRAPHS = frozenset({"Nombre de performances par épreuve"})
+SCOPE_NO_STROKE_GRAPHS = frozenset({"Distribution des temps par type de nage (boxplot)"})
 
 
 class ServiceGraphe:
@@ -1909,9 +2017,397 @@ class ServiceGraphe:
             "ages_available": [int(x) for x in df_percentiles.index.tolist()],
         }
 
+    @staticmethod
+    def _nb_first_event_label(df_nav: pd.DataFrame) -> Optional[str]:
+        need = ("Stroke", "Distance", "PoolLabel")
+        if df_nav.empty or not all(c in df_nav.columns for c in need):
+            return None
+        sub = df_nav.dropna(subset=list(need))
+        if sub.empty:
+            return None
+        r = sub.iloc[0]
+        try:
+            d = int(float(r["Distance"]))
+        except (TypeError, ValueError):
+            return None
+        st = str(r["Stroke"]).strip()
+        pl = str(r["PoolLabel"]).strip()
+        if not st or not pl:
+            return None
+        return f"{d} {st} {pl}"
+
+    @staticmethod
+    def _nb_first_pool_label(df_nav: pd.DataFrame) -> Optional[str]:
+        if "PoolLabel" not in df_nav.columns or df_nav.empty:
+            return None
+        pools = df_nav["PoolLabel"].dropna().astype(str).str.strip()
+        if pools.empty:
+            return None
+        return str(pools.iloc[0])
+
+    @staticmethod
+    def _nb_first_swimmer_name(df_nav: pd.DataFrame) -> Optional[str]:
+        if "swimmer" not in df_nav.columns:
+            return None
+        for swimmers in df_nav["swimmer"].tolist():
+            if isinstance(swimmers, list) and swimmers and isinstance(swimmers[0], dict):
+                n = swimmers[0].get("Name")
+                if n:
+                    return str(n).strip()
+        return None
+
+    @staticmethod
+    def _nb_year_bounds(df_nav: pd.DataFrame) -> Tuple[int, int]:
+        if "SwimDate" not in df_nav.columns or df_nav.empty:
+            return 2000, 2024
+        years = pd.to_datetime(df_nav["SwimDate"], errors="coerce").dt.year.dropna()
+        if years.empty:
+            return 2000, 2024
+        ymin, ymax = int(years.min()), int(years.max())
+        if ymin > ymax:
+            return 2000, 2024
+        return ymin, ymax
+
+    @staticmethod
+    def _nb_first_solo_name_yob_for_event(
+        df_nav: pd.DataFrame, nom_event: str
+    ) -> Tuple[Optional[str], Optional[int]]:
+        if df_nav.empty or "Event" not in df_nav.columns:
+            return None, None
+        df_e = df_nav[df_nav["Event"].astype(str).str.strip() == str(nom_event).strip()]
+        for _, row in df_e.iterrows():
+            sw = row.get("swimmer")
+            if not isinstance(sw, list) or len(sw) != 1 or not isinstance(sw[0], dict):
+                continue
+            d0 = sw[0]
+            name = d0.get("Name")
+            yob = d0.get("Year_of_birth")
+            if not name:
+                continue
+            try:
+                if yob is not None and yob == yob:
+                    yob_i = int(yob)
+                else:
+                    yob_i = None
+            except (TypeError, ValueError):
+                yob_i = None
+            if yob_i is None:
+                continue
+            return str(name).strip(), yob_i
+        return None, None
+
+    @staticmethod
+    def _prefetch_kwargs_for_notebook_spec(
+        spec: GraphSpec, df: pd.DataFrame, df_nav: pd.DataFrame
+    ) -> Optional[Dict[str, Any]]:
+        nom = ServiceGraphe._nb_first_event_label(df_nav)
+        swimmer = ServiceGraphe._nb_first_swimmer_name(df_nav)
+        y0, y1 = ServiceGraphe._nb_year_bounds(df_nav)
+        pool = ServiceGraphe._nb_first_pool_label(df_nav)
+
+        m = spec.method_name
+        if m in (
+            "plot_histogramme_simple",
+            "plot_histogramme_densite",
+            "plot_histogramme_cumulatif",
+            "plot_camembert_sexe_global",
+            "plot_boxplot_temps_par_nage",
+            "plot_top10_clubs",
+            "plot_heatmap_vitesse_moyenne",
+            "plot_nombre_performances_par_epreuve_lcm_scm",
+            "plot_nombre_performances_par_sexe",
+            "plot_vitesse_max_par_split_et_nage",
+            "plot_vitesse_moyenne_mediane_par_split_et_nage",
+        ):
+            return {}
+        if m == "plot_nombre_performances_par_epreuve":
+            if not pool:
+                return None
+            return {"course_type": pool}
+        if m in (
+            "plot_temps_median_top10_clubs_par_event",
+            "plot_top10_nageurs_meilleur_temps_par_event",
+        ):
+            if not nom:
+                return None
+            return {"nom_event": nom}
+        if m == "plot_evolution_temps_nage":
+            return {"start_year": 2000, "sample_size": min(5000, max(1, len(df)))}
+        if m == "plot_camembert_sexe_par_event":
+            if not nom:
+                return None
+            return {"nom_event": nom}
+        if m == "plot_split_speed_analysis_by_gender_with_targets":
+            if not nom:
+                return None
+            targets: List[str] = []
+            if swimmer:
+                targets = [swimmer]
+            return {
+                "nom_event": nom,
+                "swimmer_targets": targets,
+                "target_colors": {},
+            }
+        if m == "plot_vitesse_par_split_pour_nageur_event":
+            if not nom or not swimmer:
+                return None
+            return {"nom_nageur": swimmer, "nom_event": nom}
+        if m == "plot_vitesse_par_split_meilleur_nageur_event_periode":
+            if not nom:
+                return None
+            return {"nom_event": nom, "annee_debut": y0, "annee_fin": y1}
+        if m == "plot_vitesse_par_split_top_nageurs_hf_event_periode":
+            if not nom:
+                return None
+            return {"nom_event": nom, "annee_debut": y0, "annee_fin": y1, "top_n": 1}
+        if m == "plot_vitesse_par_split_top_nageurs_uniques_event_periode":
+            if not nom:
+                return None
+            return {"nom_event": nom, "annee_debut": y0, "annee_fin": y1, "top_n": 10}
+        if m == "plot_comparaison_vitesse_moyenne_heatmap_nageur_vs_autres":
+            if not swimmer:
+                return None
+            return {"nageur_cible": swimmer}
+        if m in (
+            "plot_temps_median_vs_meilleur_nageur_par_split_event",
+            "plot_temps_median_vs_top10_nageurs_par_split_event",
+            "plot_vitesse_mediane_par_split_selon_genre_top_n_event",
+            "plot_relais_split_speed_par_distance",
+        ):
+            if not nom:
+                return None
+            if m == "plot_vitesse_mediane_par_split_selon_genre_top_n_event":
+                return {"nom_event": nom, "top_n": 10}
+            return {"nom_event": nom}
+        if m == "plot_performance_corridor_plot_time":
+            if not nom:
+                return None
+            name, yob = ServiceGraphe._nb_first_solo_name_yob_for_event(df_nav, nom)
+            if not name or yob is None:
+                return None
+            return {"nom_event": nom, "nom_nageur": name, "year_of_birth": int(yob)}
+        return {}
+
+    def build_figure_prefetch(
+        self, spec: GraphSpec, df: pd.DataFrame, df_nav: pd.DataFrame
+    ) -> Any:
+        """Kwargs par défaut depuis ``df_nav`` puis ``build_figure`` ; ``None`` si prefetch impossible."""
+        kwargs = self._prefetch_kwargs_for_notebook_spec(spec, df, df_nav)
+        if kwargs is None:
+            return None
+        return self.build_figure(spec, df, **kwargs)
+
     def build_figure(self, spec: GraphSpec, df: pd.DataFrame, **kwargs: Any) -> Any:
         method: Callable[..., Any] = getattr(self, spec.method_name)
         return method(df, **kwargs)
+
+    def desktop_build_figure(
+        self,
+        selected_graph: str,
+        *,
+        df: pd.DataFrame,
+        df_scope: pd.DataFrame,
+        df_filtered: pd.DataFrame,
+        stroke: Optional[str],
+        distance: Optional[int],
+        pool: Optional[str],
+        selected_distance: Any,
+        selected_chronos_sample_size: int,
+        selected_pacing_swimmers: List[str],
+        selected_heatmap_swimmer: Optional[str],
+        selected_corridor_swimmer_name: Optional[str],
+        selected_corridor_swimmer_yob: Optional[int],
+    ) -> Tuple[Optional[plt.Figure], str]:
+        """Construit la figure pour le menu desktop Flet (noms tels que dans ``GRAPH_CATEGORIES``)."""
+        fig: Optional[plt.Figure] = None
+        chart_title = selected_graph
+        svc = self
+
+        if selected_graph in {
+            "Histogramme simple",
+            "Histogramme + densité",
+            "Histogramme cumulatif",
+        }:
+            chart_title = "Distribution des temps de nage"
+            if not df_filtered.empty:
+                if selected_graph == "Histogramme simple":
+                    fig = svc.plot_histogramme_simple(df_filtered)
+                elif selected_graph == "Histogramme + densité":
+                    fig = svc.plot_histogramme_densite(df_filtered)
+                else:
+                    fig = svc.plot_histogramme_cumulatif(df_filtered)
+
+        elif selected_graph == "Nombre de performances par épreuve":
+            if pool:
+                chart_title = f"Nombre de performances par épreuve ({pool})"
+                fig = svc.plot_nombre_performances_par_epreuve(
+                    df_scope, course_type=str(pool)
+                )
+
+        elif selected_graph == "Nombre de performances par épreuve (LCM + SCM)":
+            chart_title = "Nombre de performances par épreuve (LCM + SCM)"
+            fig = svc.plot_nombre_performances_par_epreuve_lcm_scm(df_scope)
+
+        elif selected_graph in {"Comptage par sexe (global)", "Comptage par sexe (épreuve)"}:
+            chart_title = (
+                "Nombre de performances par sexe – global"
+                if selected_graph == "Comptage par sexe (global)"
+                else "Nombre de performances par sexe – filtres actuels"
+            )
+            fig = svc.plot_nombre_performances_par_sexe(df_filtered)
+
+        elif selected_graph == "Camembert par sexe (global)":
+            chart_title = "Répartition des performances par sexe – global"
+            fig = svc.plot_camembert_sexe_global(df_filtered)
+
+        elif selected_graph == "Camembert par sexe (épreuve)":
+            chart_title = "Répartition des performances par sexe – filtres actuels"
+            if distance and stroke and pool:
+                nom_event = f"{distance} {stroke} {pool}"
+                fig = svc.plot_camembert_sexe_par_event(df_filtered, nom_event=nom_event)
+
+        elif selected_graph == "Distribution des temps par type de nage (boxplot)":
+            try:
+                distance_label = (
+                    str(int(float(selected_distance)))
+                    if selected_distance is not None
+                    else ""
+                )
+            except (TypeError, ValueError):
+                distance_label = str(selected_distance)
+            chart_title = (
+                f"Distribution des temps par type de nage pour la distance {distance_label} m"
+            )
+            fig = svc.plot_boxplot_temps_par_nage(df_scope)
+
+        elif selected_graph == "Top 10 clubs par participation (épreuve)":
+            chart_title = "Top 10 des clubs par nombre de participations – filtres actuels"
+            fig = svc.plot_top10_clubs(df_scope)
+
+        elif selected_graph == "Temps médian des 10 meilleurs clubs":
+            if distance and stroke and pool:
+                nom_event = f"{distance} {stroke} {pool}"
+                chart_title = f"Temps médian des 10 meilleurs clubs - {nom_event}"
+                fig, _meta = svc.plot_temps_median_top10_clubs_par_event(
+                    df_scope, nom_event=nom_event
+                )
+
+        elif selected_graph == "Line Plot of Swim Times by Stroke Type Over Time for a Sample of 5000":
+            chart_title = "Évolution des temps de nage dans le temps (à partir de 2000)"
+            fig = svc.plot_evolution_temps_nage(
+                df,
+                start_year=2000,
+                sample_size=max(0, int(selected_chronos_sample_size)),
+            )
+
+        elif selected_graph == "Swimming Speed by Distance and Stroke Type":
+            chart_title = "Swimming Speed by Distance and Stroke Type"
+            fig = svc.plot_swimming_speed_by_distance_and_stroke(df_scope)
+
+        elif selected_graph == "Max Speed per Split Distance and Stroke":
+            chart_title = "Max Speed per Split Distance and Stroke"
+            fig, _dfm = svc.plot_vitesse_max_par_split_et_nage(df_scope)
+
+        elif selected_graph == "Split speed - F vs M + nageurs cibles":
+            if distance and stroke and pool:
+                nom_event = f"{distance} {stroke} {pool}"
+                chart_title = f"{nom_event} - split_speed - F vs M + nageurs cibles"
+                pacing = selected_pacing_swimmers[:3]
+                target_colors: Dict[str, str] = {}
+                if pacing:
+                    pal = sns.color_palette("Dark2", n_colors=len(pacing))
+                    target_colors = {n: to_hex(c) for n, c in zip(pacing, pal)}
+                fig, _a, _b, _meta = svc.plot_split_speed_analysis_by_gender_with_targets(
+                    df_scope,
+                    nom_event=nom_event,
+                    swimmer_targets=list(pacing),
+                    target_colors=target_colors,
+                )
+
+        elif selected_graph == "Temps médian vs meilleur nageur":
+            if distance and stroke and pool:
+                nom_event = f"{distance} {stroke} {pool}"
+                chart_title = f"Temps médian vs meilleur nageur - Event {nom_event}"
+                fig, _a, _b, meta = svc.plot_temps_median_vs_meilleur_nageur_par_split_event(
+                    df_scope, nom_event=nom_event
+                )
+                if fig is None and isinstance(meta, dict):
+                    err = str(meta.get("message", ""))
+                    if err and err != "ok":
+                        chart_title = err
+
+        elif selected_graph == "Temps médian vs Top 10 nageurs":
+            if distance and stroke and pool:
+                nom_event = f"{distance} {stroke} {pool}"
+                chart_title = f"Temps médian vs Top 10 nageurs - Event {nom_event}"
+                fig, _a, _b, meta = svc.plot_temps_median_vs_top10_nageurs_par_split_event(
+                    df_scope, nom_event=nom_event
+                )
+                if fig is None and isinstance(meta, dict):
+                    err = str(meta.get("message", ""))
+                    if err and err != "ok":
+                        chart_title = err
+
+        elif selected_graph == "Vitesse médiane par split selon le genre":
+            if distance and stroke and pool:
+                nom_event = f"{distance} {stroke} {pool}"
+                chart_title = f"Vitesse médiane par split selon le genre - {nom_event}"
+                fig, _med, meta = svc.plot_vitesse_mediane_par_split_selon_genre_top_n_event(
+                    df_scope, nom_event=nom_event, top_n=10
+                )
+                if fig is None and isinstance(meta, dict):
+                    err = str(meta.get("message", ""))
+                    if err and err != "ok":
+                        chart_title = err
+
+        elif selected_graph == "Heatmap vitesse moyenne (distance x nage)":
+            chart_title = "Synthèse des vitesses – heatmap comparative"
+            if selected_heatmap_swimmer:
+                fig, meta = svc.plot_comparaison_vitesse_moyenne_heatmap_nageur_vs_autres(
+                    df_scope,
+                    nageur_cible=selected_heatmap_swimmer,
+                )
+                if fig is None and isinstance(meta, dict):
+                    err = str(meta.get("message", ""))
+                    if err:
+                        chart_title = err
+
+        elif selected_graph == "Couloir de performance (âge) - nageur cible":
+            if (
+                distance
+                and stroke
+                and pool
+                and selected_corridor_swimmer_name
+                and selected_corridor_swimmer_yob is not None
+            ):
+                nom_event = f"{distance} {stroke} {pool}"
+                chart_title = f"Couloir de performance - {nom_event}"
+                fig, meta = svc.plot_performance_corridor_plot_time(
+                    df_scope,
+                    nom_event=nom_event,
+                    nom_nageur=selected_corridor_swimmer_name,
+                    year_of_birth=int(selected_corridor_swimmer_yob),
+                )
+                if fig is None and isinstance(meta, dict):
+                    err = str(meta.get("message", ""))
+                    if err:
+                        chart_title = err
+
+        elif selected_graph == "Split Speed vs Distance (Relay Events) with Mean Trend Line":
+            if distance and stroke and pool:
+                nom_event = f"{distance} {stroke} {pool}"
+                chart_title = (
+                    f"{nom_event} — relais uniquement — split_speed en fonction de la distance"
+                )
+                fig, _p, _m, _md, meta = svc.plot_relais_split_speed_par_distance(
+                    df_scope, nom_event=nom_event
+                )
+                if fig is None and isinstance(meta, dict):
+                    err = str(meta.get("message", ""))
+                    if err:
+                        chart_title = err
+
+        return fig, chart_title
 
 
 Graphe1 = GraphSpec(
@@ -2077,184 +2573,9 @@ Graphe27 = GraphSpec(
     method_name="plot_performance_corridor_plot_time",
 )
 
+# les graphiques a précharger dans le prefetch
 GRAPHES_NOTEBOOK: List[GraphSpec] = [Graphe1, Graphe2, Graphe3, Graphe4, Graphe5, Graphe6, Graphe7, Graphe8, Graphe9, Graphe10, Graphe11, Graphe12, Graphe13, Graphe14, Graphe15, Graphe16, Graphe17, Graphe18, Graphe19, Graphe20, Graphe21, Graphe22, Graphe23, Graphe24, Graphe25, Graphe26, Graphe27]
 GRAPHES_PAR_KEY: Dict[str, GraphSpec] = {g.key: g for g in GRAPHES_NOTEBOOK}
-
-# Catégorie JSON pour les entrées préchargées depuis GRAPHES_NOTEBOOK (hors menus Flet).
-SERVICE_NOTEBOOK_JSON_CATEGORY = "_service_notebook"
-
-
-def _nb_first_event_label(df_nav: pd.DataFrame) -> Optional[str]:
-    need = ("Stroke", "Distance", "PoolLabel")
-    if df_nav.empty or not all(c in df_nav.columns for c in need):
-        return None
-    sub = df_nav.dropna(subset=list(need))
-    if sub.empty:
-        return None
-    r = sub.iloc[0]
-    try:
-        d = int(float(r["Distance"]))
-    except (TypeError, ValueError):
-        return None
-    st = str(r["Stroke"]).strip()
-    pl = str(r["PoolLabel"]).strip()
-    if not st or not pl:
-        return None
-    return f"{d} {st} {pl}"
-
-
-def _nb_first_pool_label(df_nav: pd.DataFrame) -> Optional[str]:
-    if "PoolLabel" not in df_nav.columns or df_nav.empty:
-        return None
-    pools = df_nav["PoolLabel"].dropna().astype(str).str.strip()
-    if pools.empty:
-        return None
-    return str(pools.iloc[0])
-
-
-def _nb_first_swimmer_name(df_nav: pd.DataFrame) -> Optional[str]:
-    if "swimmer" not in df_nav.columns:
-        return None
-    for swimmers in df_nav["swimmer"].tolist():
-        if isinstance(swimmers, list) and swimmers and isinstance(swimmers[0], dict):
-            n = swimmers[0].get("Name")
-            if n:
-                return str(n).strip()
-    return None
-
-
-def _nb_year_bounds(df_nav: pd.DataFrame) -> Tuple[int, int]:
-    if "SwimDate" not in df_nav.columns or df_nav.empty:
-        return 2000, 2024
-    years = pd.to_datetime(df_nav["SwimDate"], errors="coerce").dt.year.dropna()
-    if years.empty:
-        return 2000, 2024
-    ymin, ymax = int(years.min()), int(years.max())
-    if ymin > ymax:
-        return 2000, 2024
-    return ymin, ymax
-
-
-def _nb_first_solo_name_yob_for_event(
-    df_nav: pd.DataFrame, nom_event: str
-) -> Tuple[Optional[str], Optional[int]]:
-    if df_nav.empty or "Event" not in df_nav.columns:
-        return None, None
-    df_e = df_nav[df_nav["Event"].astype(str).str.strip() == str(nom_event).strip()]
-    for _, row in df_e.iterrows():
-        sw = row.get("swimmer")
-        if not isinstance(sw, list) or len(sw) != 1 or not isinstance(sw[0], dict):
-            continue
-        d0 = sw[0]
-        name = d0.get("Name")
-        yob = d0.get("Year_of_birth")
-        if not name:
-            continue
-        try:
-            if yob is not None and yob == yob:
-                yob_i = int(yob)
-            else:
-                yob_i = None
-        except (TypeError, ValueError):
-            yob_i = None
-        if yob_i is None:
-            continue
-        return str(name).strip(), yob_i
-    return None, None
-
-
-def notebook_prefetch_kwargs_for_spec(
-    spec: GraphSpec, df: pd.DataFrame, df_nav: pd.DataFrame
-) -> Optional[Dict[str, Any]]:
-    """
-    Kwargs passés à ``ServiceGraphe.build_figure`` pour un préchargement automatique.
-    Retourne ``None`` si les données minimales (ex. ``nom_event``) manquent.
-    """
-    nom = _nb_first_event_label(df_nav)
-    swimmer = _nb_first_swimmer_name(df_nav)
-    y0, y1 = _nb_year_bounds(df_nav)
-    pool = _nb_first_pool_label(df_nav)
-
-    m = spec.method_name
-    if m in (
-        "plot_histogramme_simple",
-        "plot_histogramme_densite",
-        "plot_histogramme_cumulatif",
-        "plot_camembert_sexe_global",
-        "plot_boxplot_temps_par_nage",
-        "plot_top10_clubs",
-        "plot_heatmap_vitesse_moyenne",
-        "plot_nombre_performances_par_epreuve_lcm_scm",
-        "plot_nombre_performances_par_sexe",
-        "plot_vitesse_max_par_split_et_nage",
-        "plot_vitesse_moyenne_mediane_par_split_et_nage",
-    ):
-        return {}
-    if m == "plot_nombre_performances_par_epreuve":
-        if not pool:
-            return None
-        return {"course_type": pool}
-    if m in ("plot_temps_median_top10_clubs_par_event", "plot_top10_nageurs_meilleur_temps_par_event"):
-        if not nom:
-            return None
-        return {"nom_event": nom}
-    if m == "plot_evolution_temps_nage":
-        return {"start_year": 2000, "sample_size": min(5000, max(1, len(df)))}
-    if m == "plot_camembert_sexe_par_event":
-        if not nom:
-            return None
-        return {"nom_event": nom}
-    if m == "plot_split_speed_analysis_by_gender_with_targets":
-        if not nom:
-            return None
-        targets: List[str] = []
-        if swimmer:
-            targets = [swimmer]
-        return {
-            "nom_event": nom,
-            "swimmer_targets": targets,
-            "target_colors": {},
-        }
-    if m == "plot_vitesse_par_split_pour_nageur_event":
-        if not nom or not swimmer:
-            return None
-        return {"nom_nageur": swimmer, "nom_event": nom}
-    if m == "plot_vitesse_par_split_meilleur_nageur_event_periode":
-        if not nom:
-            return None
-        return {"nom_event": nom, "annee_debut": y0, "annee_fin": y1}
-    if m == "plot_vitesse_par_split_top_nageurs_hf_event_periode":
-        if not nom:
-            return None
-        return {"nom_event": nom, "annee_debut": y0, "annee_fin": y1, "top_n": 1}
-    if m == "plot_vitesse_par_split_top_nageurs_uniques_event_periode":
-        if not nom:
-            return None
-        return {"nom_event": nom, "annee_debut": y0, "annee_fin": y1, "top_n": 10}
-    if m == "plot_comparaison_vitesse_moyenne_heatmap_nageur_vs_autres":
-        if not swimmer:
-            return None
-        return {"nageur_cible": swimmer}
-    if m in (
-        "plot_temps_median_vs_meilleur_nageur_par_split_event",
-        "plot_temps_median_vs_top10_nageurs_par_split_event",
-        "plot_vitesse_mediane_par_split_selon_genre_top_n_event",
-        "plot_relais_split_speed_par_distance",
-    ):
-        if not nom:
-            return None
-        if m == "plot_vitesse_mediane_par_split_selon_genre_top_n_event":
-            return {"nom_event": nom, "top_n": 10}
-        return {"nom_event": nom}
-    if m == "plot_performance_corridor_plot_time":
-        if not nom:
-            return None
-        name, yob = _nb_first_solo_name_yob_for_event(df_nav, nom)
-        if not name or yob is None:
-            return None
-        return {"nom_event": nom, "nom_nageur": name, "year_of_birth": int(yob)}
-    return {}
-
 
 def unwrap_matplotlib_figure(result: Any) -> Optional[plt.Figure]:
     if result is None:
