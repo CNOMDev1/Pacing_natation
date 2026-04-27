@@ -49,9 +49,6 @@ ENABLE_PERSISTENT_GRAPH_CACHE = True
 if ENABLE_PERSISTENT_GRAPH_CACHE:
     EXPORT_IMAGE_BASE64_TO_JSON = True
 ENABLE_NOTEBOOK_PREFETCH_ON_START = True
-GRAPH_REGISTRY_DEBOUNCE_S = 0.45
-STARTUP_PREFETCH_MAX_WORKERS = 4
-
 
 class LoadingBar:
     def __init__(self, page: ft.Page, total_units: int) -> None:
@@ -93,13 +90,7 @@ class LoadingBar:
         self.page.update()
         time.sleep(0.06)
 
-    def advance(
-        self,
-        detail: str,
-        units: int = 1,
-        *,
-        show_graph_progress: bool = False,
-    ) -> None:
+    def advance(self, detail: str, units: int = 1, *, show_graph_progress: bool = False) -> None:
         self.completed += max(int(units), 0)
         ratio = min(self.completed / self.total_units, 1.0)
         pct_str = f"{int(round(ratio * 100))}%"
@@ -155,7 +146,7 @@ class PacingDesktopApp:
             ] = None
             self.graph_render_registry: Dict[str, Dict[str, Any]] = {}
             self.chart_image_cache: Dict[str, str] = {}
-            self._prefetched_json_mtime: float = 0.0
+            self._prefetched_json_mtime: float = 0.0 # la ref temporelle en memoire 
             self._registry_json_lock = threading.Lock()
             self._registry_json_timer: Optional[threading.Timer] = None
             self._nav_combos_cache_id: Optional[int] = None
@@ -175,8 +166,6 @@ class PacingDesktopApp:
             self.pacing_swimmer_dd_1: ft.Dropdown
             self.pacing_swimmer_dd_2: ft.Dropdown
             self.pacing_swimmer_dd_3: ft.Dropdown
-            self.chronos_sample_text: ft.Text
-            self.chronos_sample_slider: ft.Slider
 
             self.image = ft.Image(
                 src="",
@@ -265,24 +254,6 @@ class PacingDesktopApp:
             "chronos_sample_size": int(self.selected_chronos_sample_size),
         }
 
-    def _persist_graph_registry_json_worker(self) -> None:
-        with self._registry_json_lock:
-            self._registry_json_timer = None
-        try:
-            self._write_graph_registry_json()
-        except Exception:
-            pass
-
-    def _flush_graph_registry_json_now(self) -> None:
-        """Annule le timer différé et écrit le JSON immédiatement (prefetch, etc.)."""
-        if not ENABLE_PERSISTENT_GRAPH_CACHE:
-            return
-        with self._registry_json_lock:
-            if self._registry_json_timer is not None:
-                self._registry_json_timer.cancel()
-                self._registry_json_timer = None
-        self._write_graph_registry_json()
-
     def _write_graph_registry_json(self) -> None:
         if not ENABLE_PERSISTENT_GRAPH_CACHE:
             return
@@ -320,7 +291,7 @@ class PacingDesktopApp:
         try:
             if not GRAPH_EXPORT_PATH.exists():
                 return
-            mtime = float(GRAPH_EXPORT_PATH.stat().st_mtime)
+            mtime = float(GRAPH_EXPORT_PATH.stat().st_mtime) # la date de dernière modification du fichier prefetched_graphs.json
             if mtime > self._prefetched_json_mtime:
                 self._load_graph_registry_json()
         except OSError:
@@ -416,7 +387,7 @@ class PacingDesktopApp:
         if image_base64:
             self.chart_image_cache[render_key] = image_base64
         if not skip_json_write:
-            self._flush_graph_registry_json_now()
+            self._write_graph_registry_json()
 
     def _compute_notebook_prefetch_render(
         self, spec: GraphSpec
@@ -428,16 +399,13 @@ class PacingDesktopApp:
         """
         options = self._notebook_prefetch_options(spec.key)
         render_key = self._notebook_service_render_key(spec)
-        # Instance locale pour éviter le partage d'état mutable entre threads.
         graph_svc = ServiceGraphe()
         try:
             raw = graph_svc.build_figure_prefetch(spec, self.df, self.df_nav)
             if raw is None:
-                # Ne pas ignorer le spec: on l'enregistre en "no_figure" pour garder
-                # un inventaire complet de GRAPHES_NOTEBOOK dans le JSON.
                 return (spec, render_key, options, "no_figure", spec.name, None, None)
             fig = unwrap_matplotlib_figure(raw)
-        except Exception as exc:  # type: ignore[bare-except]
+        except Exception as exc: 
             return (spec, render_key, options, "error", spec.name, None, str(exc))
 
         if fig is None:
@@ -476,7 +444,7 @@ class PacingDesktopApp:
             pending_specs.append(spec)
 
         if pending_specs:
-            worker_count = max(1, min(STARTUP_PREFETCH_MAX_WORKERS, len(pending_specs)))
+            worker_count = max(1, min(4, len(pending_specs)))
             with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
                 future_to_spec = {
                     executor.submit(self._compute_notebook_prefetch_render, spec): spec
@@ -524,7 +492,7 @@ class PacingDesktopApp:
                             detail=spec.name, show_graph_progress=True
                         )
 
-        self._flush_graph_registry_json_now()
+        self._write_graph_registry_json()
 
     def _register_graph_render(
         self,
@@ -562,7 +530,7 @@ class PacingDesktopApp:
         }
         if image_base64:
             self.chart_image_cache[render_key] = image_base64
-        self._flush_graph_registry_json_now()
+        self._write_graph_registry_json()
 
     def _build_ui(self) -> None:
         if self.df.empty:
@@ -686,22 +654,6 @@ class PacingDesktopApp:
             menu_width=dropdown_menu_width,
             visible=False,
         )
-        self.chronos_sample_text = ft.Text(
-            "",
-            size=12,
-            color="#cbd5e1",
-            visible=False,
-        )
-        self.chronos_sample_slider = ft.Slider(
-            min=0,
-            max=5000,
-            value=float(self.selected_chronos_sample_size),
-            round=0,
-            on_change=self._on_chronos_sample_change,
-            label="{value}",
-            visible=False,
-            width=dropdown_width,
-        )
 
         dark_toggle = ft.IconButton(
             icon=ft.icons.Icons.LIGHT_MODE,
@@ -733,8 +685,6 @@ class PacingDesktopApp:
                     self.pacing_swimmer_dd_3,
                     self.heatmap_swimmer_dd,
                     self.corridor_swimmer_dd,
-                    self.chronos_sample_text,
-                    self.chronos_sample_slider,
                     ft.Divider(),
                     ft.Row(
                         [self.loader],
@@ -824,19 +774,6 @@ class PacingDesktopApp:
             if s and s not in cleaned:
                 cleaned.append(s)
         self.selected_pacing_swimmers = cleaned[:3]
-        self._update_chart()
-
-    def _on_chronos_sample_change(self, e: ft.ControlEvent) -> None:
-        try:
-            self.selected_chronos_sample_size = int(float(e.control.value or 0))
-        except (TypeError, ValueError):
-            self.selected_chronos_sample_size = 0
-        self.chronos_sample_text.value = (
-            f"Taille échantillon chronos: {self.selected_chronos_sample_size:,}".replace(
-                ",", " "
-            )
-        )
-        self.page.update()
         self._update_chart()
 
     def _on_corridor_swimmer_change(self, e: ft.ControlEvent) -> None:
@@ -1126,7 +1063,7 @@ class PacingDesktopApp:
                 dd.visible = False
             self.selected_pacing_swimmers = []
 
-        # Option spécifique Chronos dans le temps (taille échantillon)
+        # Chronos dans le temps: borne la taille d'échantillon aux données disponibles
         if self.selected_graph == "Line Plot of Swim Times by Stroke Type Over Time for a Sample of 5000":
             if self.df.empty:
                 max_count = 0
@@ -1141,19 +1078,6 @@ class PacingDesktopApp:
                 self.selected_chronos_sample_size = max_count
             if self.selected_chronos_sample_size < 0:
                 self.selected_chronos_sample_size = 0
-            self.chronos_sample_slider.min = 0
-            self.chronos_sample_slider.max = float(max_count)
-            self.chronos_sample_slider.value = float(self.selected_chronos_sample_size)
-            self.chronos_sample_text.value = (
-                f"Taille échantillon chronos: {self.selected_chronos_sample_size:,} / {max_count:,}".replace(
-                    ",", " "
-                )
-            )
-            self.chronos_sample_text.visible = True
-            self.chronos_sample_slider.visible = True
-        else:
-            self.chronos_sample_text.visible = False
-            self.chronos_sample_slider.visible = False
 
         # Catégorie / Graphique
         self.category_dd.menu_height = self._menu_height_for_count(len(self.category_dd.options))
