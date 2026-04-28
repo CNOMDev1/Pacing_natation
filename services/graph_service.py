@@ -95,7 +95,10 @@ DESKTOP_GRAPH_MENU: Tuple[DesktopGraphCategory, ...] = (
     ),
     DesktopGraphCategory(
         "Couloirs de performance",
-        ("Couloir de performance (âge) - nageur cible",),
+        (
+            "Couloir de performance (âge) - nageur cible",
+            "Couloir de performance global (âge)",
+        ),
     ),
 )
 
@@ -1869,13 +1872,21 @@ class ServiceGraphe:
         min_points: int = 5,
         figsize: tuple[int, int] = (12, 8),
     ) -> tuple[Optional[plt.Figure], dict[str, object]]:
-        data = df.copy()
+        required_cols = ["swimmer", "SwimDate", "Event", "SwimTimeSeconds"]
+        missing_cols = [c for c in required_cols if c not in df.columns]
+        if missing_cols:
+            return None, {"message": f"Colonnes manquantes: {', '.join(missing_cols)}"}
+
+        # Evite une deep copy du DataFrame complet (trop couteuse sur gros exports).
+        data = df.loc[:, required_cols]
         if solo_only:
             data = data[
                 data["swimmer"].apply(
                     lambda x: isinstance(x, list) and len(x) == 1
                 )
             ].copy()
+        else:
+            data = data.copy()
 
         data["swimmer_dict"] = data["swimmer"].apply(
             lambda x: x[0] if isinstance(x, list) and len(x) == 1 else None
@@ -2116,6 +2127,120 @@ class ServiceGraphe:
             "ages_available": [int(x) for x in df_percentiles.index.tolist()],
         }
 
+    def plot_performance_corridor_global_plot_time(
+        self,
+        df: pd.DataFrame,
+        nom_event: str,
+        age_min: int = 14,
+        age_max: int = 35,
+        solo_only: bool = True,
+        min_points: int = 5,
+        figsize: tuple[int, int] = (12, 8),
+    ) -> tuple[Optional[plt.Figure], dict[str, object]]:
+        required_cols = ["swimmer", "SwimDate", "Event", "SwimTimeSeconds"]
+        missing_cols = [c for c in required_cols if c not in df.columns]
+        if missing_cols:
+            return None, {"message": f"Colonnes manquantes: {', '.join(missing_cols)}"}
+
+        data = df.loc[:, required_cols]
+        if solo_only:
+            data = data[
+                data["swimmer"].apply(
+                    lambda x: isinstance(x, list) and len(x) == 1
+                )
+            ].copy()
+        else:
+            data = data.copy()
+
+        data["swimmer_dict"] = data["swimmer"].apply(
+            lambda x: x[0] if isinstance(x, list) and len(x) == 1 else None
+        )
+        data["Gender"] = data["swimmer_dict"].apply(
+            lambda x: x.get("Gender") if isinstance(x, dict) else None
+        )
+        data["Year_of_birth"] = data["swimmer_dict"].apply(
+            lambda x: x.get("Year_of_birth") if isinstance(x, dict) else None
+        )
+        data["Age_json"] = data["swimmer_dict"].apply(
+            lambda x: x.get("Age") if isinstance(x, dict) else None
+        )
+        data["SwimYear"] = pd.to_datetime(data["SwimDate"], errors="coerce").dt.year
+        data["Age_swim"] = data["Age_json"]
+
+        mask = (
+            data["Age_swim"].isna()
+            & data["Year_of_birth"].notna()
+            & data["SwimYear"].notna()
+        )
+        data.loc[mask, "Age_swim"] = data.loc[mask, "SwimYear"] - data.loc[mask, "Year_of_birth"]
+        data["Age_swim"] = pd.to_numeric(data["Age_swim"], errors="coerce").astype("Int64")
+
+        long_df = data[
+            (data["Event"] == nom_event)
+            & (data["SwimTimeSeconds"].notna())
+            & (data["Gender"].notna())
+            & (data["Age_swim"].notna())
+        ].copy()
+        if long_df.empty:
+            return None, {"message": f"Aucune donnee exploitable pour {nom_event}"}
+
+        gender = str(long_df["Gender"].mode().iloc[0])
+        long_df = long_df[long_df["Gender"] == gender].copy()
+
+        grouped = long_df.groupby("Age_swim")["SwimTimeSeconds"].agg(list)
+        grouped = grouped.apply(lambda x: x if len(x) >= min_points else np.nan).dropna()
+        if grouped.empty:
+            return None, {
+                "message": "Pas assez de points pour calculer les percentiles.",
+                "gender": gender,
+            }
+
+        percentiles = [10, 25, 50, 75, 90]
+        df_percentiles = pd.DataFrame(
+            {f"p{p}": grouped.apply(lambda x: np.percentile(x, p)) for p in percentiles}
+        )
+        df_percentiles = df_percentiles.loc[
+            (df_percentiles.index >= age_min)
+            & (df_percentiles.index <= age_max)
+        ]
+        if df_percentiles.empty:
+            return None, {
+                "message": "Aucune tranche d'age disponible sur la plage demandee.",
+                "gender": gender,
+            }
+
+        fig, ax = plt.subplots(figsize=figsize)
+        for p in percentiles:
+            ax.plot(
+                df_percentiles.index,
+                df_percentiles[f"p{p}"],
+                linestyle="--",
+                label=f"{p}%",
+            )
+
+        ax.fill_between(
+            df_percentiles.index,
+            df_percentiles["p25"],
+            df_percentiles["p75"],
+            alpha=0.2,
+            label="Zone 25-75%",
+        )
+        ax.invert_yaxis()
+        ax.set_xlabel("Age")
+        ax.set_ylabel("Temps (secondes)")
+        ax.set_title(f"Couloir de performance global - {nom_event}")
+        ax.grid(alpha=0.3)
+        ax.legend()
+        fig.tight_layout()
+
+        return fig, {
+            "message": "ok",
+            "gender": gender,
+            "event": str(nom_event),
+            "ages_available": [int(x) for x in df_percentiles.index.tolist()],
+            "points_count": int(len(long_df)),
+        }
+
     @staticmethod
     def _nb_first_event_label(df_nav: pd.DataFrame) -> Optional[str]:
         need = ("Stroke", "Distance", "PoolLabel")
@@ -2285,6 +2410,10 @@ class ServiceGraphe:
             if not name or yob is None:
                 return None
             return {"nom_event": nom, "nom_nageur": name, "year_of_birth": int(yob)}
+        if m == "plot_performance_corridor_global_plot_time":
+            if not nom:
+                return None
+            return {"nom_event": nom}
         return {}
 
     def build_figure_prefetch(
@@ -2492,6 +2621,19 @@ class ServiceGraphe:
                         if err:
                             chart_title = err
 
+        elif selected_graph == "Couloir de performance global (âge)":
+            if distance and stroke and pool:
+                nom_event = f"{distance} {stroke} {pool}"
+                chart_title = f"Couloir de performance global - {nom_event}"
+                fig, meta = svc.plot_performance_corridor_global_plot_time(
+                    df_scope,
+                    nom_event=nom_event,
+                )
+                if fig is None and isinstance(meta, dict):
+                    err = str(meta.get("message", ""))
+                    if err:
+                        chart_title = err
+
         elif selected_graph == "Split Speed vs Distance (Relay Events) with Mean Trend Line":
             if distance and stroke and pool:
                 nom_event = f"{distance} {stroke} {pool}"
@@ -2509,6 +2651,7 @@ class ServiceGraphe:
         return fig, chart_title
 
 
+# les graphiques a précharger dans le prefetch
 Graphe1 = GraphSpec(
     key="histogramme_simple",
     name="Histogramme simple",
@@ -2671,9 +2814,19 @@ Graphe27 = GraphSpec(
     category="Analyse individuelle par epreuve",
     method_name="plot_performance_corridor_plot_time",
 )
+Graphe28 = GraphSpec(
+    key="performance_corridor_global_plot_time",
+    name="Couloir de performance global (age)",
+    category="Analyse individuelle par epreuve",
+    method_name="plot_performance_corridor_global_plot_time",
+)
 
-# les graphiques a précharger dans le prefetch
-GRAPHES_NOTEBOOK: List[GraphSpec] = [Graphe1, Graphe2, Graphe3, Graphe4, Graphe5, Graphe6, Graphe7, Graphe8, Graphe9, Graphe10, Graphe11, Graphe12, Graphe13, Graphe14, Graphe15, Graphe16, Graphe17, Graphe18, Graphe19, Graphe20, Graphe21, Graphe22, Graphe23, Graphe24, Graphe25, Graphe26, Graphe27]
+GRAPHES_NOTEBOOK: List[GraphSpec] = [
+    Graphe1, Graphe2, Graphe3, Graphe4, Graphe5, Graphe6, Graphe7, Graphe8, Graphe9,
+    Graphe10, Graphe11, Graphe12, Graphe13, Graphe14, Graphe15, Graphe16, Graphe17,
+    Graphe18, Graphe19, Graphe20, Graphe21, Graphe22, Graphe23, Graphe24, Graphe25,
+    Graphe26, Graphe27, Graphe28,
+]
 GRAPHES_PAR_KEY: Dict[str, GraphSpec] = {g.key: g for g in GRAPHES_NOTEBOOK}
 
 def unwrap_matplotlib_figure(result: Any) -> Optional[plt.Figure]:
