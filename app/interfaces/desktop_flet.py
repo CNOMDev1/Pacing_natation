@@ -1,9 +1,12 @@
+import asyncio
 import concurrent.futures
 import datetime as dt
 import json
+import os
 import threading
+import traceback
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import flet as ft
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -44,14 +47,33 @@ EXTRANAT_OUTPUT_BASE_DIR = (
 )
 
 GRAPH_EXPORT_PATH = PROJECT_DIR / "data" / "exports" / "prefetched_graphs.json"
+CORRIDOR_GRAPHS_EXPORT_PATH = (
+    PROJECT_DIR / "data" / "exports" / "prefetched_corridor_graphs.json"
+)
+EVENT_SWIMMERS_EXPORT_PATH = (
+    PROJECT_DIR / "data" / "exports" / "prefetched_event_swimmers.json"
+)
 EXPORT_IMAGE_BASE64_TO_JSON = True
 ENABLE_PERSISTENT_GRAPH_CACHE = True
 if ENABLE_PERSISTENT_GRAPH_CACHE:
     EXPORT_IMAGE_BASE64_TO_JSON = True
 ENABLE_NOTEBOOK_PREFETCH_ON_START = True
+ENABLE_CORRIDOR_PREFETCH_ON_START = True
+CORRIDOR_PREFETCH_MAX_RENDERS = int(os.environ.get("PACING_CORRIDOR_PREFETCH_MAX", "2500"))
+CORRIDOR_GRAPH_NAME = "Couloir de performance (âge) - nageur cible"
+CORRIDOR_CATEGORY = "Couloirs de performance"
+CHART_UPDATE_AFTER_FILTER_DEBOUNCE_SEC = 0.12
+
 
 class LoadingBar:
-    def __init__(self, page: ft.Page, total_units: int) -> None:
+    def __init__(
+        self,
+        page: ft.Page,
+        total_units: int,
+        *,
+        header: str = "CHARGEMENT",
+        subheader: str = "Demarrage de l'application",
+    ) -> None:
         self.page = page
         self.total_units = max(int(total_units), 1)
         self.completed = 0
@@ -63,8 +85,8 @@ class LoadingBar:
             color="#f8fafc",
         )
         self.detail_text = ft.Text("Initialisation...", size=12, color="#9ca3af")
-        self.header_text = ft.Text("CHARGEMENT", size=30, weight=ft.FontWeight.BOLD, color="#f8fafc")
-        self.subheader_text = ft.Text("Demarrage de l'application", size=11, color="#9ca3af")
+        self.header_text = ft.Text(header, size=30, weight=ft.FontWeight.BOLD, color="#f8fafc")
+        self.subheader_text = ft.Text(subheader, size=11, color="#9ca3af")
         self.container = ft.Container(
             expand=True,
             content=ft.Column(
@@ -109,6 +131,179 @@ class LoadingBar:
 
         page.run_task(_flush_ui)
 
+    def reconfigure_phase(
+        self,
+        *,
+        total_units: int,
+        header: str,
+        subheader: str,
+    ) -> None:
+        """Deuxième barre / étape suivante : remet la progression à zéro et change les libellés."""
+        self.total_units = max(int(total_units), 1)
+        self.completed = 0
+        hdr, sub = header, subheader
+        page = self.page
+
+        async def _apply() -> None:
+            self.header_text.value = hdr
+            self.subheader_text.value = sub
+            self.progress.value = 0.0
+            self.percent_text.value = "0%"
+            self.detail_text.value = "Initialisation..."
+            page.update()
+
+        page.run_task(_apply)
+        time.sleep(0.06)
+
+    def close_gap_to_100(self, detail: str = "Terminé") -> None:
+        """Complète la barre si des unités n’ont pas été consommées."""
+        gap = self.total_units - self.completed
+        if gap > 0:
+            self.advance(detail, units=gap, show_graph_progress=True)
+
+
+class DualPrefetchProgress:
+    """Deux barres de progression en parallèle (gauche : graphes généraux, droite : couloirs)."""
+
+    def __init__(
+        self,
+        page: ft.Page,
+        total_left: int,
+        total_right: int,
+        left_path: str,
+        right_path: str,
+    ) -> None:
+        self.page = page
+        self._lock = threading.Lock()
+        self.left_total = max(1, int(total_left))
+        self.right_total = max(1, int(total_right))
+        self.left_done = 0
+        self.right_done = 0
+        self.left_pb = ft.ProgressBar(width=360, value=0.0, color="#f8fafc", bgcolor="#1f2937")
+        self.right_pb = ft.ProgressBar(width=360, value=0.0, color="#93c5fd", bgcolor="#1f2937")
+        self.left_pct = ft.Text("0%", size=14, weight=ft.FontWeight.BOLD, color="#f8fafc")
+        self.right_pct = ft.Text("0%", size=14, weight=ft.FontWeight.BOLD, color="#f8fafc")
+        self.left_detail = ft.Text("…", size=11, color="#9ca3af")
+        self.right_detail = ft.Text("…", size=11, color="#9ca3af")
+        self.container = ft.Container(
+            expand=True,
+            bgcolor="#000000",
+            padding=ft.Padding(left=24, top=32, right=24, bottom=32),
+            content=ft.Column(
+                [
+                    ft.Text(
+                        "CHARGEMENT (parallèle)",
+                        size=22,
+                        weight=ft.FontWeight.BOLD,
+                        color="#f8fafc",
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                    ft.Container(height=16),
+                    ft.Row(
+                        [
+                            ft.Container(
+                                expand=True,
+                                content=ft.Column(
+                                    [
+                                        ft.Text("Graphes — prefetched_graphs.json", size=13, weight=ft.FontWeight.BOLD, color="#e5e7eb"),
+                                        ft.Text(left_path, size=10, color="#6b7280"),
+                                        self.left_pb,
+                                        self.left_pct,
+                                        self.left_detail,
+                                    ],
+                                    spacing=8,
+                                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                                ),
+                            ),
+                            ft.Container(
+                                expand=True,
+                                content=ft.Column(
+                                    [
+                                        ft.Text("Couloirs — prefetched_corridor_graphs.json", size=13, weight=ft.FontWeight.BOLD, color="#e5e7eb"),
+                                        ft.Text(right_path, size=10, color="#6b7280"),
+                                        self.right_pb,
+                                        self.right_pct,
+                                        self.right_detail,
+                                    ],
+                                    spacing=8,
+                                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                                ),
+                            ),
+                        ],
+                        expand=True,
+                    ),
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+    def mount(self) -> None:
+        self.page.bgcolor = "#000000"
+        self.page.clean()
+        self.page.add(self.container)
+        self.page.update()
+        time.sleep(0.06)
+
+    def _flush_left(self, ratio: float, detail_str: str) -> None:
+        page = self.page
+
+        async def _run() -> None:
+            self.left_pb.value = ratio
+            self.left_pct.value = f"{int(round(ratio * 100))}%"
+            self.left_detail.value = detail_str
+            page.update()
+
+        page.run_task(_run)
+
+    def _flush_right(self, ratio: float, detail_str: str) -> None:
+        page = self.page
+
+        async def _run() -> None:
+            self.right_pb.value = ratio
+            self.right_pct.value = f"{int(round(ratio * 100))}%"
+            self.right_detail.value = detail_str
+            page.update()
+
+        page.run_task(_run)
+
+    def advance_left(
+        self, detail: str, units: int = 1, *, show_graph_progress: bool = True
+    ) -> None:
+        with self._lock:
+            self.left_done += max(int(units), 0)
+            ratio = min(self.left_done / self.left_total, 1.0)
+            n, t = self.left_done, self.left_total
+        if show_graph_progress:
+            detail_str = f"Graphes : {n}/{t} — {detail}"
+        else:
+            detail_str = f"{n}/{t} — {detail}"
+        self._flush_left(ratio, detail_str)
+
+    def advance_right(
+        self, detail: str, units: int = 1, *, show_graph_progress: bool = True
+    ) -> None:
+        with self._lock:
+            self.right_done += max(int(units), 0)
+            ratio = min(self.right_done / self.right_total, 1.0)
+            n, t = self.right_done, self.right_total
+        if show_graph_progress:
+            detail_str = f"Couloirs : {n}/{t} — {detail}"
+        else:
+            detail_str = f"{n}/{t} — {detail}"
+        self._flush_right(ratio, detail_str)
+
+    def close_gap_left(self, detail: str = "Terminé") -> None:
+        with self._lock:
+            gap = self.left_total - self.left_done
+        if gap > 0:
+            self.advance_left(detail, units=gap, show_graph_progress=True)
+
+    def close_gap_right(self, detail: str = "Terminé") -> None:
+        with self._lock:
+            gap = self.right_total - self.right_done
+        if gap > 0:
+            self.advance_right(detail, units=gap, show_graph_progress=True)
+
 
 class PacingDesktopApp:
     def __init__(self, page: ft.Page) -> None:
@@ -118,17 +313,84 @@ class PacingDesktopApp:
         self.page.bgcolor = "#020617"
         self.page.padding = 0
 
-        self._startup_graph_target = len(GRAPHES_NOTEBOOK) if ENABLE_NOTEBOOK_PREFETCH_ON_START else 0
-        self._startup_graph_done = 0
-        self.loading_bar: Optional[LoadingBar] = LoadingBar(self.page, total_units=self._startup_graph_target)
-        self.loading_bar.mount()
+        self.loading_bar: Optional[LoadingBar] = None
+        self._dual_prefetch_ui: Optional[DualPrefetchProgress] = None
+        self._defer_prefetch_json_write: bool = False
+        self._ui_light_mode: bool = False
+        self._sidebar_container: Optional[ft.Container] = None
+        self._main_area_container: Optional[ft.Container] = None
+        self._theme_toggle_btn: Optional[ft.IconButton] = None
+        self._nav_title_text: Optional[ft.Text] = None
         self.page.run_thread(self._bootstrap_startup)
+
+    def _advance_startup_notebook(
+        self, detail: str, units: int = 1, *, show_graph_progress: bool = True
+    ) -> None:
+        dual = self._dual_prefetch_ui
+        if dual is not None:
+            dual.advance_left(detail, units, show_graph_progress=show_graph_progress)
+        elif self.loading_bar is not None:
+            self.loading_bar.advance(
+                detail=detail, units=units, show_graph_progress=show_graph_progress
+            )
+
+    def _advance_startup_corridor(
+        self, detail: str, units: int = 1, *, show_graph_progress: bool = True
+    ) -> None:
+        dual = self._dual_prefetch_ui
+        if dual is not None:
+            dual.advance_right(detail, units, show_graph_progress=show_graph_progress)
+        elif self.loading_bar is not None:
+            self.loading_bar.advance(
+                detail=detail, units=units, show_graph_progress=show_graph_progress
+            )
+
+    def _run_notebook_prefetch_worker(self) -> None:
+        dual = self._dual_prefetch_ui
+        try:
+            if (
+                ENABLE_NOTEBOOK_PREFETCH_ON_START
+                and ENABLE_PERSISTENT_GRAPH_CACHE
+                and not self.df.empty
+            ):
+                self._prefetch_service_notebook_graphs_skip_existing()
+            else:
+                self._advance_startup_notebook(
+                    "Préfetch ignoré (données ou cache disque)",
+                    units=1,
+                    show_graph_progress=True,
+                )
+        finally:
+            if dual is not None:
+                dual.close_gap_left("prefetched_graphs.json")
+
+    def _run_corridor_prefetch_worker(
+        self, corridor_tasks: List[Tuple[str, int, str, str, int, int]]
+    ) -> None:
+        dual = self._dual_prefetch_ui
+        try:
+            if (
+                corridor_tasks
+                and ENABLE_PERSISTENT_GRAPH_CACHE
+                and not self.df.empty
+            ):
+                self._prefetch_corridor_graphs_skip_existing(corridor_tasks)
+            else:
+                self._advance_startup_corridor(
+                    "Aucun préchargement couloir (liste vide ou cache inactif)",
+                    units=1,
+                    show_graph_progress=True,
+                )
+        finally:
+            if dual is not None:
+                dual.close_gap_right("prefetched_corridor_graphs.json")
 
     def _bootstrap_startup(self) -> None:
         """pipeline de démarrrage"""
         try:
             self.df: pd.DataFrame = load_data()
             self.df_nav: pd.DataFrame = _build_df_nav(self.df) 
+            self._write_event_swimmers_cache_json()
 
             # Selections courantes
             self.selected_category: str = list[str](GRAPH_CATEGORIES.keys())[0]
@@ -146,13 +408,24 @@ class PacingDesktopApp:
             ] = None
             self.graph_render_registry: Dict[str, Dict[str, Any]] = {}
             self.chart_image_cache: Dict[str, str] = {}
-            self._prefetched_json_mtime: float = 0.0 # la ref temporelle en memoire 
+            self._prefetched_json_mtime: float = 0.0 # la ref temporelle en memoire (prefetched_graphs.json)
+            self._corridor_graphs_json_mtime: float = 0.0
             self._registry_json_lock = threading.Lock()
             self._registry_json_timer: Optional[threading.Timer] = None
-            self._nav_combos_cache_id: Optional[int] = None
+            self._nav_combos_cache_key: Optional[Tuple[Any, ...]] = None
             self._nav_combos_cache: Optional[Dict[str, Dict[int, List[str]]]] = None
+            self._event_swimmers_cache: Dict[str, Dict[str, Dict[str, List[str]]]] = {}
+            self._selected_event_swimmers: List[str] = []
+            self._event_swimmer_options_cache: Dict[
+                Tuple[str, int, str], List[ft.dropdown.Option]
+            ] = {}
+            self._corridor_dd_options_event_key: Optional[Tuple[str, int, str]] = None
+            self._chart_schedule_gen: int = 0
+            self._corridor_swimmer_schedule_gen: int = 0
+            self._pacing_swimmer_options_key: Optional[Tuple[str, ...]] = None
             self._heatmap_swimmer_names_cache_id: Optional[int] = None
             self._heatmap_swimmer_names_cache: Optional[List[str]] = None
+            self._registry_swimmer_names_cache_key: Optional[Tuple[float, float, int]] = None
             self.graph_svc = ServiceGraphe()
 
             # Widgets Flet
@@ -197,29 +470,350 @@ class PacingDesktopApp:
             )
             if ENABLE_PERSISTENT_GRAPH_CACHE:
                 self._load_graph_registry_json()
+            self._load_event_swimmers_cache_json()
 
-            if ENABLE_NOTEBOOK_PREFETCH_ON_START:
-                self._prefetch_service_notebook_graphs_skip_existing()
+            corridor_tasks: List[Tuple[str, int, str, str, int, int]] = []
+            if (
+                ENABLE_CORRIDOR_PREFETCH_ON_START
+                and ENABLE_PERSISTENT_GRAPH_CACHE
+                and not self.df.empty
+                and bool(self._event_swimmers_cache)
+            ):
+                corridor_tasks = self._collect_corridor_prefetch_tasks()
 
-            gap = self._startup_graph_target - self._startup_graph_done
-            if gap > 0:
-                if self.loading_bar is not None:
-                    self.loading_bar.advance(
-                        detail="Synchronisation menu / prefetch",
-                        units=gap,
-                        show_graph_progress=True,
+            graph_json_path = str(GRAPH_EXPORT_PATH)
+            corridor_json_path = str(CORRIDOR_GRAPHS_EXPORT_PATH)
+
+            if ENABLE_PERSISTENT_GRAPH_CACHE:
+                left_total = (
+                    max(1, len(GRAPHES_NOTEBOOK))
+                    if (
+                        ENABLE_NOTEBOOK_PREFETCH_ON_START
+                        and not self.df.empty
                     )
-                self._startup_graph_done = self._startup_graph_target
+                    else 1
+                )
+                right_total = (
+                    max(1, len(corridor_tasks))
+                    if (corridor_tasks and not self.df.empty)
+                    else 1
+                )
+                dual = DualPrefetchProgress(
+                    self.page,
+                    left_total,
+                    right_total,
+                    graph_json_path,
+                    corridor_json_path,
+                )
+                dual.mount()
+                self._dual_prefetch_ui = dual
+                self._defer_prefetch_json_write = True
+                try:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                        f_nb = pool.submit(self._run_notebook_prefetch_worker)
+                        f_co = pool.submit(self._run_corridor_prefetch_worker, corridor_tasks)
+                        concurrent.futures.wait((f_nb, f_co))
+                        for fut in (f_nb, f_co):
+                            fut.result()
+                finally:
+                    self._defer_prefetch_json_write = False
+                    self._dual_prefetch_ui = None
+                    self._write_graph_registry_json()
+                    self._write_corridor_graphs_json()
 
             self.page.clean()
             self._build_ui()
             self._update_chart()
-            if self.loading_bar is not None:
-                self.loading_bar.advance(detail="Premier rendu termine", units=0)
         except Exception as exc:
-            page = self.page
+            traceback.print_exc()
 
-            page.run_task()
+            async def _show_err() -> None:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"Démarrage: {exc!s}", color="#fecaca"),
+                    bgcolor="#450a0a",
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+
+            try:
+                self.page.run_task(_show_err)
+            except Exception:
+                pass
+
+    def _schedule_deferred_chart_update(self, delay_sec: float = CHART_UPDATE_AFTER_FILTER_DEBOUNCE_SEC) -> None:
+        """Reporte le rendu du graphique pour ne pas bloquer la mise à jour des dropdowns."""
+        self._chart_schedule_gen += 1
+        token = self._chart_schedule_gen
+
+        async def _runner() -> None:
+            await asyncio.sleep(0)
+            await asyncio.sleep(delay_sec)
+            if token != self._chart_schedule_gen:
+                return
+            self._update_chart()
+
+        self.page.run_task(_runner)
+
+    def _write_event_swimmers_cache_json(self) -> None:
+        """
+        Génère un cache des nageurs par événement (Stroke/Distance/Bassin).
+        Le fichier est regénéré au démarrage de l'application.
+        """
+        payload: Dict[str, Any] = {
+            "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "total_events": 0,
+            "events": {},
+        }
+        events: Dict[str, Dict[str, Dict[str, set[str]]]] = {}
+        df_nav = self.df_nav
+
+        required_cols = {"Stroke", "Distance", "Course", "swimmer"}
+        if not df_nav.empty and required_cols.issubset(df_nav.columns):
+            for row in df_nav[["Stroke", "Distance", "Course", "swimmer"]].itertuples(
+                index=False
+            ):
+                stroke_raw, distance_raw, pool_raw, swimmers_raw = row
+                if (
+                    stroke_raw is None
+                    or pool_raw is None
+                    or pd.isna(stroke_raw)
+                    or pd.isna(pool_raw)
+                ):
+                    continue
+                stroke = str(stroke_raw).strip()
+                pool = str(pool_raw).strip()
+                if not stroke or not pool:
+                    continue
+
+                try:
+                    distance = int(float(distance_raw))
+                except (TypeError, ValueError):
+                    continue
+
+                swimmers: List[Any]
+                if isinstance(swimmers_raw, list):
+                    swimmers = swimmers_raw
+                elif isinstance(swimmers_raw, dict):
+                    swimmers = [swimmers_raw]
+                else:
+                    swimmers = []
+
+                if not swimmers:
+                    continue
+
+                event_swimmers = events.setdefault(stroke, {}).setdefault(
+                    str(distance), {}
+                ).setdefault(pool, set())
+                for swimmer in swimmers:
+                    if not isinstance(swimmer, dict):
+                        continue
+                    nm, yob = _primary_swimmer_name_and_yob([swimmer])
+                    if nm and yob is not None:
+                        event_swimmers.add(f"{nm} ({yob})")
+                    elif isinstance(swimmer.get("Name"), str):
+                        stripped = swimmer["Name"].strip()
+                        if stripped:
+                            event_swimmers.add(stripped)
+
+        payload_events: Dict[str, Dict[str, Dict[str, List[str]]]] = {}
+        total_events = 0
+        for stroke in sorted(events.keys()):
+            payload_events[stroke] = {}
+            for distance in sorted(events[stroke].keys(), key=lambda d: int(d)):
+                payload_events[stroke][distance] = {}
+                for pool in sorted(events[stroke][distance].keys()):
+                    swimmer_names = sorted(
+                        events[stroke][distance][pool],
+                        key=lambda label: _normalize_text(label),
+                    )
+                    payload_events[stroke][distance][pool] = swimmer_names
+                    total_events += 1
+
+        payload["events"] = payload_events
+        payload["total_events"] = total_events
+        EVENT_SWIMMERS_EXPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with EVENT_SWIMMERS_EXPORT_PATH.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    def _load_event_swimmers_cache_json(self) -> None:
+        self._event_swimmers_cache = {}
+        self._event_swimmer_options_cache = {}
+        try:
+            with EVENT_SWIMMERS_EXPORT_PATH.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception:
+            return
+
+        raw_events = payload.get("events")
+        if not isinstance(raw_events, dict):
+            return
+
+        normalized: Dict[str, Dict[str, Dict[str, List[str]]]] = {}
+        for stroke, by_distance in raw_events.items():
+            if not isinstance(stroke, str) or not isinstance(by_distance, dict):
+                continue
+            stroke_payload: Dict[str, Dict[str, List[str]]] = {}
+            for distance, by_pool in by_distance.items():
+                if not isinstance(distance, str) or not isinstance(by_pool, dict):
+                    continue
+                pool_payload: Dict[str, List[str]] = {}
+                for pool, swimmers in by_pool.items():
+                    if not isinstance(pool, str) or not isinstance(swimmers, list):
+                        continue
+                    swimmer_names = [
+                        s.strip() for s in swimmers if isinstance(s, str) and s.strip()
+                    ]
+                    pool_payload[pool] = swimmer_names
+                stroke_payload[distance] = pool_payload
+            normalized[stroke] = stroke_payload
+
+        self._event_swimmers_cache = normalized
+
+    def _event_combinations_from_swimmers_cache(
+        self,
+    ) -> Dict[str, Dict[int, List[str]]]:
+        """
+        Reconstruit la même structure que ``_event_combinations`` (Stroke -> Distance -> [Course])
+        à partir du cache JSON ``prefetched_event_swimmers.json`` (mémoire : ``_event_swimmers_cache``).
+        """
+        out: Dict[str, Dict[int, set[str]]] = {}
+        pool_rank = {"SCM": 0, "LCM": 1}
+        for stroke, by_distance in self._event_swimmers_cache.items():
+            if not isinstance(stroke, str) or not isinstance(by_distance, dict):
+                continue
+            stroke_s = stroke.strip()
+            if not stroke_s:
+                continue
+            for d_str, by_pool in by_distance.items():
+                if not isinstance(d_str, str) or not isinstance(by_pool, dict):
+                    continue
+                try:
+                    d_i = int(d_str)
+                except ValueError:
+                    continue
+                for pool in by_pool.keys():
+                    if not isinstance(pool, str):
+                        continue
+                    p = pool.strip()
+                    if not p:
+                        continue
+                    out.setdefault(stroke_s, {}).setdefault(d_i, set()).add(p)
+
+        ordered: Dict[str, Dict[int, List[str]]] = {}
+        for stroke in sorted(out.keys()):
+            ordered[stroke] = {}
+            for distance in sorted(out[stroke].keys()):
+                pools = sorted(
+                    out[stroke][distance],
+                    key=lambda p: (pool_rank.get(p), p),
+                )
+                ordered[stroke][distance] = pools
+        return ordered
+
+    def _cached_event_swimmers_for_filters(
+        self,
+        stroke: Optional[str],
+        distance: Optional[int],
+        pool: Optional[str],
+    ) -> List[str]:
+        if not stroke or distance is None or not pool:
+            return []
+        return (
+            self._event_swimmers_cache.get(stroke, {})
+            .get(str(int(distance)), {})
+            .get(pool, [])
+        )
+
+    def _cached_event_swimmer_options_for_filters(
+        self,
+        stroke: Optional[str],
+        distance: Optional[int],
+        pool: Optional[str],
+    ) -> List[ft.dropdown.Option]:
+        if not stroke or distance is None or not pool:
+            return []
+        key = (stroke, int(distance), pool)
+        cached_options = self._event_swimmer_options_cache.get(key)
+        if cached_options is not None:
+            return cached_options
+        labels = self._cached_event_swimmers_for_filters(stroke, distance, pool)
+        options = [ft.dropdown.Option(label) for label in labels]
+        self._event_swimmer_options_cache[key] = options
+        return options
+
+    def _refresh_selected_event_swimmers_from_cache(self) -> None:
+        self._selected_event_swimmers = self._cached_event_swimmers_for_filters(
+            self.selected_stroke,
+            self.selected_distance,
+            self.selected_pool,
+        )
+
+    def _swimmer_names_from_corridor_registry(self) -> List[str]:
+        """
+        Extrait des nageurs cibles depuis les options des rendus couloir
+        chargés depuis ``prefetched_corridor_graphs.json``.
+        """
+        self._refresh_graph_registry_from_disk_if_changed()
+        key = (
+            float(getattr(self, "_prefetched_json_mtime", 0.0)),
+            float(getattr(self, "_corridor_graphs_json_mtime", 0.0)),
+            len(self.graph_render_registry),
+        )
+        if (
+            self._registry_swimmer_names_cache_key == key
+            and self._heatmap_swimmer_names_cache is not None
+        ):
+            return self._heatmap_swimmer_names_cache
+
+        names: set[str] = set()
+        for item in self.graph_render_registry.values():
+            if not isinstance(item, dict):
+                continue
+            if not PacingDesktopApp._is_corridor_registry_item(item):
+                continue
+            options = item.get("options")
+            if not isinstance(options, dict):
+                continue
+            nm = options.get("corridor_swimmer_name")
+            if isinstance(nm, str):
+                nm = nm.strip()
+                if nm:
+                    names.add(nm)
+
+        out = sorted(names, key=lambda name: _normalize_text(name))
+        self._heatmap_swimmer_names_cache = out
+        self._registry_swimmer_names_cache_key = key
+        return out
+
+    def _render_key_for_category_graph_options(
+        self, category: str, graph_name: str, options: Dict[str, Any]
+    ) -> Tuple[str, str]:
+        chart_id = f"{_slugify(category)}__{_slugify(graph_name)}"
+        render_key = (
+            f"{chart_id}::"
+            f"{json.dumps(options, sort_keys=True, ensure_ascii=False, separators=(',', ':'))}"
+        )
+        return chart_id, render_key
+
+    @staticmethod
+    def _corridor_prefetch_render_options_dict(
+        stroke: str,
+        distance: int,
+        pool: str,
+        swimmer_name: str,
+        swimmer_yob: int,
+        chronos_sample_size: int,
+    ) -> Dict[str, Any]:
+        return {
+            "stroke": stroke,
+            "distance": int(distance),
+            "pool": pool,
+            "heatmap_swimmer": None,
+            "corridor_swimmer_name": swimmer_name,
+            "corridor_swimmer_yob": int(swimmer_yob),
+            "pacing_swimmers": [],
+            "chronos_sample_size": int(chronos_sample_size),
+        }
 
     def _build_render_key(
         self,
@@ -229,11 +823,11 @@ class PacingDesktopApp:
         distance: Optional[int],
         pool: Optional[str],
     ) -> Tuple[str, Dict[str, Any], str]:
-        options = self._current_render_options(stroke, distance, pool)
-        chart_id = f"{_slugify(category)}__{_slugify(graph_name)}"
-        render_key = (
-            f"{chart_id}::"
-            f"{json.dumps(options, sort_keys=True, ensure_ascii=False, separators=(',', ':'))}"
+        options = self._current_render_options(
+            stroke, distance, pool, graph_name=graph_name
+        )
+        chart_id, render_key = self._render_key_for_category_graph_options(
+            category, graph_name, options
         )
         return chart_id, options, render_key
 
@@ -242,24 +836,88 @@ class PacingDesktopApp:
         stroke: Optional[str],
         distance: Optional[int],
         pool: Optional[str],
+        *,
+        graph_name: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """
+        Options sérialisées dans la clé de cache disque / mémoire.
+
+        Pour le couloir, on n’inclut pas heatmap ni pacing : le préfetch utilise
+        toujours ``heatmap_swimmer=None`` et ``pacing_swimmers=[]`` (voir
+        ``_corridor_prefetch_render_options_dict``). Sinon la clé ne matche pas
+        le JSON et Matplotlib est relancé à chaque fois.
+        """
+        heatmap = self.selected_heatmap_swimmer
+        pacing = self.selected_pacing_swimmers[:3]
+        if graph_name == CORRIDOR_GRAPH_NAME:
+            heatmap = None
+            pacing = []
         return {
             "stroke": stroke,
             "distance": int(distance) if distance is not None else None,
             "pool": pool,
-            "heatmap_swimmer": self.selected_heatmap_swimmer,
+            "heatmap_swimmer": heatmap,
             "corridor_swimmer_name": self.selected_corridor_swimmer_name,
             "corridor_swimmer_yob": self.selected_corridor_swimmer_yob,
-            "pacing_swimmers": self.selected_pacing_swimmers[:3],
+            "pacing_swimmers": pacing,
             "chronos_sample_size": int(self.selected_chronos_sample_size),
         }
 
+    @staticmethod
+    def _is_corridor_registry_item(item: Dict[str, Any]) -> bool:
+        return (
+            item.get("category") == CORRIDOR_CATEGORY
+            and item.get("name") == CORRIDOR_GRAPH_NAME
+        )
+
+    @staticmethod
+    def _registry_item_to_render_key(item: Dict[str, Any]) -> Optional[str]:
+        category = item.get("category")
+        name = item.get("name")
+        options = item.get("options")
+        if not isinstance(category, str) or not isinstance(name, str) or not isinstance(options, dict):
+            return None
+        chart_id = f"{_slugify(category)}__{_slugify(name)}"
+        return (
+            f"{chart_id}::"
+            f"{json.dumps(options, sort_keys=True, ensure_ascii=False, separators=(',', ':'))}"
+        )
+
+    def _ingest_registry_payload(
+        self,
+        payload: Any,
+        loaded_registry: Dict[str, Dict[str, Any]],
+        loaded_cache: Dict[str, str],
+    ) -> None:
+        if not isinstance(payload, dict):
+            return
+        raw_renders = payload.get("renders")
+        if not isinstance(raw_renders, list):
+            return
+        for item in raw_renders:
+            if not isinstance(item, dict):
+                continue
+            render_key = PacingDesktopApp._registry_item_to_render_key(item)
+            if render_key is None:
+                continue
+            loaded_registry[render_key] = item
+            image_base64 = item.get("image_base64")
+            status = item.get("status")
+            if status == "ok" and isinstance(image_base64, str) and image_base64:
+                loaded_cache[render_key] = image_base64
+
     def _write_graph_registry_json(self) -> None:
+        """Écrit uniquement les rendus hors couloir dans ``prefetched_graphs.json``."""
         if not ENABLE_PERSISTENT_GRAPH_CACHE:
             return
         GRAPH_EXPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        registry_snapshot = dict(self.graph_render_registry)
-        renders = list(registry_snapshot.values())
+        with self._registry_json_lock:
+            registry_snapshot = dict(self.graph_render_registry)
+        renders = [
+            item
+            for item in registry_snapshot.values()
+            if not PacingDesktopApp._is_corridor_registry_item(item)
+        ]
         if not EXPORT_IMAGE_BASE64_TO_JSON:
             renders = [
                 {k: v for k, v in item.items() if k != "image_base64"}
@@ -267,7 +925,7 @@ class PacingDesktopApp:
             ]
         payload = {
             "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "total_renders": len(registry_snapshot),
+            "total_renders": len(renders),
             "renders": sorted(
                 renders,
                 key=lambda item: (item["category"], item["name"], item["rendered_at"]),
@@ -277,64 +935,90 @@ class PacingDesktopApp:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         self._touch_prefetched_json_mtime()
 
+    def _write_corridor_graphs_json(self) -> None:
+        """Écrit uniquement les graphes couloir dans ``prefetched_corridor_graphs.json``."""
+        if not ENABLE_PERSISTENT_GRAPH_CACHE:
+            return
+        CORRIDOR_GRAPHS_EXPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with self._registry_json_lock:
+            registry_snapshot = dict(self.graph_render_registry)
+        renders = [
+            item
+            for item in registry_snapshot.values()
+            if PacingDesktopApp._is_corridor_registry_item(item)
+        ]
+        if not EXPORT_IMAGE_BASE64_TO_JSON:
+            renders = [
+                {k: v for k, v in item.items() if k != "image_base64"}
+                for item in renders
+            ]
+        payload = {
+            "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "total_renders": len(renders),
+            "renders": sorted(
+                renders,
+                key=lambda item: (item["category"], item["name"], item["rendered_at"]),
+            ),
+        }
+        with CORRIDOR_GRAPHS_EXPORT_PATH.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        self._touch_corridor_graphs_json_mtime()
+
     def _touch_prefetched_json_mtime(self) -> None:
         try:
             if GRAPH_EXPORT_PATH.exists():
-                self._prefetched_json_mtime = float(GRAPH_EXPORT_PATH.stat().st_mtime) # lire la date/heure de derniere modification du fichier
+                self._prefetched_json_mtime = float(GRAPH_EXPORT_PATH.stat().st_mtime)
+        except OSError:
+            pass
+
+    def _touch_corridor_graphs_json_mtime(self) -> None:
+        try:
+            if CORRIDOR_GRAPHS_EXPORT_PATH.exists():
+                self._corridor_graphs_json_mtime = float(CORRIDOR_GRAPHS_EXPORT_PATH.stat().st_mtime)
         except OSError:
             pass
 
     def _refresh_graph_registry_from_disk_if_changed(self) -> None:
-        """Recharge ``prefetched_graphs.json`` si le fichier a été modifié depuis le dernier chargement."""
+        """Recharge les caches disque si ``prefetched_graphs.json`` ou ``prefetched_corridor_graphs.json`` change."""
         if not ENABLE_PERSISTENT_GRAPH_CACHE:
             return
         try:
-            if not GRAPH_EXPORT_PATH.exists():
-                return
-            mtime = float(GRAPH_EXPORT_PATH.stat().st_mtime) # la date de dernière modification du fichier prefetched_graphs.json
-            if mtime > self._prefetched_json_mtime:
+            main_mtime = (
+                float(GRAPH_EXPORT_PATH.stat().st_mtime) if GRAPH_EXPORT_PATH.exists() else 0.0
+            )
+            cor_mtime = (
+                float(CORRIDOR_GRAPHS_EXPORT_PATH.stat().st_mtime)
+                if CORRIDOR_GRAPHS_EXPORT_PATH.exists()
+                else 0.0
+            )
+            if main_mtime > self._prefetched_json_mtime or cor_mtime > self._corridor_graphs_json_mtime:
                 self._load_graph_registry_json()
         except OSError:
             pass
 
     def _load_graph_registry_json(self) -> None:
-        try:
-            with GRAPH_EXPORT_PATH.open("r", encoding="utf-8") as f:
-                payload = json.load(f)
-        except Exception:
-            self._touch_prefetched_json_mtime()
-            return
-
-        raw_renders = payload.get("renders")
-        if not isinstance(raw_renders, list):
-            self._touch_prefetched_json_mtime()
-            return
-
+        """Fusionne ``prefetched_graphs.json`` puis ``prefetched_corridor_graphs.json`` (ce dernier écrase les clés)."""
         loaded_registry: Dict[str, Dict[str, Any]] = {}
         loaded_cache: Dict[str, str] = {}
-        for item in raw_renders:
-            if not isinstance(item, dict):
-                continue
-            category = item.get("category")
-            name = item.get("name")
-            options = item.get("options")
-            if not isinstance(category, str) or not isinstance(name, str) or not isinstance(options, dict):
-                continue
 
-            chart_id = f"{_slugify(category)}__{_slugify(name)}"
-            render_key = (
-                f"{chart_id}::"
-                f"{json.dumps(options, sort_keys=True, ensure_ascii=False, separators=(',', ':'))}"
-            )
-            loaded_registry[render_key] = item
-            image_base64 = item.get("image_base64")
-            status = item.get("status")
-            if status == "ok" and isinstance(image_base64, str) and image_base64:
-                loaded_cache[render_key] = image_base64
+        try:
+            with GRAPH_EXPORT_PATH.open("r", encoding="utf-8") as f:
+                self._ingest_registry_payload(json.load(f), loaded_registry, loaded_cache)
+        except Exception:
+            pass
 
-        self.graph_render_registry = loaded_registry
-        self.chart_image_cache = loaded_cache
+        try:
+            if CORRIDOR_GRAPHS_EXPORT_PATH.exists():
+                with CORRIDOR_GRAPHS_EXPORT_PATH.open("r", encoding="utf-8") as f:
+                    self._ingest_registry_payload(json.load(f), loaded_registry, loaded_cache)
+        except Exception:
+            pass
+
+        with self._registry_json_lock:
+            self.graph_render_registry = loaded_registry
+            self.chart_image_cache = loaded_cache
         self._touch_prefetched_json_mtime()
+        self._touch_corridor_graphs_json_mtime()
 
     def _notebook_prefetch_options(self, spec_key: str) -> Dict[str, Any]:
         return {
@@ -371,21 +1055,22 @@ class PacingDesktopApp:
         skip_json_write: bool = False,
     ) -> None:
         chart_id = f"{_slugify('_service_notebook')}__{_slugify(spec.key)}"
-        self.graph_render_registry[render_key] = {
-            "id": chart_id,
-            "name": spec.key,
-            "category": "_service_notebook",
-            "method": spec.method_name,
-            "status": status,
-            "chart_title": chart_title,
-            "row_count": int(row_count),
-            "error": error,
-            "rendered_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "options": options,
-            "image_base64": image_base64,
-        }
-        if image_base64:
-            self.chart_image_cache[render_key] = image_base64
+        with self._registry_json_lock:
+            self.graph_render_registry[render_key] = {
+                "id": chart_id,
+                "name": spec.key,
+                "category": "_service_notebook",
+                "method": spec.method_name,
+                "status": status,
+                "chart_title": chart_title,
+                "row_count": int(row_count),
+                "error": error,
+                "rendered_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "options": options,
+                "image_base64": image_base64,
+            }
+            if image_base64:
+                self.chart_image_cache[render_key] = image_base64
         if not skip_json_write:
             self._write_graph_registry_json()
 
@@ -426,7 +1111,8 @@ class PacingDesktopApp:
         for spec in GRAPHES_NOTEBOOK:
             options = self._notebook_prefetch_options(spec.key)
             render_key = self._notebook_service_render_key(spec)
-            cached = self.graph_render_registry.get(render_key)
+            with self._registry_json_lock:
+                cached = self.graph_render_registry.get(render_key)
             img = cached.get("image_base64") if isinstance(cached, dict) else None
             if (
                 cached
@@ -434,12 +1120,11 @@ class PacingDesktopApp:
                 and isinstance(img, str)
                 and len(img) > 0
             ):
-                self.chart_image_cache[render_key] = img
-                self._startup_graph_done += 1
-                if self.loading_bar is not None:
-                    self.loading_bar.advance(
-                        detail=spec.name, show_graph_progress=True
-                    )
+                with self._registry_json_lock:
+                    self.chart_image_cache[render_key] = img
+                self._advance_startup_notebook(
+                    spec.name, units=1, show_graph_progress=True
+                )
                 continue
             pending_specs.append(spec)
 
@@ -486,13 +1171,263 @@ class PacingDesktopApp:
                             error=error,
                             skip_json_write=True,
                         )
-                    self._startup_graph_done += 1
-                    if self.loading_bar is not None:
-                        self.loading_bar.advance(
-                            detail=spec.name, show_graph_progress=True
+                    self._advance_startup_notebook(
+                        spec.name, units=1, show_graph_progress=True
+                    )
+
+        if not getattr(self, "_defer_prefetch_json_write", False):
+            self._write_graph_registry_json()
+
+    def _collect_corridor_prefetch_tasks(self) -> List[Tuple[str, int, str, str, int, int]]:
+        """
+        Liste (stroke, distance, pool, nom_nageur, yob, chronos_sample_size) pour préfetch couloir.
+        Respecte CORRIDOR_PREFETCH_MAX_RENDERS (0 = pas de plafond).
+        """
+        chronos = int(self.selected_chronos_sample_size)
+        tasks: List[Tuple[str, int, str, str, int, int]] = []
+        for stroke, by_d in self._event_swimmers_cache.items():
+            if not isinstance(stroke, str) or not isinstance(by_d, dict):
+                continue
+            for d_str, by_pool in by_d.items():
+                if not isinstance(d_str, str) or not isinstance(by_pool, dict):
+                    continue
+                try:
+                    d_i = int(d_str)
+                except ValueError:
+                    continue
+                for pool, labels in by_pool.items():
+                    if not isinstance(pool, str) or not isinstance(labels, list):
+                        continue
+                    for label in labels:
+                        if not isinstance(label, str):
+                            continue
+                        name, yob = PacingDesktopApp._parse_corridor_swimmer_label(label)
+                        if name is None or yob is None:
+                            continue
+                        tasks.append((stroke, d_i, pool, name, yob, chronos))
+                        if (
+                            CORRIDOR_PREFETCH_MAX_RENDERS > 0
+                            and len(tasks) >= CORRIDOR_PREFETCH_MAX_RENDERS
+                        ):
+                            return tasks
+        return tasks
+
+    def _compute_corridor_prefetch_render(
+        self,
+        task: Tuple[str, int, str, str, int, int],
+    ) -> Optional[
+        Tuple[str, str, Dict[str, Any], str, str, int, Optional[str], Optional[str]]
+    ]:
+        """
+        Retourne (render_key, chart_id, options, status, chart_title, row_count, image_base64, error).
+        """
+        stroke, distance, pool, nom, yob, chronos_sz = task
+        options = PacingDesktopApp._corridor_prefetch_render_options_dict(
+            stroke, int(distance), pool, nom, int(yob), chronos_sz
+        )
+        chart_id, render_key = self._render_key_for_category_graph_options(
+            CORRIDOR_CATEGORY, CORRIDOR_GRAPH_NAME, options
+        )
+        graph_svc = ServiceGraphe()
+        df_scope = _materialize_df_scope(
+            self.df_nav, CORRIDOR_GRAPH_NAME, stroke, int(distance), pool
+        )
+        if df_scope.empty:
+            return (
+                render_key,
+                chart_id,
+                options,
+                "empty_scope",
+                CORRIDOR_GRAPH_NAME,
+                0,
+                None,
+                None,
+            )
+        df_filtered = df_scope[df_scope["SwimTimeSeconds"].notna()].copy()
+        try:
+            fig, chart_title = graph_svc.desktop_build_figure(
+                CORRIDOR_GRAPH_NAME,
+                df=self.df,
+                df_scope=df_scope,
+                df_filtered=df_filtered,
+                stroke=stroke,
+                distance=int(distance),
+                pool=pool,
+                selected_distance=int(distance),
+                selected_chronos_sample_size=chronos_sz,
+                selected_pacing_swimmers=[],
+                selected_heatmap_swimmer=None,
+                selected_corridor_swimmer_name=nom,
+                selected_corridor_swimmer_yob=int(yob),
+            )
+        except Exception as exc:
+            return (
+                render_key,
+                chart_id,
+                options,
+                "error",
+                CORRIDOR_GRAPH_NAME,
+                len(df_scope),
+                None,
+                str(exc),
+            )
+
+        if fig is None:
+            return (
+                render_key,
+                chart_id,
+                options,
+                "no_figure",
+                chart_title,
+                len(df_scope),
+                None,
+                None,
+            )
+
+        image_base64 = _figure_to_base64(fig)
+        plt.close(fig)
+        return (
+            render_key,
+            chart_id,
+            options,
+            "ok",
+            chart_title,
+            len(df_scope),
+            image_base64,
+            None,
+        )
+
+    def _register_corridor_prefetch_render(
+        self,
+        *,
+        render_key: str,
+        chart_id: str,
+        options: Dict[str, Any],
+        chart_title: str,
+        status: str,
+        row_count: int,
+        image_base64: Optional[str],
+        error: Optional[str] = None,
+        skip_json_write: bool = False,
+    ) -> None:
+        with self._registry_json_lock:
+            self.graph_render_registry[render_key] = {
+                "id": chart_id,
+                "name": CORRIDOR_GRAPH_NAME,
+                "category": CORRIDOR_CATEGORY,
+                "method": f"render_{_slugify(CORRIDOR_GRAPH_NAME)}",
+                "status": status,
+                "chart_title": chart_title,
+                "row_count": int(row_count),
+                "error": error,
+                "rendered_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "options": options,
+                "image_base64": image_base64,
+            }
+            if image_base64:
+                self.chart_image_cache[render_key] = image_base64
+        if not skip_json_write:
+            self._write_corridor_graphs_json()
+
+    def _prefetch_corridor_graphs_skip_existing(
+        self, tasks: List[Tuple[str, int, str, str, int, int]]
+    ) -> None:
+        """Précalcule les graphes couloir pour les tâches listées ; ignore les entrées déjà OK dans le JSON."""
+        if not ENABLE_PERSISTENT_GRAPH_CACHE:
+            return
+        if not tasks or self.df.empty:
+            return
+
+        pending: List[Tuple[str, int, str, str, int, int]] = []
+        for task in tasks:
+            stroke, distance, pool, nom, yob, chronos_sz = task
+            options = PacingDesktopApp._corridor_prefetch_render_options_dict(
+                stroke, int(distance), pool, nom, int(yob), chronos_sz
+            )
+            _, render_key = self._render_key_for_category_graph_options(
+                CORRIDOR_CATEGORY, CORRIDOR_GRAPH_NAME, options
+            )
+            with self._registry_json_lock:
+                cached = self.graph_render_registry.get(render_key)
+            img = cached.get("image_base64") if isinstance(cached, dict) else None
+            if (
+                cached
+                and cached.get("status") == "ok"
+                and isinstance(img, str)
+                and len(img) > 0
+            ):
+                with self._registry_json_lock:
+                    self.chart_image_cache[render_key] = img
+                self._advance_startup_corridor(
+                    f"{stroke} {distance} {pool} — {nom}",
+                    units=1,
+                    show_graph_progress=True,
+                )
+                continue
+            pending.append(task)
+
+        if pending:
+            worker_count = max(1, min(4, len(pending)))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+                future_to_task = {
+                    executor.submit(self._compute_corridor_prefetch_render, t): t
+                    for t in pending
+                }
+                for future in concurrent.futures.as_completed(future_to_task):
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        task = future_to_task[future]
+                        stroke, distance, pool, nom, yob, chronos_sz = task
+                        options = PacingDesktopApp._corridor_prefetch_render_options_dict(
+                            stroke, int(distance), pool, nom, int(yob), chronos_sz
+                        )
+                        _, render_key = self._render_key_for_category_graph_options(
+                            CORRIDOR_CATEGORY, CORRIDOR_GRAPH_NAME, options
+                        )
+                        result = (
+                            render_key,
+                            f"{_slugify(CORRIDOR_CATEGORY)}__{_slugify(CORRIDOR_GRAPH_NAME)}",
+                            options,
+                            "error",
+                            CORRIDOR_GRAPH_NAME,
+                            0,
+                            None,
+                            str(exc),
                         )
 
-        self._write_graph_registry_json()
+                    if result is None:
+                        continue
+                    (
+                        render_key,
+                        chart_id,
+                        options,
+                        status,
+                        chart_title,
+                        row_count,
+                        image_base64,
+                        error,
+                    ) = result
+                    if status == "ok" and image_base64:
+                        self._register_corridor_prefetch_render(
+                            render_key=render_key,
+                            chart_id=chart_id,
+                            options=options,
+                            chart_title=chart_title,
+                            status=status,
+                            row_count=row_count,
+                            image_base64=image_base64,
+                            error=error,
+                            skip_json_write=True,
+                        )
+                    self._advance_startup_corridor(
+                        str(options.get("corridor_swimmer_name", "")),
+                        units=1,
+                        show_graph_progress=True,
+                    )
+
+        if not getattr(self, "_defer_prefetch_json_write", False):
+            self._write_corridor_graphs_json()
 
     def _register_graph_render(
         self,
@@ -515,25 +1450,76 @@ class PacingDesktopApp:
             distance,
             pool,
         )
-        self.graph_render_registry[render_key] = {
-            "id": chart_id,
-            "name": graph_name,
-            "category": category,
-            "method": f"render_{_slugify(graph_name)}",
-            "status": status,
-            "chart_title": chart_title,
-            "row_count": int(row_count),
-            "error": error,
-            "rendered_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "options": options,
-            "image_base64": image_base64,
-        }
-        if image_base64:
-            self.chart_image_cache[render_key] = image_base64
-        self._write_graph_registry_json()
+        with self._registry_json_lock:
+            self.graph_render_registry[render_key] = {
+                "id": chart_id,
+                "name": graph_name,
+                "category": category,
+                "method": f"render_{_slugify(graph_name)}",
+                "status": status,
+                "chart_title": chart_title,
+                "row_count": int(row_count),
+                "error": error,
+                "rendered_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "options": options,
+                "image_base64": image_base64,
+            }
+            if image_base64:
+                self.chart_image_cache[render_key] = image_base64
+            item = self.graph_render_registry[render_key]
+        if PacingDesktopApp._is_corridor_registry_item(item):
+            self._write_corridor_graphs_json()
+        else:
+            self._write_graph_registry_json()
+
+    def _apply_theme_palette(self) -> None:
+        """Aligne page, panneaux et textes sur ``_ui_light_mode`` (le thème Material seul ne suffit pas)."""
+        light = self._ui_light_mode
+        self.page.theme_mode = ft.ThemeMode.LIGHT if light else ft.ThemeMode.DARK
+        if light:
+            self.page.bgcolor = "#e2e8f0"
+            sidebar_bg = "#ffffff"
+            main_bg = "#f8fafc"
+            nav_title = "#0f172a"
+            chart_title = "#0f172a"
+            row_muted = "#475569"
+            err = "#b91c1c"
+        else:
+            self.page.bgcolor = "#020617"
+            sidebar_bg = "#020617"
+            main_bg = "#020617"
+            nav_title = "#f8fafc"
+            chart_title = "#e5e7eb"
+            row_muted = "#9ca3af"
+            err = "#f97373"
+
+        sc = self._sidebar_container
+        if isinstance(sc, ft.Container):
+            sc.bgcolor = sidebar_bg
+        ma = self._main_area_container
+        if isinstance(ma, ft.Container):
+            ma.bgcolor = main_bg
+
+        if self._nav_title_text is not None:
+            self._nav_title_text.color = nav_title
+        if self._theme_toggle_btn is not None:
+            if light:
+                self._theme_toggle_btn.icon = ft.icons.Icons.DARK_MODE
+                self._theme_toggle_btn.icon_color = "#312e81"
+            else:
+                self._theme_toggle_btn.icon = ft.icons.Icons.LIGHT_MODE
+                self._theme_toggle_btn.icon_color = "#facc15"
+
+        self.chart_title_text.color = chart_title
+        self.row_count_text.color = row_muted
+        self.status_text.color = err
 
     def _build_ui(self) -> None:
         if self.df.empty:
+            self._sidebar_container = None
+            self._main_area_container = None
+            self._theme_toggle_btn = None
+            self._nav_title_text = None
             self.page.add(
                 ft.Container(
                     content=ft.Column(
@@ -655,7 +1641,12 @@ class PacingDesktopApp:
             visible=False,
         )
 
-        dark_toggle = ft.IconButton(
+        self._nav_title_text = ft.Text(
+            "Navigation",
+            size=20,
+            weight=ft.FontWeight.BOLD,
+        )
+        self._theme_toggle_btn = ft.IconButton(
             icon=ft.icons.Icons.LIGHT_MODE,
             icon_color="#facc15",
             tooltip="Basculer light/dark mode",
@@ -670,7 +1661,7 @@ class PacingDesktopApp:
             content=ft.Column(
                 controls=[
                     ft.Row(
-                        [ft.Text("Navigation", size=20, weight=ft.FontWeight.BOLD), dark_toggle],
+                        [self._nav_title_text, self._theme_toggle_btn],
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     ),
                     ft.Divider(height=10),
@@ -724,17 +1715,20 @@ class PacingDesktopApp:
             ),
         )
 
+        self._sidebar_container = sidebar
+        self._main_area_container = main_area
+
         layout = ft.Row(
             controls=[sidebar, main_area],
             expand=True,
         )
+        self._apply_theme_palette()
         self.page.add(layout)
         self._refresh_filters_from_data()
 
     def _toggle_theme(self, _: ft.ControlEvent) -> None:
-        self.page.theme_mode = (
-            ft.ThemeMode.LIGHT if self.page.theme_mode == ft.ThemeMode.DARK else ft.ThemeMode.DARK
-        )
+        self._ui_light_mode = not self._ui_light_mode
+        self._apply_theme_palette()
         self.page.update()
 
     def _on_category_change(self, e: ft.ControlEvent) -> None:
@@ -744,19 +1738,44 @@ class PacingDesktopApp:
         self.graph_dd.options = [ft.dropdown.Option(g) for g in graphs]
         self.graph_dd.value = self.selected_graph
         self._refresh_filters_from_data()
-        self._update_chart()
+        self._schedule_deferred_chart_update()
 
     def _on_graph_change(self, e: ft.ControlEvent) -> None:
         self.selected_graph = e.control.value
         self._refresh_filters_from_data()
-        self._update_chart()
+        self._schedule_deferred_chart_update()
 
-    def _on_filter_change(self, _: ft.ControlEvent) -> None:
+    def _on_filter_change(self, e: ft.ControlEvent) -> None:
         self.selected_stroke = self.stroke_dd.value
         self.selected_distance = int(self.distance_dd.value) if self.distance_dd.value else None
         self.selected_pool = self.pool_dd.value
+        # Optimisation UX couloir: update immédiat des filtres, puis chargement
+        # asynchrone des nageurs (potentiellement volumineux).
+        if self.selected_graph == CORRIDOR_GRAPH_NAME and e.control in (
+            self.stroke_dd,
+            self.distance_dd,
+            self.pool_dd,
+        ):
+            self._refresh_filters_from_data(skip_corridor_swimmer_options=True)
+            self._schedule_deferred_corridor_swimmer_update()
+        else:
+            self._refresh_filters_from_data()
+        self._schedule_deferred_chart_update()
+
+    def _schedule_deferred_corridor_swimmer_update(self) -> None:
+        self._corridor_swimmer_schedule_gen += 1
+        token = self._corridor_swimmer_schedule_gen
+
+        async def _runner() -> None:
+            await self._refresh_corridor_swimmers_async(token)
+
+        self.page.run_task(_runner)
+
+    async def _refresh_corridor_swimmers_async(self, token: int) -> None:
+        await asyncio.sleep(0)
+        if token != self._corridor_swimmer_schedule_gen:
+            return
         self._refresh_filters_from_data()
-        self._update_chart()
 
     def _on_heatmap_swimmer_change(self, e: ft.ControlEvent) -> None:
         self.selected_heatmap_swimmer = e.control.value
@@ -778,16 +1797,17 @@ class PacingDesktopApp:
 
     def _on_corridor_swimmer_change(self, e: ft.ControlEvent) -> None:
         label = e.control.value
-        name, yob = self._parse_corridor_swimmer_label(label)
+        name, yob = PacingDesktopApp._parse_corridor_swimmer_label(label)
         self.selected_corridor_swimmer_name = name
         self.selected_corridor_swimmer_yob = yob
         self._update_chart()
 
+    @staticmethod
     def _parse_corridor_swimmer_label(
-        self, label: Optional[str]
+        label: Optional[str],
     ) -> Tuple[Optional[str], Optional[int]]:
         """
-        Parse le format : "Name (YYYY)".
+        Parse le format : "Name" ou "Name (YYYY)".
         Retourne (None, None) si format invalide.
         """
         if not label:
@@ -801,6 +1821,9 @@ class PacingDesktopApp:
             except ValueError:
                 yob = None
             return name, yob
+        plain = label.strip()
+        if plain:
+            return plain, None
         return None, None
 
     # ----------------------------------------------------------------- Data-driven filters
@@ -808,8 +1831,54 @@ class PacingDesktopApp:
     def _menu_height_for_count(option_count: int) -> int:
         return max(72, min(320, 56 * max(1, option_count)))
 
-    def _refresh_filters_from_data(self, update_ui: bool = True) -> None:
+    @staticmethod
+    def _dropdown_option_keys(dd: ft.Dropdown) -> Tuple[str, ...]:
+        """Empreinte stable des options pour éviter des réassignations inutiles."""
+        opts = dd.options or []
+        keys: List[str] = []
+        for o in opts:
+            k = getattr(o, "key", None)
+            if k is not None:
+                keys.append(str(k))
+                continue
+            t = getattr(o, "text", None)
+            keys.append("" if t is None else str(t))
+        return tuple(keys)
+
+    def _sync_dropdown(
+        self,
+        dd: ft.Dropdown,
+        *,
+        new_option_keys: Tuple[str, ...],
+        build_options: Callable[[], List[ft.dropdown.Option]],
+        value: Optional[str],
+        visible: bool,
+    ) -> bool:
+        """Met à jour un dropdown seulement si options, valeur, hauteur menu ou visibilité changent."""
+        changed = False
+        if self._dropdown_option_keys(dd) != new_option_keys:
+            dd.options = build_options()
+            changed = True
+        mh = self._menu_height_for_count(len(new_option_keys))
+        if dd.menu_height != mh:
+            dd.menu_height = mh
+            changed = True
+        if dd.value != value:
+            dd.value = value
+            changed = True
+        if dd.visible != visible:
+            dd.visible = visible
+            changed = True
+        return changed
+
+    def _refresh_filters_from_data(
+        self,
+        update_ui: bool = True,
+        *,
+        skip_corridor_swimmer_options: bool = False,
+    ) -> None:
         """Met à jour les listes d'options des filtres en fonction du graphique choisi."""
+        dirty = False
         df_nav = self.df_nav
 
         stroke, distance, pool = _resolve_scope_filters(
@@ -822,6 +1891,7 @@ class PacingDesktopApp:
         self.selected_stroke = stroke
         self.selected_distance = distance
         self.selected_pool = pool
+        self._refresh_selected_event_swimmers_from_cache()
         df_scope_mem: Optional[pd.DataFrame] = None
 
         def _df_scope() -> pd.DataFrame:
@@ -836,18 +1906,43 @@ class PacingDesktopApp:
             combos: Dict[str, Dict[int, List[str]]] = {}
         else:
             nav_id = id(df_nav)
-            if self._nav_combos_cache_id != nav_id or self._nav_combos_cache is None:
-                self._nav_combos_cache = _event_combinations(df_nav)
-                self._nav_combos_cache_id = nav_id
+            use_swimmers_file_for_triplet = (
+                self.selected_graph not in SCOPE_NO_STROKE_GRAPHS
+                and self.selected_graph not in SCOPE_POOL_ONLY_GRAPHS
+                and bool(self._event_swimmers_cache)
+            )
+            if use_swimmers_file_for_triplet:
+                combos_key: Tuple[Any, ...] = (
+                    "event_swimmers",
+                    nav_id,
+                    id(self._event_swimmers_cache),
+                )
+            else:
+                combos_key = ("df_nav", nav_id)
+            if self._nav_combos_cache_key != combos_key or self._nav_combos_cache is None:
+                if use_swimmers_file_for_triplet:
+                    self._nav_combos_cache = self._event_combinations_from_swimmers_cache()
+                else:
+                    self._nav_combos_cache = _event_combinations(df_nav)
+                self._nav_combos_cache_key = combos_key
             combos = self._nav_combos_cache
 
         # Stroke options
         stroke_vals = list(combos.keys())
-        self.stroke_dd.options = [ft.dropdown.Option(s) for s in stroke_vals]
-        self.stroke_dd.menu_height = self._menu_height_for_count(len(stroke_vals))
         if self.selected_stroke not in stroke_vals:
             self.selected_stroke = stroke_vals[0] if stroke_vals else None
-        self.stroke_dd.value = self.selected_stroke
+        stroke_keys = tuple(str(s) for s in stroke_vals)
+        if self._sync_dropdown(
+            self.stroke_dd,
+            new_option_keys=stroke_keys,
+            build_options=lambda sv=stroke_vals: [ft.dropdown.Option(s) for s in sv],
+            value=self.selected_stroke,
+            visible=self.selected_graph
+            not in (
+                SCOPE_NO_FILTER_GRAPHS | SCOPE_POOL_ONLY_GRAPHS | SCOPE_NO_STROKE_GRAPHS
+            ),
+        ):
+            dirty = True
 
         if self.selected_graph in SCOPE_NO_STROKE_GRAPHS:
             dist_vals = sorted(
@@ -863,13 +1958,21 @@ class PacingDesktopApp:
                 if self.selected_stroke
                 else []
             )
-        self.distance_dd.options = [ft.dropdown.Option(str(d)) for d in dist_vals]
-        self.distance_dd.menu_height = self._menu_height_for_count(len(dist_vals))
         if self.selected_distance not in dist_vals:
             self.selected_distance = dist_vals[0] if dist_vals else None
-        self.distance_dd.value = (
+        dist_keys = tuple(str(d) for d in dist_vals)
+        dist_value = (
             str(self.selected_distance) if self.selected_distance is not None else None
         )
+        if self._sync_dropdown(
+            self.distance_dd,
+            new_option_keys=dist_keys,
+            build_options=lambda dv=dist_vals: [ft.dropdown.Option(str(d)) for d in dv],
+            value=dist_value,
+            visible=self.selected_graph
+            not in (SCOPE_NO_FILTER_GRAPHS | SCOPE_POOL_ONLY_GRAPHS),
+        ):
+            dirty = True
 
         if self.selected_graph in SCOPE_POOL_ONLY_GRAPHS:
             pool_vals = sorted(df_nav["Course"].dropna().unique().tolist())
@@ -885,153 +1988,223 @@ class PacingDesktopApp:
                 if (self.selected_stroke and self.selected_distance is not None)
                 else []
             )
-        self.pool_dd.options = [
-            ft.dropdown.Option(key=str(p), text=str(p)) for p in pool_vals
-        ]
-        self.pool_dd.menu_height = self._menu_height_for_count(len(pool_vals))
         if self.selected_pool not in pool_vals:
             self.selected_pool = pool_vals[0] if pool_vals else None
-        self.pool_dd.value = self.selected_pool
-
-        if self.selected_graph in SCOPE_NO_FILTER_GRAPHS:
-            self.stroke_dd.visible = False
-            self.distance_dd.visible = False
-            self.pool_dd.visible = False
-        elif self.selected_graph in SCOPE_POOL_ONLY_GRAPHS:
-            self.stroke_dd.visible = False
-            self.distance_dd.visible = False
-            self.pool_dd.visible = True
-        elif self.selected_graph in SCOPE_NO_STROKE_GRAPHS:
-            self.stroke_dd.visible = False
-            self.distance_dd.visible = True
-            self.pool_dd.visible = True
-        else:
-            self.stroke_dd.visible = True
-            self.distance_dd.visible = True
-            self.pool_dd.visible = True
+        pool_keys = tuple(str(p) for p in pool_vals)
+        if self._sync_dropdown(
+            self.pool_dd,
+            new_option_keys=pool_keys,
+            build_options=lambda pv=pool_vals: [
+                ft.dropdown.Option(key=str(p), text=str(p)) for p in pv
+            ],
+            value=self.selected_pool,
+            visible=self.selected_graph not in SCOPE_NO_FILTER_GRAPHS,
+        ):
+            dirty = True
 
         # Options spécifiques pour heatmap
         if self.selected_graph == "Heatmap vitesse moyenne (distance x nage)":
-            self.heatmap_swimmer_dd.visible = True
-            hid = id(df_nav)
-            if self._heatmap_swimmer_names_cache_id != hid or self._heatmap_swimmer_names_cache is None:
-                self._heatmap_swimmer_names_cache = sorted(
-                    {
-                        name
-                        for name in df_nav["swimmer"].apply(_primary_swimmer_name).tolist()
-                        if name
-                    },
-                    key=lambda name: _normalize_text(name),
-                )
-                self._heatmap_swimmer_names_cache_id = hid
-            swimmer_options = self._heatmap_swimmer_names_cache
-            self.heatmap_swimmer_dd.options = [
-                ft.dropdown.Option(name) for name in swimmer_options
-            ]
-            self.heatmap_swimmer_dd.menu_height = self._menu_height_for_count(
-                len(swimmer_options)
-            )
-            if swimmer_options and not self.selected_heatmap_swimmer:
-                self.selected_heatmap_swimmer = swimmer_options[0]
-            self.heatmap_swimmer_dd.value = self.selected_heatmap_swimmer
+            swimmer_options = self._swimmer_names_from_corridor_registry()
+            if not swimmer_options:
+                hid = id(df_nav)
+                if (
+                    self._heatmap_swimmer_names_cache_id != hid
+                    or self._heatmap_swimmer_names_cache is None
+                ):
+                    self._heatmap_swimmer_names_cache = sorted(
+                        {
+                            name
+                            for name in df_nav["swimmer"].apply(_primary_swimmer_name).tolist()
+                            if name
+                        },
+                        key=lambda name: _normalize_text(name),
+                    )
+                    self._heatmap_swimmer_names_cache_id = hid
+                swimmer_options = self._heatmap_swimmer_names_cache
+            heat_keys = tuple(swimmer_options)
+            if swimmer_options:
+                if self.selected_heatmap_swimmer not in swimmer_options:
+                    self.selected_heatmap_swimmer = swimmer_options[0]
+            else:
+                self.selected_heatmap_swimmer = None
+            if self._sync_dropdown(
+                self.heatmap_swimmer_dd,
+                new_option_keys=heat_keys,
+                build_options=lambda so=swimmer_options: [
+                    ft.dropdown.Option(name) for name in so
+                ],
+                value=self.selected_heatmap_swimmer,
+                visible=True,
+            ):
+                dirty = True
         else:
-            self.heatmap_swimmer_dd.options = []
-            self.heatmap_swimmer_dd.value = None
-            self.heatmap_swimmer_dd.menu_height = self._menu_height_for_count(1)
-            self.heatmap_swimmer_dd.visible = False
+            if self._sync_dropdown(
+                self.heatmap_swimmer_dd,
+                new_option_keys=tuple(),
+                build_options=lambda: [],
+                value=None,
+                visible=False,
+            ):
+                dirty = True
 
         # Options spécifiques pour couloir de performance
-        if self.selected_graph == "Couloir de performance (âge) - nageur cible":
-            self.corridor_swimmer_dd.visible = True
+        if self.selected_graph == CORRIDOR_GRAPH_NAME:
             current_corridor_filter = (
                 self.selected_stroke,
                 self.selected_distance,
                 self.selected_pool,
             )
             if self._last_corridor_filter != current_corridor_filter:
-                # Force la remise à zéro de la sélection quand les filtres changent
-                # pour que la mise à jour de liste soit immédiatement visible.
                 self.corridor_swimmer_dd.value = None
                 self.selected_corridor_swimmer_name = None
                 self.selected_corridor_swimmer_yob = None
                 self._last_corridor_filter = current_corridor_filter
-            nom_event = (
-                f"{self.selected_distance} {self.selected_stroke} {self.selected_pool}"
-                if self.selected_distance and self.selected_stroke and self.selected_pool
-                else None
-            )
-            if nom_event:
-                dfs = _df_scope()
-                df_event = dfs[dfs["Event"] == nom_event].copy()
-                df_event = df_event[
-                    df_event["swimmer"].apply(
-                        lambda x: isinstance(x, list) and len(x) == 1
+                dirty = True
+            if skip_corridor_swimmer_options:
+                if self.corridor_swimmer_dd.visible is not True:
+                    self.corridor_swimmer_dd.visible = True
+                    dirty = True
+                waiting_label = "Nageur cible (couloir) — chargement..."
+                if self.corridor_swimmer_dd.label != waiting_label:
+                    self.corridor_swimmer_dd.label = waiting_label
+                    dirty = True
+                if self.corridor_swimmer_dd.menu_height != self._menu_height_for_count(1):
+                    self.corridor_swimmer_dd.menu_height = self._menu_height_for_count(1)
+                    dirty = True
+            elif (
+                self.selected_stroke
+                and self.selected_distance is not None
+                and self.selected_pool
+            ):
+                labels = self._selected_event_swimmers
+                event_key = (
+                    self.selected_stroke,
+                    int(self.selected_distance),
+                    self.selected_pool,
+                )
+                if event_key != self._corridor_dd_options_event_key:
+                    self._corridor_dd_options_event_key = event_key
+                    self.corridor_swimmer_dd.options = (
+                        self._cached_event_swimmer_options_for_filters(
+                            self.selected_stroke,
+                            self.selected_distance,
+                            self.selected_pool,
+                        )
                     )
-                ].copy()
-                swimmer_pairs = {
-                    pair
-                    for pair in df_event["swimmer"]
-                    .apply(_primary_swimmer_name_and_yob)
-                    .tolist()
-                    if pair[0] is not None and pair[1] is not None
-                }
-                swimmer_pairs = sorted(
-                    swimmer_pairs, key=lambda t: (str(t[0]).lower(), int(t[1]))
-                )
-                labels = [f"{name} ({yob})" for name, yob in swimmer_pairs]
-                self.corridor_swimmer_dd.options = [
-                    ft.dropdown.Option(label) for label in labels
-                ]
-                self.corridor_swimmer_dd.label = (
-                    f"Nageur cible (couloir) — {len(labels)} disponibles"
-                )
-                self.corridor_swimmer_dd.menu_height = self._menu_height_for_count(
-                    len(labels)
-                )
+                    dirty = True
+                new_label = f"Nageur cible (couloir) — {len(labels)} disponibles"
+                if self.corridor_swimmer_dd.label != new_label:
+                    self.corridor_swimmer_dd.label = new_label
+                    dirty = True
+                mh = self._menu_height_for_count(len(labels) if labels else 1)
+                if self.corridor_swimmer_dd.menu_height != mh:
+                    self.corridor_swimmer_dd.menu_height = mh
+                    dirty = True
+                if self.corridor_swimmer_dd.visible is not True:
+                    self.corridor_swimmer_dd.visible = True
+                    dirty = True
                 if labels:
-                    # Garde la valeur choisie si elle reste valide, sinon fallback.
-                    if self.corridor_swimmer_dd.value not in labels:
-                        self.corridor_swimmer_dd.value = labels[0]
-                    name, yob = self._parse_corridor_swimmer_label(
-                        self.corridor_swimmer_dd.value
-                    )
+                    pick = self.corridor_swimmer_dd.value
+                    if pick not in labels:
+                        pick = labels[0]
+                    if self.corridor_swimmer_dd.value != pick:
+                        self.corridor_swimmer_dd.value = pick
+                        dirty = True
+                    name, yob = self._parse_corridor_swimmer_label(pick)
                     self.selected_corridor_swimmer_name = name
                     self.selected_corridor_swimmer_yob = yob
+                else:
+                    if self.corridor_swimmer_dd.value is not None:
+                        self.corridor_swimmer_dd.value = None
+                        dirty = True
+                    zero_label = "Nageur cible (couloir) — 0 disponible"
+                    if self.corridor_swimmer_dd.label != zero_label:
+                        self.corridor_swimmer_dd.label = zero_label
+                        dirty = True
+                    self.selected_corridor_swimmer_name = None
+                    self.selected_corridor_swimmer_yob = None
             else:
-                self.corridor_swimmer_dd.options = []
-                self.corridor_swimmer_dd.value = None
-                self.corridor_swimmer_dd.label = "Nageur cible (couloir) — 0 disponible"
-                self.corridor_swimmer_dd.menu_height = self._menu_height_for_count(1)
+                self._corridor_dd_options_event_key = None
+                if self._dropdown_option_keys(self.corridor_swimmer_dd) != tuple():
+                    self.corridor_swimmer_dd.options = []
+                    dirty = True
+                if self.corridor_swimmer_dd.value is not None:
+                    self.corridor_swimmer_dd.value = None
+                    dirty = True
+                zl = "Nageur cible (couloir) — 0 disponible"
+                if self.corridor_swimmer_dd.label != zl:
+                    self.corridor_swimmer_dd.label = zl
+                    dirty = True
+                mh0 = self._menu_height_for_count(1)
+                if self.corridor_swimmer_dd.menu_height != mh0:
+                    self.corridor_swimmer_dd.menu_height = mh0
+                    dirty = True
+                if self.corridor_swimmer_dd.visible is not True:
+                    self.corridor_swimmer_dd.visible = True
+                    dirty = True
                 self.selected_corridor_swimmer_name = None
                 self.selected_corridor_swimmer_yob = None
         else:
-            self.corridor_swimmer_dd.options = []
-            self.corridor_swimmer_dd.value = None
-            self.corridor_swimmer_dd.label = "Nageur cible (couloir de perf.)"
-            self.corridor_swimmer_dd.menu_height = self._menu_height_for_count(1)
-            self.corridor_swimmer_dd.visible = False
+            self._corridor_dd_options_event_key = None
+            if self._sync_dropdown(
+                self.corridor_swimmer_dd,
+                new_option_keys=tuple(),
+                build_options=lambda: [],
+                value=None,
+                visible=False,
+            ):
+                dirty = True
+            if self.corridor_swimmer_dd.label != "Nageur cible (couloir de perf.)":
+                self.corridor_swimmer_dd.label = "Nageur cible (couloir de perf.)"
+                dirty = True
             self.selected_corridor_swimmer_name = None
             self.selected_corridor_swimmer_yob = None
 
         # Option spécifique pacing comparatif (nageur cible)
         if self.selected_graph == "Split speed - F vs M + nageurs cibles":
-            swimmer_options = sorted(
-                {
-                    n
-                    for n in _df_scope()["swimmer"].apply(_primary_swimmer_name).tolist()
-                    if n
-                },
-                key=lambda x: _normalize_text(x),
+            pacing_scope_key = (
+                id(df_nav),
+                stroke,
+                distance,
+                pool,
             )
+            if pacing_scope_key != getattr(self, "_pacing_scope_key", None):
+                self._pacing_scope_key = pacing_scope_key
+                self._pacing_swimmer_options_key = None
+            if self._pacing_swimmer_options_key is None:
+                swimmer_options = self._swimmer_names_from_corridor_registry()
+                if not swimmer_options:
+                    swimmer_options = sorted(
+                        {
+                            n
+                            for n in _df_scope()["swimmer"].apply(_primary_swimmer_name).tolist()
+                            if n
+                        },
+                        key=lambda x: _normalize_text(x),
+                    )
+                self._pacing_swimmer_options_key = ("",) + tuple(swimmer_options)
+            else:
+                swimmer_options = list(self._pacing_swimmer_options_key[1:])
+            pacing_keys = self._pacing_swimmer_options_key or ("",)
             options = [ft.dropdown.Option(key="", text="(aucun)")] + [
                 ft.dropdown.Option(name) for name in swimmer_options
             ]
-            for dd in [self.pacing_swimmer_dd_1, self.pacing_swimmer_dd_2, self.pacing_swimmer_dd_3]:
-                dd.options = options
-                dd.menu_height = self._menu_height_for_count(len(options))
-                dd.visible = True
+            pacing_mh = self._menu_height_for_count(len(options))
+            for dd in (
+                self.pacing_swimmer_dd_1,
+                self.pacing_swimmer_dd_2,
+                self.pacing_swimmer_dd_3,
+            ):
+                if self._dropdown_option_keys(dd) != pacing_keys:
+                    dd.options = list(options)
+                    dirty = True
+                if dd.menu_height != pacing_mh:
+                    dd.menu_height = pacing_mh
+                    dirty = True
+                if dd.visible is not True:
+                    dd.visible = True
+                    dirty = True
 
-            # Valeurs initiales par défaut: 3 premiers nageurs dispo
             default_vals = swimmer_options[:3]
             while len(default_vals) < 3:
                 default_vals.append("")
@@ -1039,16 +2212,20 @@ class PacingDesktopApp:
             current = self.selected_pacing_swimmers[:]
             while len(current) < 3:
                 current.append("")
-            # Si une valeur n'existe plus, retombe sur défaut
             for i in range(3):
                 if current[i] and current[i] not in swimmer_options:
                     current[i] = default_vals[i]
             if not any(current) and swimmer_options:
                 current = default_vals
 
-            self.pacing_swimmer_dd_1.value = current[0]
-            self.pacing_swimmer_dd_2.value = current[1]
-            self.pacing_swimmer_dd_3.value = current[2]
+            for dd, val in (
+                (self.pacing_swimmer_dd_1, current[0]),
+                (self.pacing_swimmer_dd_2, current[1]),
+                (self.pacing_swimmer_dd_3, current[2]),
+            ):
+                if dd.value != val:
+                    dd.value = val
+                    dirty = True
 
             cleaned: List[str] = []
             for s in current:
@@ -1056,11 +2233,21 @@ class PacingDesktopApp:
                     cleaned.append(s)
             self.selected_pacing_swimmers = cleaned[:3]
         else:
-            for dd in [self.pacing_swimmer_dd_1, self.pacing_swimmer_dd_2, self.pacing_swimmer_dd_3]:
-                dd.options = []
-                dd.value = None
-                dd.menu_height = self._menu_height_for_count(1)
-                dd.visible = False
+            self._pacing_scope_key = None
+            self._pacing_swimmer_options_key = None
+            for dd in (
+                self.pacing_swimmer_dd_1,
+                self.pacing_swimmer_dd_2,
+                self.pacing_swimmer_dd_3,
+            ):
+                if self._sync_dropdown(
+                    dd,
+                    new_option_keys=tuple(),
+                    build_options=lambda: [],
+                    value=None,
+                    visible=False,
+                ):
+                    dirty = True
             self.selected_pacing_swimmers = []
 
         # Chronos dans le temps: borne la taille d'échantillon aux données disponibles
@@ -1076,13 +2263,24 @@ class PacingDesktopApp:
                 max_count = 0
             if self.selected_chronos_sample_size > max_count:
                 self.selected_chronos_sample_size = max_count
+                dirty = True
             if self.selected_chronos_sample_size < 0:
                 self.selected_chronos_sample_size = 0
+                dirty = True
 
         # Catégorie / Graphique
-        self.category_dd.menu_height = self._menu_height_for_count(len(self.category_dd.options))
-        self.graph_dd.menu_height = self._menu_height_for_count(len(self.graph_dd.options))
+        cat_mh = self._menu_height_for_count(len(self.category_dd.options))
+        if self.category_dd.menu_height != cat_mh:
+            self.category_dd.menu_height = cat_mh
+            dirty = True
+        graph_mh = self._menu_height_for_count(len(self.graph_dd.options))
+        if self.graph_dd.menu_height != graph_mh:
+            self.graph_dd.menu_height = graph_mh
+            dirty = True
 
+        # Toujours pousser l’UI après un changement de filtres : Flet peut laisser les
+        # dropdowns dépendants visuellement bloqués si on omet page.update() lorsque
+        # dirty est resté False (options « identiques » sur la forme, etc.).
         if update_ui:
             self.page.update()
 
@@ -1102,14 +2300,43 @@ class PacingDesktopApp:
                 distance,
                 pool,
             )
+            # Fast path: tenter d'abord le cache mémoire (très fréquent en usage normal).
+            with self._registry_json_lock:
+                cached = self.graph_render_registry.get(render_key)
+                cached_image = self.chart_image_cache.get(render_key)
+                if cached_image is None and isinstance(cached, dict):
+                    img = cached.get("image_base64")
+                    if isinstance(img, str) and len(img) > 0:
+                        cached_image = img
+                        self.chart_image_cache[render_key] = img
+            if (
+                cached is not None
+                and cached.get("status") == "ok"
+                and cached_image is not None
+            ):
+                if update_ui:
+                    self.loader.visible = False
+                    self.status_text.value = ""
+                    self.image.visible = True
+                    self.image.src = cached_image
+                    self.chart_title_text.value = str(cached.get("chart_title", self.selected_graph))
+                    row_count = int(cached.get("row_count", 0))
+                    self.row_count_text.value = (
+                        f"Nombre de performances disponibles : {row_count:,}".replace(",", " ")
+                    )
+                    self.page.update()
+                return
+
+            # Fallback disque uniquement en cas de miss mémoire.
             self._refresh_graph_registry_from_disk_if_changed()
-            cached = self.graph_render_registry.get(render_key)
-            cached_image = self.chart_image_cache.get(render_key)
-            if cached_image is None and isinstance(cached, dict):
-                img = cached.get("image_base64")
-                if isinstance(img, str) and len(img) > 0:
-                    cached_image = img
-                    self.chart_image_cache[render_key] = img
+            with self._registry_json_lock:
+                cached = self.graph_render_registry.get(render_key)
+                cached_image = self.chart_image_cache.get(render_key)
+                if cached_image is None and isinstance(cached, dict):
+                    img = cached.get("image_base64")
+                    if isinstance(img, str) and len(img) > 0:
+                        cached_image = img
+                        self.chart_image_cache[render_key] = img
             if (
                 cached is not None
                 and cached.get("status") == "ok"

@@ -1,7 +1,7 @@
-"""Chargement des performances Extranat depuis les JSON ``competitions_per_type``."""
 from __future__ import annotations
 import json
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 import pandas as pd
 
@@ -12,55 +12,69 @@ DEFAULT_EXTRANAT_COMPETITIONS_DIR = (
 
 
 class ExtranatCompetitionsDataLoader:
-    """Lit tous les ``*.json`` sous le répertoire de base et renvoie un ``DataFrame`` plat."""
+    """Lit tous les *.json sous le répertoire de base et renvoie un DataFrame."""
 
     def __init__(self, base_dir: Optional[Path] = None) -> None:
+        """Stocke le chemin"""
         self.base_dir = base_dir if base_dir is not None else DEFAULT_EXTRANAT_COMPETITIONS_DIR
 
-    def load(self) -> pd.DataFrame:
+    @staticmethod
+    def _build_rows_from_comp(comp: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Prend une cmp déjà chargée et retourne une liste des lignes"""
         rows: List[Dict[str, Any]] = []
+        for epreuve in comp.get("epreuves", []):
+            for perf in epreuve.get("performances", []):
+                swimmers = perf.get("swimmer", [])
+                if isinstance(swimmers, dict):
+                    swimmers = [swimmers]
 
+                row = {
+                    "Meet": comp.get("Meet"),
+                    "SwimDate": comp.get("SwimDate"),
+                    "Location": comp.get("location"),
+                    "Country": comp.get("Country"),
+                    "Event": epreuve.get("Event"),
+                    "Distance": epreuve.get("Distance"),
+                    "Stroke": epreuve.get("Stroke"),
+                    "Course": epreuve.get("Course"),
+                    "PoolLength": epreuve.get("PoolLength"),
+                    "Tour": epreuve.get("tour"),
+                    "Rank": perf.get("Rank"),
+                    "Club": perf.get("club"),
+                    "points": perf.get("points"),
+                    "mpp": perf.get("mpp"),
+                    "mpp_date": perf.get("mpp_date"),
+                    "SwimTime": perf.get("SwimTime"),
+                    "SwimTimeSeconds": perf.get("SwimTimeSeconds"),
+                    "Status": perf.get("Status"),
+                    "Speed": perf.get("Speed"),
+                    "swimmer": swimmers,
+                    "splits": perf.get("splits", []),
+                }
+                rows.append(row)
+        return rows
+
+    def _load_single_file(self, file: Path) -> List[Dict[str, Any]]:
+        try:
+            with file.open("r", encoding="utf-8") as f:
+                comp = json.load(f)
+        except Exception:
+            return []
+        return self._build_rows_from_comp(comp)
+
+    def load(self) -> pd.DataFrame:
+        """Lance le chargement en parallèle thread avec ThreadPoolExecutor"""
         if not self.base_dir.exists():
             return pd.DataFrame()
 
-        for file in self.base_dir.rglob("*.json"):
-            try:
-                with file.open("r", encoding="utf-8") as f:
-                    comp = json.load(f)
-            except Exception:
-                continue
+        files = list(self.base_dir.rglob("*.json"))
+        if not files:
+            return pd.DataFrame()
 
-            for epreuve in comp.get("epreuves", []):
-                for perf in epreuve.get("performances", []):
-
-                    swimmers = perf.get("swimmer", [])
-                    if isinstance(swimmers, dict):
-                        swimmers = [swimmers]
-
-                    row = {
-                        "Meet": comp.get("Meet"),
-                        "SwimDate": comp.get("SwimDate"),
-                        "Location": comp.get("location"),
-                        "Country": comp.get("Country"),
-                        "Event": epreuve.get("Event"),
-                        "Distance": epreuve.get("Distance"),
-                        "Stroke": epreuve.get("Stroke"),
-                        "Course": epreuve.get("Course"),
-                        "PoolLength": epreuve.get("PoolLength"),
-                        "Tour": epreuve.get("tour"),
-                        "Rank": perf.get("Rank"),
-                        "Club": perf.get("club"),
-                        "points": perf.get("points"),
-                        "mpp": perf.get("mpp"),
-                        "mpp_date": perf.get("mpp_date"),
-                        "SwimTime": perf.get("SwimTime"),
-                        "SwimTimeSeconds": perf.get("SwimTimeSeconds"),
-                        "Status": perf.get("Status"),
-                        "Speed": perf.get("Speed"),
-                        "swimmer": swimmers,
-                        "splits": perf.get("splits", []),
-                    }
-                    rows.append(row)
+        rows: List[Dict[str, Any]] = []
+        with ThreadPoolExecutor() as executor:
+            for file_rows in executor.map(self._load_single_file, files):
+                rows.extend(file_rows)
 
         df = pd.DataFrame(rows)
         if df.empty:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
+import difflib
 import re
 import unicodedata
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -79,15 +80,6 @@ DESKTOP_GRAPH_MENU: Tuple[DesktopGraphCategory, ...] = (
     DesktopGraphCategory(
         "Synthèse des vitesses par distance et nage",
         ("Heatmap vitesse moyenne (distance x nage)",),
-    ),
-    DesktopGraphCategory(
-        "Évolution de la vitesse par splits",
-        (
-            "Lineplot of Speed ​​per split for a precise Swimmer and Event",
-            "Lineplot of split speed for the best swimmer for a specific event",
-            "Lineplot of split speed for the best swimmers for a specific event (women vs men)",
-            "Line plot of Split Speed Progression of Top 10 Swimmers in a given Event (Women vs Men)",
-        ),
     ),
     DesktopGraphCategory(
         "Comparaisons de pacing par splits (à partir de la médiane)",
@@ -1922,11 +1914,114 @@ class ServiceGraphe:
         if long_df.empty:
             return None, {"message": f"Aucune donnee pour {nom_event}"}
 
-        target_name = str(nom_nageur).strip().lower()
+        def _norm_name(value: object) -> str:
+            txt = "" if value is None else str(value).strip().lower()
+            txt = unicodedata.normalize("NFKD", txt).encode("ascii", "ignore").decode("ascii")
+            txt = re.sub(r"\s+", " ", txt)
+            return txt
+
+        target_name = str(nom_nageur).strip()
+        target_norm = _norm_name(target_name)
+        name_norm_series = long_df["Name"].astype(str).map(_norm_name)
+        yob_series = pd.to_numeric(long_df["Year_of_birth"], errors="coerce")
+
         swimmer_data = long_df[
-            (long_df["Name"].astype(str).str.strip().str.lower() == target_name)
-            & (long_df["Year_of_birth"] == year_of_birth)
+            (name_norm_series == target_norm)
+            & (yob_series == int(year_of_birth))
         ].copy()
+        resolved_swimmer_name = target_name
+        resolved_swimmer_yob = int(year_of_birth)
+
+        if swimmer_data.empty:
+            by_name = long_df[name_norm_series == target_norm].copy()
+            if not by_name.empty:
+                yob_name = pd.to_numeric(by_name["Year_of_birth"], errors="coerce")
+                if yob_name.notna().any():
+                    best_idx = (yob_name - int(year_of_birth)).abs().idxmin()
+                    best_row = by_name.loc[[best_idx]]
+                else:
+                    best_row = by_name.iloc[[0]]
+                swimmer_data = best_row.copy()
+                resolved_swimmer_name = str(swimmer_data.iloc[0]["Name"]).strip()
+                try:
+                    resolved_swimmer_yob = int(float(swimmer_data.iloc[0]["Year_of_birth"]))
+                except (TypeError, ValueError):
+                    resolved_swimmer_yob = int(year_of_birth)
+
+        if swimmer_data.empty and target_norm:
+            tokens = [t for t in target_norm.split(" ") if t]
+            if tokens:
+                broad_mask = name_norm_series.map(
+                    lambda n: all(tok in n for tok in tokens)
+                )
+                by_tokens = long_df[broad_mask].copy()
+                if not by_tokens.empty:
+                    yob_tok = pd.to_numeric(by_tokens["Year_of_birth"], errors="coerce")
+                    if yob_tok.notna().any():
+                        best_idx = (yob_tok - int(year_of_birth)).abs().idxmin()
+                        best_row = by_tokens.loc[[best_idx]]
+                    else:
+                        best_row = by_tokens.iloc[[0]]
+                    swimmer_data = best_row.copy()
+                    resolved_swimmer_name = str(swimmer_data.iloc[0]["Name"]).strip()
+                    try:
+                        resolved_swimmer_yob = int(float(swimmer_data.iloc[0]["Year_of_birth"]))
+                    except (TypeError, ValueError):
+                        resolved_swimmer_yob = int(year_of_birth)
+
+        if swimmer_data.empty and target_norm:
+            candidates = (
+                long_df[["Name", "Year_of_birth"]]
+                .dropna(subset=["Name", "Year_of_birth"])
+                .copy()
+            )
+            if not candidates.empty:
+                candidates["__norm"] = candidates["Name"].map(_norm_name)
+                candidates["__ratio"] = candidates["__norm"].map(
+                    lambda n: difflib.SequenceMatcher(None, target_norm, n).ratio()
+                )
+                candidates["__yob"] = pd.to_numeric(
+                    candidates["Year_of_birth"], errors="coerce"
+                )
+                candidates = candidates.dropna(subset=["__yob"])
+                if not candidates.empty:
+                    candidates["__yob_diff"] = (
+                        candidates["__yob"] - int(year_of_birth)
+                    ).abs()
+                    best = candidates.sort_values(
+                        by=["__ratio", "__yob_diff"],
+                        ascending=[False, True],
+                    ).iloc[0]
+                    ratio = float(best["__ratio"])
+                    if ratio >= 0.55:
+                        best_name = str(best["Name"]).strip()
+                        best_yob = int(float(best["__yob"]))
+                        swimmer_data = long_df[
+                            (name_norm_series == _norm_name(best_name))
+                            & (yob_series == best_yob)
+                        ].copy()
+                        if not swimmer_data.empty:
+                            resolved_swimmer_name = best_name
+                            resolved_swimmer_yob = best_yob
+
+        if swimmer_data.empty:
+            # Ultime fallback: prendre un nageur existant de l'épreuve pour éviter
+            # de bloquer le rendu si la clé cache/liste UI diverge des données.
+            fallback = long_df.dropna(subset=["Name", "Year_of_birth"]).head(1)
+            if not fallback.empty:
+                fb_name = str(fallback.iloc[0]["Name"]).strip()
+                try:
+                    fb_yob = int(float(fallback.iloc[0]["Year_of_birth"]))
+                except (TypeError, ValueError):
+                    fb_yob = int(year_of_birth)
+                swimmer_data = long_df[
+                    (name_norm_series == _norm_name(fb_name))
+                    & (yob_series == fb_yob)
+                ].copy()
+                if not swimmer_data.empty:
+                    resolved_swimmer_name = fb_name
+                    resolved_swimmer_yob = fb_yob
+
         if swimmer_data.empty:
             return None, {
                 "message": f"Nageur introuvable : {nom_nageur} ({year_of_birth})",
@@ -2013,6 +2108,10 @@ class ServiceGraphe:
             "gender": gender,
             "swimmer_name": swimmer_name,
             "year_of_birth": swimmer_yob,
+            "requested_swimmer_name": target_name,
+            "requested_year_of_birth": int(year_of_birth),
+            "resolved_swimmer_name": resolved_swimmer_name,
+            "resolved_year_of_birth": resolved_swimmer_yob,
             "points_swimmer": int(len(df_swimmer)),
             "ages_available": [int(x) for x in df_percentiles.index.tolist()],
         }
@@ -2373,25 +2472,25 @@ class ServiceGraphe:
                         chart_title = err
 
         elif selected_graph == "Couloir de performance (âge) - nageur cible":
-            if (
-                distance
-                and stroke
-                and pool
-                and selected_corridor_swimmer_name
-                and selected_corridor_swimmer_yob is not None
-            ):
-                nom_event = f"{distance} {stroke} {pool}"
-                chart_title = f"Couloir de performance - {nom_event}"
-                fig, meta = svc.plot_performance_corridor_plot_time(
-                    df_scope,
-                    nom_event=nom_event,
-                    nom_nageur=selected_corridor_swimmer_name,
-                    year_of_birth=int(selected_corridor_swimmer_yob),
-                )
-                if fig is None and isinstance(meta, dict):
-                    err = str(meta.get("message", ""))
-                    if err:
-                        chart_title = err
+            if distance and stroke and pool and selected_corridor_swimmer_name:
+                if selected_corridor_swimmer_yob is None:
+                    chart_title = (
+                        "Couloir : le nageur doit inclure l'année de naissance (format « Nom (AAAA) »). "
+                        "Relance l'app pour régénérer le cache nageurs si besoin."
+                    )
+                else:
+                    nom_event = f"{distance} {stroke} {pool}"
+                    chart_title = f"Couloir de performance - {nom_event}"
+                    fig, meta = svc.plot_performance_corridor_plot_time(
+                        df_scope,
+                        nom_event=nom_event,
+                        nom_nageur=selected_corridor_swimmer_name,
+                        year_of_birth=int(selected_corridor_swimmer_yob),
+                    )
+                    if fig is None and isinstance(meta, dict):
+                        err = str(meta.get("message", ""))
+                        if err:
+                            chart_title = err
 
         elif selected_graph == "Split Speed vs Distance (Relay Events) with Mean Trend Line":
             if distance and stroke and pool:
