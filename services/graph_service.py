@@ -2601,20 +2601,33 @@ class ServiceGraphe:
                         chart_title = err
 
         elif selected_graph == "Couloir de performance (âge) - nageur cible":
-            if distance and stroke and pool and selected_corridor_swimmer_name:
-                if selected_corridor_swimmer_yob is None:
-                    chart_title = (
-                        "Couloir : le nageur doit inclure l'année de naissance (format « Nom (AAAA) »). "
-                        "Relance l'app pour régénérer le cache nageurs si besoin."
-                    )
+            if distance and stroke and pool:
+                nom_event = f"{distance} {stroke} {pool}"
+                if selected_corridor_swimmer_name:
+                    if selected_corridor_swimmer_yob is None:
+                        chart_title = (
+                            "Couloir : le nageur doit inclure l'année de naissance (format « Nom (AAAA) »). "
+                            "Relance l'app pour régénérer le cache nageurs si besoin."
+                        )
+                    else:
+                        chart_title = f"Couloir de performance - {nom_event}"
+                        fig, meta = svc.plot_performance_corridor_plot_time(
+                            df_scope,
+                            nom_event=nom_event,
+                            nom_nageur=selected_corridor_swimmer_name,
+                            year_of_birth=int(selected_corridor_swimmer_yob),
+                        )
+                        if fig is None and isinstance(meta, dict):
+                            err = str(meta.get("message", ""))
+                            if err:
+                                chart_title = err
                 else:
-                    nom_event = f"{distance} {stroke} {pool}"
-                    chart_title = f"Couloir de performance - {nom_event}"
-                    fig, meta = svc.plot_performance_corridor_plot_time(
+                    # Au démarrage du mode "nageur cible", afficher Graphe28 (global)
+                    # tant qu'aucun nageur n'a été confirmé.
+                    chart_title = f"Couloir de performance global - {nom_event}"
+                    fig, meta = svc.plot_performance_corridor_global_plot_time(
                         df_scope,
                         nom_event=nom_event,
-                        nom_nageur=selected_corridor_swimmer_name,
-                        year_of_birth=int(selected_corridor_swimmer_yob),
                     )
                     if fig is None and isinstance(meta, dict):
                         err = str(meta.get("message", ""))
@@ -2816,7 +2829,7 @@ Graphe27 = GraphSpec(
 )
 Graphe28 = GraphSpec(
     key="performance_corridor_global_plot_time",
-    name="Couloir de performance global (age)",
+    name="Couloir de performance global (âge)",
     category="Analyse individuelle par epreuve",
     method_name="plot_performance_corridor_global_plot_time",
 )

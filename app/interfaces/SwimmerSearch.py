@@ -5,41 +5,44 @@ import flet as ft
 class SwimmerSearch:
     """
     Recherche + autocompletion pour le "Nageur cible (couloir de perf.)".
-
-    - Le champ est un `ft.AutoComplete`
-    - Le filtrage par query continue d'être géré côté app pour le dropdown (cibles).
-    - L'autocompletion propose la liste complète des nageurs pour le contexte
-      (Stroke/Distance/Bassin/Sexe), et l'UI filtre ensuite selon ce que l'utilisateur
-      tape via `ft.AutoComplete`.
     """
-
     def __init__(self, app: Any, *, width: int) -> None:
         self.app = app
-
         self._autocomplete_event_key: Optional[Tuple[str, int, str, str]] = None
-
+        input_width = max(int(width) - 46, 120)
         # Intitulé discret (pour retrouver l'effet "label TextField")
         self.label = ft.Text(
             "Rechercher un nageur (couloir)",
             size=12,
             color="#9ca3af",
         )
-
         # `on_change` met à jour la query dans l'app puis relance le refresh UI.
         self.input = ft.AutoComplete(
-            width=width,
+            width=input_width,
             suggestions=[],
             tooltip="Nom ou année de naissance",
             on_change=self._handle_change,
         )
-
+        self.confirm_btn = ft.IconButton(
+            icon=ft.icons.Icons.CHECK,
+            icon_color="#ffffff",
+            bgcolor="#4ade80",
+            tooltip="Confirmer le nageur cible",
+            on_click=self.app._on_confirm_corridor_swimmer,
+            visible=False,
+        )
+        self.input_row = ft.Row(
+            controls=[self.input, self.confirm_btn],
+            spacing=6,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
         self.container = ft.Column(
-            controls=[self.label, self.input],
+            controls=[self.label, self.input_row],
             spacing=2,
             visible=False,
         )
 
-    # ---------------------------------------------------------------- UI interactions
+    # UI interactions
     def _handle_change(self, e: ft.ControlEvent) -> None:
         self.app.corridor_swimmer_search_query = (e.control.value or "").strip()
         self.app._refresh_filters_from_data()
@@ -49,18 +52,22 @@ class SwimmerSearch:
         self.container.visible = visible
         return changed
 
+    def set_confirm_visible(self, visible: bool) -> bool:
+        changed = self.confirm_btn.visible is not visible
+        self.confirm_btn.visible = visible
+        return changed
+
     def sync_value_to_query(self) -> bool:
         """
         Sync: `self.input.value` <- `app.corridor_swimmer_search_query`.
         """
         query = self.app.corridor_swimmer_search_query or ""
-        # `ft.AutoComplete.value` existe et reflète le texte saisi.
         changed = (self.input.value or "") != query
         if changed:
             self.input.value = query
         return changed
 
-    # ---------------------------------------------------------------- Suggestions helpers
+    # Suggestions helpers
     def _clear_autocomplete(self) -> None:
         self._autocomplete_event_key = None
         if self.input.suggestions:
