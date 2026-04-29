@@ -16,6 +16,7 @@ from project_path import PROJECT_DIR, ensure_project_imports
 ensure_project_imports()
 
 from corridor_prefetch import CorridorPrefetchManager
+from SwimmerSearch import SwimmerSearch
 from desktop_helpers import (
     _build_df_nav,
     _event_combinations,
@@ -424,6 +425,7 @@ class PacingDesktopApp:
                 Tuple[str, int, str, str], List[ft.dropdown.Option]
             ] = {}
             self._corridor_dd_options_event_key: Optional[Tuple[str, int, str, str]] = None
+            self.corridor_swimmer_search: Optional[SwimmerSearch] = None
             self._chart_schedule_gen: int = 0
             self._corridor_swimmer_schedule_gen: int = 0
             self._pacing_swimmer_options_key: Optional[Tuple[str, ...]] = None
@@ -447,7 +449,9 @@ class PacingDesktopApp:
             self.corridor_gender_dd: ft.Dropdown
             self.heatmap_swimmer_dd: ft.Dropdown
             self.corridor_swimmer_dd: ft.Dropdown
-            self.corridor_swimmer_search_tf: ft.TextField
+            self.corridor_swimmer_search_tf: ft.AutoComplete
+            self.corridor_swimmer_search_container: ft.Column
+            self.corridor_swimmer_search_label: ft.Text
             self.pacing_swimmer_dd_1: ft.Dropdown
             self.pacing_swimmer_dd_2: ft.Dropdown
             self.pacing_swimmer_dd_3: ft.Dropdown
@@ -1478,14 +1482,10 @@ class PacingDesktopApp:
             menu_width=dropdown_menu_width,
             visible=False,
         )
-        self.corridor_swimmer_search_tf = ft.TextField(
-            label="Rechercher un nageur (couloir)",
-            hint_text="Nom ou année de naissance",
-            on_change=self._on_corridor_swimmer_search_change,
-            filled=True,
-            width=dropdown_width,
-            visible=False,
-        )
+        self.corridor_swimmer_search = SwimmerSearch(self, width=dropdown_width)
+        self.corridor_swimmer_search_label = self.corridor_swimmer_search.label
+        self.corridor_swimmer_search_tf = self.corridor_swimmer_search.input
+        self.corridor_swimmer_search_container = self.corridor_swimmer_search.container
         self.pacing_swimmer_dd_1 = ft.Dropdown(
             label="Nageur cible 1 (pacing)",
             options=[],
@@ -1552,7 +1552,7 @@ class PacingDesktopApp:
                     self.pacing_swimmer_dd_2,
                     self.pacing_swimmer_dd_3,
                     self.heatmap_swimmer_dd,
-                    self.corridor_swimmer_search_tf,
+                    self.corridor_swimmer_search_container,
                     self.corridor_swimmer_dd,
                     ft.Divider(),
                     ft.Row(
@@ -1987,19 +1987,19 @@ class PacingDesktopApp:
                 self.corridor_swimmer_dd.value = None
                 self.selected_corridor_swimmer_name = None
                 self.selected_corridor_swimmer_yob = None
+                if self.corridor_swimmer_search is not None:
+                    self.corridor_swimmer_search.clear_suggestions()
                 if self.corridor_swimmer_search_query:
-                    self.corridor_swimmer_search_query = ""
-                    if self.corridor_swimmer_search_tf.value != "":
-                        self.corridor_swimmer_search_tf.value = ""
-                        dirty = True
+                    if self.corridor_swimmer_search is not None:
+                        self.corridor_swimmer_search.reset(clear_query=True)
                 self._last_corridor_filter = current_corridor_filter
                 dirty = True
-            if self.corridor_swimmer_search_tf.visible is not True:
-                self.corridor_swimmer_search_tf.visible = True
+            if self.corridor_swimmer_search_container.visible is not True:
+                self.corridor_swimmer_search_container.visible = True
                 dirty = True
-            if self.corridor_swimmer_search_tf.value != self.corridor_swimmer_search_query:
-                self.corridor_swimmer_search_tf.value = self.corridor_swimmer_search_query
-                dirty = True
+            if self.corridor_swimmer_search is not None:
+                if self.corridor_swimmer_search.sync_value_to_query():
+                    dirty = True
             if skip_corridor_swimmer_options:
                 if self.corridor_swimmer_dd.visible is not True:
                     self.corridor_swimmer_dd.visible = True
@@ -2011,17 +2011,32 @@ class PacingDesktopApp:
                 if self.corridor_swimmer_dd.menu_height != self._menu_height_for_count(1):
                     self.corridor_swimmer_dd.menu_height = self._menu_height_for_count(1)
                     dirty = True
+                if self.corridor_swimmer_search is not None:
+                    if self.corridor_swimmer_search.clear_suggestions():
+                        dirty = True
             elif (
                 self.selected_stroke
                 and self.selected_distance is not None
                 and self.selected_pool
             ):
-                labels = self._selected_event_swimmers
+                labels_all = self._selected_event_swimmers
+                labels = labels_all
                 search_norm = _normalize_text(self.corridor_swimmer_search_query)
                 labels = self._filter_corridor_swimmer_labels(
                     labels,
                     self.corridor_swimmer_search_query,
                 )
+                autocomplete_event_key = (
+                    self.selected_stroke,
+                    int(self.selected_distance),
+                    self.selected_pool,
+                    self.selected_corridor_gender,
+                )
+                if self.corridor_swimmer_search is not None:
+                    if self.corridor_swimmer_search.maybe_sync_suggestions(
+                        labels_all, autocomplete_event_key
+                    ):
+                        dirty = True
                 event_key = (
                     self.selected_stroke,
                     int(self.selected_distance),
@@ -2072,11 +2087,9 @@ class PacingDesktopApp:
                     self.selected_corridor_swimmer_yob = None
             else:
                 self._corridor_dd_options_event_key = None
-                if self.corridor_swimmer_search_tf.value != "":
-                    self.corridor_swimmer_search_tf.value = ""
-                    dirty = True
-                if self.corridor_swimmer_search_query != "":
-                    self.corridor_swimmer_search_query = ""
+                if self.corridor_swimmer_search is not None:
+                    if self.corridor_swimmer_search.reset(clear_query=True):
+                        dirty = True
                 if self._dropdown_option_keys(self.corridor_swimmer_dd) != tuple():
                     self.corridor_swimmer_dd.options = []
                     dirty = True
@@ -2094,8 +2107,8 @@ class PacingDesktopApp:
                 if self.corridor_swimmer_dd.visible is not True:
                     self.corridor_swimmer_dd.visible = True
                     dirty = True
-                if self.corridor_swimmer_search_tf.visible is not True:
-                    self.corridor_swimmer_search_tf.visible = True
+                if self.corridor_swimmer_search_container.visible is not True:
+                    self.corridor_swimmer_search_container.visible = True
                     dirty = True
                 self.selected_corridor_swimmer_name = None
                 self.selected_corridor_swimmer_yob = None
@@ -2114,8 +2127,9 @@ class PacingDesktopApp:
                 dirty = True
             self.selected_corridor_gender = "all"
             self._corridor_dd_options_event_key = None
-            if self.corridor_swimmer_search_query:
-                self.corridor_swimmer_search_query = ""
+            if self.corridor_swimmer_search is not None:
+                if self.corridor_swimmer_search.reset(clear_query=True):
+                    dirty = True
             if self._sync_dropdown(
                 self.corridor_swimmer_dd,
                 new_option_keys=tuple(),
@@ -2127,11 +2141,8 @@ class PacingDesktopApp:
             if self.corridor_swimmer_dd.label != "Nageur cible (couloir de perf.)":
                 self.corridor_swimmer_dd.label = "Nageur cible (couloir de perf.)"
                 dirty = True
-            if self.corridor_swimmer_search_tf.value != "":
-                self.corridor_swimmer_search_tf.value = ""
-                dirty = True
-            if self.corridor_swimmer_search_tf.visible is not False:
-                self.corridor_swimmer_search_tf.visible = False
+            if self.corridor_swimmer_search_container.visible is not False:
+                self.corridor_swimmer_search_container.visible = False
                 dirty = True
             self.selected_corridor_swimmer_name = None
             self.selected_corridor_swimmer_yob = None
