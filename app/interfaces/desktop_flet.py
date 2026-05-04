@@ -6,7 +6,6 @@ import json
 import os
 import threading
 import traceback
-import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import flet as ft
 import matplotlib.pyplot as plt
@@ -17,7 +16,8 @@ from project_path import PROJECT_DIR, ensure_project_imports
 ensure_project_imports()
 
 from corridor_prefetch import CorridorPrefetchManager
-from SwimmerSearch import SwimmerSearch
+from loading_progress import DualPrefetchProgress, LoadingBar
+from swimmer_search import SwimmerSearch
 from desktop_helpers import (
     _build_df_nav,
     _event_combinations,
@@ -70,10 +70,12 @@ SCOPE_PERFORMANCES_PREFETCH_LIMIT = int(
 CORRIDOR_PREFETCH_MAX_RENDERS = int(os.environ.get("PACING_CORRIDOR_PREFETCH_MAX", "2500"))
 CORRIDOR_GRAPH_NAME = "Couloir de performance (âge) - nageur cible"
 CORRIDOR_GLOBAL_GRAPH_NAME = "Couloir de performance global (âge)"
+CORRIDOR_GLOBAL_DECILES_GRAPH_NAME = "Couloir de performance global (déciles 10-90)"
 CORRIDOR_CATEGORY = "Couloirs de performance"
 CORRIDOR_SWIMMER_UI_GRAPHS: Tuple[str, ...] = (
     CORRIDOR_GRAPH_NAME,
     CORRIDOR_GLOBAL_GRAPH_NAME,
+    CORRIDOR_GLOBAL_DECILES_GRAPH_NAME,
 )
 CHART_UPDATE_AFTER_FILTER_DEBOUNCE_SEC = 0.12
 SCOPE_PERFORMANCES_CACHE_MAX_ENTRIES = 64
@@ -81,260 +83,6 @@ SCOPE_PERFORMANCES_PREFETCH_GRAPHS: Tuple[str, ...] = (
     CORRIDOR_GRAPH_NAME,
     CORRIDOR_GLOBAL_GRAPH_NAME,
 )
-
-
-class LoadingBar:
-    def __init__(
-        self,
-        page: ft.Page,
-        total_units: int,
-        *,
-        header: str = "CHARGEMENT",
-        subheader: str = "Demarrage de l'application",
-    ) -> None:
-        self.page = page
-        self.total_units = max(int(total_units), 1)
-        self.completed = 0
-        self.progress = ft.ProgressBar(width=520, value=0.0, color="#f8fafc", bgcolor="#1f2937")
-        self.percent_text = ft.Text(
-            "0%",
-            size=16,
-            weight=ft.FontWeight.BOLD,
-            color="#f8fafc",
-        )
-        self.detail_text = ft.Text("Initialisation...", size=12, color="#9ca3af")
-        self.header_text = ft.Text(header, size=30, weight=ft.FontWeight.BOLD, color="#f8fafc")
-        self.subheader_text = ft.Text(subheader, size=11, color="#9ca3af")
-        self.container = ft.Container(
-            expand=True,
-            content=ft.Column(
-                controls=[
-                    self.header_text,
-                    self.subheader_text,
-                    ft.Container(height=12),
-                    self.progress,
-                    self.percent_text,
-                    self.detail_text,
-                ],
-                spacing=12,
-                alignment=ft.MainAxisAlignment.CENTER,
-            ),
-            bgcolor="#000000",
-            padding=ft.Padding(left=48, top=0, right=48, bottom=0),
-        )
-
-    def mount(self) -> None:
-        self.page.bgcolor = "#000000"
-        self.page.clean()
-        self.page.add(self.container)
-        self.page.update()
-        time.sleep(0.06)
-
-    def advance(self, detail: str, units: int = 1, *, show_graph_progress: bool = False) -> None:
-        self.completed += max(int(units), 0)
-        ratio = min(self.completed / self.total_units, 1.0)
-        pct_str = f"{int(round(ratio * 100))}%"
-        n, t = self.completed, self.total_units
-        if show_graph_progress:
-            detail_str = f"Graphes configurés : {n}/{t} — {detail}"
-        else:
-            detail_str = f"{n}/{t} — {detail}"
-        page = self.page
-
-        async def _flush_ui() -> None:
-            self.progress.value = ratio
-            self.percent_text.value = pct_str
-            self.detail_text.value = detail_str
-            page.update()
-
-        page.run_task(_flush_ui)
-
-    def reconfigure_phase(
-        self,
-        *,
-        total_units: int,
-        header: str,
-        subheader: str,
-    ) -> None:
-        """Deuxième barre / étape suivante : remet la progression à zéro et change les libellés."""
-        self.total_units = max(int(total_units), 1)
-        self.completed = 0
-        hdr, sub = header, subheader
-        page = self.page
-
-        async def _apply() -> None:
-            self.header_text.value = hdr
-            self.subheader_text.value = sub
-            self.progress.value = 0.0
-            self.percent_text.value = "0%"
-            self.detail_text.value = "Initialisation..."
-            page.update()
-
-        page.run_task(_apply)
-        time.sleep(0.06)
-
-    def close_gap_to_100(self, detail: str = "Terminé") -> None:
-        """Complète la barre si des unités n’ont pas été consommées."""
-        gap = self.total_units - self.completed
-        if gap > 0:
-            self.advance(detail, units=gap, show_graph_progress=True)
-
-
-class DualPrefetchProgress:
-    """Deux barres de progression en parallèle (gauche : graphes généraux, droite : couloirs)."""
-
-    def __init__(
-        self,
-        page: ft.Page,
-        total_left: int,
-        total_right: int,
-        left_path: str,
-        right_path: str,
-        *,
-        right_header: str = "Couloirs — prefetched_corridor_graphs.json",
-        right_progress_label: str = "Couloirs",
-    ) -> None:
-        self.page = page
-        self._lock = threading.Lock()
-        self.left_total = max(1, int(total_left))
-        self.right_total = max(1, int(total_right))
-        self.left_done = 0
-        self.right_done = 0
-        self.right_progress_label = right_progress_label
-        self.left_pb = ft.ProgressBar(width=360, value=0.0, color="#f8fafc", bgcolor="#1f2937")
-        self.right_pb = ft.ProgressBar(width=360, value=0.0, color="#93c5fd", bgcolor="#1f2937")
-        self.left_pct = ft.Text("0%", size=14, weight=ft.FontWeight.BOLD, color="#f8fafc")
-        self.right_pct = ft.Text("0%", size=14, weight=ft.FontWeight.BOLD, color="#f8fafc")
-        self.left_detail = ft.Text("…", size=11, color="#9ca3af")
-        self.right_detail = ft.Text("…", size=11, color="#9ca3af")
-        self.container = ft.Container(
-            expand=True,
-            bgcolor="#000000",
-            padding=ft.Padding(left=24, top=32, right=24, bottom=32),
-            content=ft.Column(
-                [
-                    ft.Text(
-                        "CHARGEMENT (parallèle)",
-                        size=22,
-                        weight=ft.FontWeight.BOLD,
-                        color="#f8fafc",
-                        text_align=ft.TextAlign.CENTER,
-                    ),
-                    ft.Container(height=16),
-                    ft.Row(
-                        [
-                            ft.Container(
-                                expand=True,
-                                content=ft.Column(
-                                    [
-                                        ft.Text("Graphes — prefetched_graphs.json", size=13, weight=ft.FontWeight.BOLD, color="#e5e7eb"),
-                                        ft.Text(left_path, size=10, color="#6b7280"),
-                                        self.left_pb,
-                                        self.left_pct,
-                                        self.left_detail,
-                                    ],
-                                    spacing=8,
-                                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                                ),
-                            ),
-                            ft.Container(
-                                expand=True,
-                                content=ft.Column(
-                                    [
-                                        ft.Text(right_header, size=13, weight=ft.FontWeight.BOLD, color="#e5e7eb"),
-                                        ft.Text(right_path, size=10, color="#6b7280"),
-                                        self.right_pb,
-                                        self.right_pct,
-                                        self.right_detail,
-                                    ],
-                                    spacing=8,
-                                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                                ),
-                            ),
-                        ],
-                        expand=True,
-                    ),
-                ],
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-        )
-
-    def mount(self) -> None:
-        self.page.bgcolor = "#000000"
-        self.page.clean()
-        self.page.add(self.container)
-        self.page.update()
-        time.sleep(0.06)
-
-    def _flush_left(self, ratio: float, detail_str: str) -> None:
-        page = self.page
-
-        async def _run() -> None:
-            self.left_pb.value = ratio
-            self.left_pct.value = f"{int(round(ratio * 100))}%"
-            self.left_detail.value = detail_str
-            page.update()
-
-        page.run_task(_run)
-
-    def _flush_right(self, ratio: float, detail_str: str) -> None:
-        page = self.page
-
-        async def _run() -> None:
-            self.right_pb.value = ratio
-            self.right_pct.value = f"{int(round(ratio * 100))}%"
-            self.right_detail.value = detail_str
-            page.update()
-
-        page.run_task(_run)
-
-    def advance_left(
-        self, detail: str, units: int = 1, *, show_graph_progress: bool = True
-    ) -> None:
-        with self._lock:
-            self.left_done += max(int(units), 0)
-            ratio = min(self.left_done / self.left_total, 1.0)
-            n, t = self.left_done, self.left_total
-        if show_graph_progress:
-            detail_str = f"Graphes : {n}/{t} — {detail}"
-        else:
-            detail_str = f"{n}/{t} — {detail}"
-        self._flush_left(ratio, detail_str)
-
-    def advance_right(
-        self, detail: str, units: int = 1, *, show_graph_progress: bool = True
-    ) -> None:
-        with self._lock:
-            self.right_done += max(int(units), 0)
-            ratio = min(self.right_done / self.right_total, 1.0)
-            n, t = self.right_done, self.right_total
-        if show_graph_progress:
-            detail_str = f"{self.right_progress_label} : {n}/{t} — {detail}"
-        else:
-            detail_str = f"{n}/{t} — {detail}"
-        self._flush_right(ratio, detail_str)
-
-    def close_gap_left(self, detail: str = "Terminé") -> None:
-        with self._lock:
-            gap = self.left_total - self.left_done
-        if gap > 0:
-            self.advance_left(detail, units=gap, show_graph_progress=True)
-
-    def close_gap_right(self, detail: str = "Terminé") -> None:
-        with self._lock:
-            gap = self.right_total - self.right_done
-        if gap > 0:
-            self.advance_right(detail, units=gap, show_graph_progress=True)
-
-    def reconfigure_right_total(self, total_units: int, *, reset_done: bool = True) -> None:
-        """Met à jour la taille de la barre droite (utile quand on découvre le total au runtime)."""
-        with self._lock:
-            self.right_total = max(1, int(total_units))
-            if reset_done:
-                self.right_done = 0
-            ratio = 0.0
-        # On rafraîchit l'affichage sans avancer la progression.
-        self._flush_right(ratio, f"0/{self.right_total} — Initialisation...")
 
 
 class PacingDesktopApp:
@@ -478,6 +226,9 @@ class PacingDesktopApp:
             self.selected_heatmap_swimmer: Optional[str] = None
             self.selected_corridor_swimmer_name: Optional[str] = None
             self.selected_corridor_swimmer_yob: Optional[int] = None
+            # Déciles 10-90 : nageur réellement tracé après clic sur le bouton ✓ (pas via recherche/liste seuls).
+            self.corridor_deciles_confirmed_name: Optional[str] = None
+            self.corridor_deciles_confirmed_yob: Optional[int] = None
             self.corridor_swimmer_search_query: str = ""
             self.selected_pacing_swimmers: List[str] = []
             self.selected_chronos_sample_size: int = 5000
@@ -530,6 +281,7 @@ class PacingDesktopApp:
             self.corridor_swimmer_search_tf: ft.AutoComplete
             self.corridor_swimmer_search_container: ft.Column
             self.corridor_swimmer_search_label: ft.Text
+            self.corridor_mode_switch: ft.Switch
             self.pacing_swimmer_dd_1: ft.Dropdown
             self.pacing_swimmer_dd_2: ft.Dropdown
             self.pacing_swimmer_dd_3: ft.Dropdown
@@ -1054,9 +806,13 @@ class PacingDesktopApp:
             pacing = []
         corridor_swimmer_name = self.selected_corridor_swimmer_name
         corridor_swimmer_yob = self.selected_corridor_swimmer_yob
+        # Couloir global (âge) sans surcouche nageur : pas de corridor_* dans la clé.
         if graph_name == CORRIDOR_GLOBAL_GRAPH_NAME:
             corridor_swimmer_name = None
             corridor_swimmer_yob = None
+        elif graph_name == CORRIDOR_GLOBAL_DECILES_GRAPH_NAME:
+            corridor_swimmer_name = self.corridor_deciles_confirmed_name
+            corridor_swimmer_yob = self.corridor_deciles_confirmed_yob
         return {
             "stroke": stroke,
             "distance": int(distance) if distance is not None else None,
@@ -1589,6 +1345,12 @@ class PacingDesktopApp:
         self.corridor_swimmer_search_tf = self.corridor_swimmer_search.input
         self.corridor_swimmer_search_container = self.corridor_swimmer_search.container
         self.corridor_swimmer_confirm_btn = self.corridor_swimmer_search.confirm_btn
+        self.corridor_mode_switch = ft.Switch(
+            label="Mode couloir déciles 10-90",
+            value=self.selected_graph == CORRIDOR_GLOBAL_DECILES_GRAPH_NAME,
+            visible=self.selected_category == CORRIDOR_CATEGORY,
+            on_change=self._on_corridor_mode_switch_change,
+        )
         self.pacing_swimmer_dd_1 = ft.Dropdown(
             label="Nageur cible 1 (pacing)",
             options=[],
@@ -1640,8 +1402,16 @@ class PacingDesktopApp:
             content=ft.Column(
                 controls=[
                     ft.Row(
-                        [self._nav_title_text, self._theme_toggle_btn],
+                        [
+                            self._nav_title_text,
+                            ft.Row(
+                                [self.corridor_mode_switch, self._theme_toggle_btn],
+                                spacing=8,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
+                        ],
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
                     ft.Divider(height=10),
                     self.category_dd,
@@ -1722,15 +1492,49 @@ class PacingDesktopApp:
         if not graphs:
             return
         self.selected_graph = graphs[0]
+        if self.selected_graph != CORRIDOR_GLOBAL_DECILES_GRAPH_NAME:
+            self.corridor_deciles_confirmed_name = None
+            self.corridor_deciles_confirmed_yob = None
         self.graph_dd.options = [ft.dropdown.Option(g) for g in graphs]
         self.graph_dd.value = self.selected_graph
+        self._sync_corridor_mode_switch(update_ui=False)
         self._refresh_filters_from_data()
         self._schedule_deferred_chart_update()
 
     def _on_graph_change(self, e: ft.ControlEvent) -> None:
         self.selected_graph = e.control.value
+        if self.selected_graph != CORRIDOR_GLOBAL_DECILES_GRAPH_NAME:
+            self.corridor_deciles_confirmed_name = None
+            self.corridor_deciles_confirmed_yob = None
+        self._sync_corridor_mode_switch(update_ui=False)
         self._refresh_filters_from_data()
         self._schedule_deferred_chart_update()
+
+    def _on_corridor_mode_switch_change(self, e: ft.ControlEvent) -> None:
+        if self.selected_category != CORRIDOR_CATEGORY:
+            return
+        self.selected_graph = (
+            CORRIDOR_GLOBAL_DECILES_GRAPH_NAME
+            if bool(e.control.value)
+            else CORRIDOR_GRAPH_NAME
+        )
+        self.graph_dd.value = self.selected_graph
+        if self.selected_graph != CORRIDOR_GLOBAL_DECILES_GRAPH_NAME:
+            self.corridor_deciles_confirmed_name = None
+            self.corridor_deciles_confirmed_yob = None
+        self._sync_corridor_mode_switch(update_ui=False)
+        self._refresh_filters_from_data()
+        self._schedule_deferred_chart_update()
+
+    def _sync_corridor_mode_switch(self, *, update_ui: bool = True) -> None:
+        should_be_visible = self.selected_category == CORRIDOR_CATEGORY
+        if self.corridor_mode_switch.visible is not should_be_visible:
+            self.corridor_mode_switch.visible = should_be_visible
+        should_be_deciles = self.selected_graph == CORRIDOR_GLOBAL_DECILES_GRAPH_NAME
+        if self.corridor_mode_switch.value is not should_be_deciles:
+            self.corridor_mode_switch.value = should_be_deciles
+        if update_ui:
+            self.page.update()
 
     def _on_filter_change(self, e: ft.ControlEvent) -> None:
         self.selected_stroke = self.stroke_dd.value
@@ -1791,7 +1595,10 @@ class PacingDesktopApp:
         name, yob = PacingDesktopApp._parse_corridor_swimmer_label(label)
         self.selected_corridor_swimmer_name = name
         self.selected_corridor_swimmer_yob = yob
-        if self.selected_graph == CORRIDOR_GLOBAL_GRAPH_NAME:
+        if self.selected_graph in (
+            CORRIDOR_GLOBAL_GRAPH_NAME,
+            CORRIDOR_GLOBAL_DECILES_GRAPH_NAME,
+        ):
             self._refresh_filters_from_data()
             return
         self._update_chart()
@@ -1803,9 +1610,14 @@ class PacingDesktopApp:
             return
         self.selected_corridor_swimmer_name = name
         self.selected_corridor_swimmer_yob = yob
-        # Depuis le mode "global", la confirmation ouvre le couloir du nageur choisi.
-        self.selected_graph = CORRIDOR_GRAPH_NAME
-        self.graph_dd.value = self.selected_graph
+        if self.selected_graph == CORRIDOR_GLOBAL_DECILES_GRAPH_NAME:
+            self.corridor_deciles_confirmed_name = name
+            self.corridor_deciles_confirmed_yob = yob
+        # Depuis le couloir global (âge), la confirmation ouvre le couloir « nageur cible ».
+        # En mode déciles 10-90, on reste sur ce graphe et on trace le nageur sur les percentiles.
+        if self.selected_graph == CORRIDOR_GLOBAL_GRAPH_NAME:
+            self.selected_graph = CORRIDOR_GRAPH_NAME
+            self.graph_dd.value = self.selected_graph
         self._refresh_filters_from_data()
         self._schedule_deferred_chart_update()
 
@@ -2228,6 +2040,8 @@ class PacingDesktopApp:
                 self.corridor_swimmer_dd.value = None
                 self.selected_corridor_swimmer_name = None
                 self.selected_corridor_swimmer_yob = None
+                self.corridor_deciles_confirmed_name = None
+                self.corridor_deciles_confirmed_yob = None
                 if self.corridor_swimmer_search is not None:
                     self.corridor_swimmer_search.clear_suggestions()
                 if self.corridor_swimmer_search_query:
@@ -2323,6 +2137,8 @@ class PacingDesktopApp:
                     else:
                         self.selected_corridor_swimmer_name = None
                         self.selected_corridor_swimmer_yob = None
+                        self.corridor_deciles_confirmed_name = None
+                        self.corridor_deciles_confirmed_yob = None
                 else:
                     if self.corridor_swimmer_dd.value is not None:
                         self.corridor_swimmer_dd.value = None
@@ -2333,6 +2149,8 @@ class PacingDesktopApp:
                         dirty = True
                     self.selected_corridor_swimmer_name = None
                     self.selected_corridor_swimmer_yob = None
+                    self.corridor_deciles_confirmed_name = None
+                    self.corridor_deciles_confirmed_yob = None
             else:
                 self._corridor_dd_options_event_key = None
                 if self.corridor_swimmer_search is not None:
@@ -2360,8 +2178,15 @@ class PacingDesktopApp:
                     dirty = True
                 self.selected_corridor_swimmer_name = None
                 self.selected_corridor_swimmer_yob = None
+                self.corridor_deciles_confirmed_name = None
+                self.corridor_deciles_confirmed_yob = None
             confirm_visible = (
-                self.selected_graph in (CORRIDOR_GLOBAL_GRAPH_NAME, CORRIDOR_GRAPH_NAME)
+                self.selected_graph
+                in (
+                    CORRIDOR_GLOBAL_GRAPH_NAME,
+                    CORRIDOR_GLOBAL_DECILES_GRAPH_NAME,
+                    CORRIDOR_GRAPH_NAME,
+                )
                 and bool(self.corridor_swimmer_dd.value)
             )
             if self.corridor_swimmer_confirm_btn.visible is not confirm_visible:
@@ -2404,6 +2229,8 @@ class PacingDesktopApp:
                 dirty = True
             self.selected_corridor_swimmer_name = None
             self.selected_corridor_swimmer_yob = None
+            self.corridor_deciles_confirmed_name = None
+            self.corridor_deciles_confirmed_yob = None
 
         # Option spécifique pacing comparatif (nageur cible)
         if self.selected_graph == "Split speed - F vs M + nageurs cibles":
@@ -2522,6 +2349,7 @@ class PacingDesktopApp:
         if self.graph_dd.menu_height != graph_mh:
             self.graph_dd.menu_height = graph_mh
             dirty = True
+        self._sync_corridor_mode_switch(update_ui=False)
 
         # Toujours pousser l’UI après un changement de filtres : Flet peut laisser les
         # dropdowns dépendants visuellement bloqués si on omet page.update() lorsque
@@ -2631,6 +2459,11 @@ class PacingDesktopApp:
                 return
 
             df_filtered = df_scope[df_scope["SwimTimeSeconds"].notna()].copy()
+            corridor_for_render_name = self.selected_corridor_swimmer_name
+            corridor_for_render_yob = self.selected_corridor_swimmer_yob
+            if self.selected_graph == CORRIDOR_GLOBAL_DECILES_GRAPH_NAME:
+                corridor_for_render_name = self.corridor_deciles_confirmed_name
+                corridor_for_render_yob = self.corridor_deciles_confirmed_yob
             fig, chart_title = self.graph_svc.desktop_build_figure(
                 self.selected_graph,
                 df=self.df,
@@ -2643,8 +2476,8 @@ class PacingDesktopApp:
                 selected_chronos_sample_size=self.selected_chronos_sample_size,
                 selected_pacing_swimmers=self.selected_pacing_swimmers,
                 selected_heatmap_swimmer=self.selected_heatmap_swimmer,
-                selected_corridor_swimmer_name=self.selected_corridor_swimmer_name,
-                selected_corridor_swimmer_yob=self.selected_corridor_swimmer_yob,
+                selected_corridor_swimmer_name=corridor_for_render_name,
+                selected_corridor_swimmer_yob=corridor_for_render_yob,
             )
 
             if fig is None:

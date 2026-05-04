@@ -25,7 +25,6 @@ class GraphSpec:
 @dataclass(frozen=True)
 class DesktopGraphCategory:
     """Une rubrique du menu graphes (UI desktop Flet)."""
-
     title: str
     graph_names: Tuple[str, ...]
 
@@ -98,6 +97,7 @@ DESKTOP_GRAPH_MENU: Tuple[DesktopGraphCategory, ...] = (
         (
             "Couloir de performance (âge) - nageur cible",
             "Couloir de performance global (âge)",
+            "Couloir de performance global (déciles 10-90)",
         ),
     ),
 )
@@ -2080,14 +2080,15 @@ class ServiceGraphe:
                 df_percentiles[f"p{p}"],
                 linestyle="--",
                 label=f"{p}%",
+                zorder=2,
             )
-
         ax.fill_between(
             df_percentiles.index,
             df_percentiles["p25"],
             df_percentiles["p75"],
             alpha=0.2,
             label="Zone 25-75%",
+            zorder=1,
         )
         ax.plot(
             df_swimmer["Age_swim"],
@@ -2095,6 +2096,8 @@ class ServiceGraphe:
             color="red",
             linewidth=2.5,
             marker="o",
+            label="Nageur cible",
+            zorder=4,
         )
 
         last = df_swimmer.iloc[-1]
@@ -2239,6 +2242,297 @@ class ServiceGraphe:
             "event": str(nom_event),
             "ages_available": [int(x) for x in df_percentiles.index.tolist()],
             "points_count": int(len(long_df)),
+        }
+
+    def plot_performance_corridor_global_deciles_plot_time(
+        self,
+        df: pd.DataFrame,
+        nom_event: str,
+        nom_nageur: Optional[str] = None,
+        year_of_birth: Optional[int] = None,
+        age_min: int = 14,
+        age_max: int = 35,
+        solo_only: bool = True,
+        min_points: int = 5,
+        figsize: tuple[int, int] = (12, 8),
+    ) -> tuple[Optional[plt.Figure], dict[str, object]]:
+        required_cols = ["swimmer", "SwimDate", "Event", "SwimTimeSeconds"]
+        missing_cols = [c for c in required_cols if c not in df.columns]
+        if missing_cols:
+            return None, {"message": f"Colonnes manquantes: {', '.join(missing_cols)}"}
+
+        def _event_has_swimmer_any_entry(
+            source_df: pd.DataFrame,
+            event_name: str,
+            target_name_norm: str,
+            target_yob: int,
+        ) -> bool:
+            data_any = source_df.loc[:, required_cols].copy()
+            data_any["swimmer_dict"] = data_any["swimmer"].apply(
+                lambda x: x[0] if isinstance(x, list) and len(x) == 1 else None
+            )
+            data_any["Name"] = data_any["swimmer_dict"].apply(
+                lambda x: x.get("Name") if isinstance(x, dict) else None
+            )
+            data_any["Year_of_birth"] = data_any["swimmer_dict"].apply(
+                lambda x: x.get("Year_of_birth") if isinstance(x, dict) else None
+            )
+            data_any = data_any[data_any["Event"] == event_name].copy()
+            if data_any.empty:
+                return False
+            n_all = data_any["Name"].astype(str).map(_norm_name)
+            yob_all = pd.to_numeric(data_any["Year_of_birth"], errors="coerce")
+            return bool(((n_all == target_name_norm) & (yob_all == int(target_yob))).any())
+
+        data = df.loc[:, required_cols]
+        if solo_only:
+            data = data[
+                data["swimmer"].apply(
+                    lambda x: isinstance(x, list) and len(x) == 1
+                )
+            ].copy()
+        else:
+            data = data.copy()
+
+        data["swimmer_dict"] = data["swimmer"].apply(
+            lambda x: x[0] if isinstance(x, list) and len(x) == 1 else None
+        )
+        data["Gender"] = data["swimmer_dict"].apply(
+            lambda x: x.get("Gender") if isinstance(x, dict) else None
+        )
+        data["Name"] = data["swimmer_dict"].apply(
+            lambda x: x.get("Name") if isinstance(x, dict) else None
+        )
+        data["Age_json"] = data["swimmer_dict"].apply(
+            lambda x: x.get("Age") if isinstance(x, dict) else None
+        )
+        data["Year_of_birth"] = data["swimmer_dict"].apply(
+            lambda x: x.get("Year_of_birth") if isinstance(x, dict) else None
+        )
+        data["SwimYear"] = pd.to_datetime(data.get("SwimDate"), errors="coerce").dt.year
+        data["Age_swim"] = data["Age_json"]
+
+        mask = (
+            data["Age_swim"].isna()
+            & data["Year_of_birth"].notna()
+            & data["SwimYear"].notna()
+        )
+        data.loc[mask, "Age_swim"] = data.loc[mask, "SwimYear"] - data.loc[mask, "Year_of_birth"]
+        data["Age_swim"] = pd.to_numeric(data["Age_swim"], errors="coerce").astype("Int64")
+
+        long_df = data[
+            (data["Event"] == nom_event)
+            & (data["SwimTimeSeconds"].notna())
+            & (data["Gender"].notna())
+            & (data["Age_swim"].notna())
+        ].copy()
+        if long_df.empty:
+            return None, {"message": f"Aucune donnee exploitable pour {nom_event}"}
+
+        def _norm_name(value: object) -> str:
+            txt = "" if value is None else str(value).strip().lower()
+            txt = unicodedata.normalize("NFKD", txt).encode("ascii", "ignore").decode("ascii")
+            txt = re.sub(r"\s+", " ", txt)
+            return txt
+
+        # Par defaut, on garde le genre majoritaire pour le couloir global.
+        # Si un nageur cible est fourni et retrouve sur l'epreuve, on priorise
+        # son genre pour eviter les faux "nageur introuvable".
+        gender = str(long_df["Gender"].mode().iloc[0])
+        if nom_nageur and year_of_birth is not None:
+            target_norm = _norm_name(nom_nageur)
+            yob_target = int(year_of_birth)
+            name_norm_series_all = long_df["Name"].astype(str).map(_norm_name)
+            yob_series_all = pd.to_numeric(long_df["Year_of_birth"], errors="coerce")
+            exact_swimmer = long_df[
+                (name_norm_series_all == target_norm)
+                & (yob_series_all == yob_target)
+            ]
+            if not exact_swimmer.empty:
+                swimmer_gender = exact_swimmer.iloc[0].get("Gender")
+                if pd.notna(swimmer_gender):
+                    gender = str(swimmer_gender)
+
+        long_df = long_df[long_df["Gender"] == gender].copy()
+
+        grouped = long_df.groupby("Age_swim")["SwimTimeSeconds"].agg(list)
+        grouped = grouped.apply(lambda x: x if len(x) >= min_points else np.nan).dropna()
+        if grouped.empty:
+            return None, {
+                "message": "Pas assez de points pour calculer les percentiles.",
+                "gender": gender,
+            }
+
+        percentiles = list(range(10, 100, 10))
+        df_percentiles = pd.DataFrame(
+            {f"p{p}": grouped.apply(lambda x: np.percentile(x, p)) for p in percentiles}
+        )
+        df_percentiles = df_percentiles.loc[
+            (df_percentiles.index >= age_min)
+            & (df_percentiles.index <= age_max)
+        ]
+        if df_percentiles.empty:
+            return None, {
+                "message": "Aucune tranche d'age disponible sur la plage demandee.",
+                "gender": gender,
+            }
+
+        fig, ax = plt.subplots(figsize=figsize)
+        for p in percentiles:
+            ax.plot(
+                df_percentiles.index,
+                df_percentiles[f"p{p}"],
+                linestyle="--",
+                label=f"{p}%",
+            )
+
+        ax.fill_between(
+            df_percentiles.index,
+            df_percentiles["p20"],
+            df_percentiles["p80"],
+            alpha=0.2,
+            label="Zone 20-80%",
+        )
+
+        swimmer_points = 0
+        swimmer_name_used: Optional[str] = None
+        swimmer_yob_used: Optional[int] = None
+        swimmer_message: Optional[str] = None
+        if nom_nageur and year_of_birth is not None:
+            target_name = str(nom_nageur).strip()
+            target_norm = _norm_name(nom_nageur)
+            yob_target = int(year_of_birth)
+            name_norm_series = long_df["Name"].astype(str).map(_norm_name)
+            yob_series = pd.to_numeric(long_df["Year_of_birth"], errors="coerce")
+            df_swimmer = long_df[
+                (name_norm_series == target_norm)
+                & (yob_series == yob_target)
+            ].sort_values("Age_swim")
+
+            if df_swimmer.empty:
+                by_name = long_df[name_norm_series == target_norm].copy()
+                if not by_name.empty:
+                    yob_name = pd.to_numeric(by_name["Year_of_birth"], errors="coerce")
+                    if yob_name.notna().any():
+                        best_idx = (yob_name - yob_target).abs().idxmin()
+                        best_row = by_name.loc[[best_idx]]
+                    else:
+                        best_row = by_name.iloc[[0]]
+                    best_name = str(best_row.iloc[0]["Name"]).strip()
+                    best_yob = int(float(best_row.iloc[0]["Year_of_birth"]))
+                    df_swimmer = long_df[
+                        (name_norm_series == _norm_name(best_name))
+                        & (yob_series == best_yob)
+                    ].sort_values("Age_swim")
+
+            if df_swimmer.empty and target_norm:
+                tokens = [t for t in target_norm.split(" ") if t]
+                if tokens:
+                    broad_mask = name_norm_series.map(lambda n: all(tok in n for tok in tokens))
+                    by_tokens = long_df[broad_mask].copy()
+                    if not by_tokens.empty:
+                        yob_tok = pd.to_numeric(by_tokens["Year_of_birth"], errors="coerce")
+                        if yob_tok.notna().any():
+                            best_idx = (yob_tok - yob_target).abs().idxmin()
+                            best_row = by_tokens.loc[[best_idx]]
+                        else:
+                            best_row = by_tokens.iloc[[0]]
+                        best_name = str(best_row.iloc[0]["Name"]).strip()
+                        best_yob = int(float(best_row.iloc[0]["Year_of_birth"]))
+                        df_swimmer = long_df[
+                            (name_norm_series == _norm_name(best_name))
+                            & (yob_series == best_yob)
+                        ].sort_values("Age_swim")
+
+            if df_swimmer.empty and target_norm:
+                candidates = (
+                    long_df[["Name", "Year_of_birth"]]
+                    .dropna(subset=["Name", "Year_of_birth"])
+                    .copy()
+                )
+                if not candidates.empty:
+                    candidates["__norm"] = candidates["Name"].map(_norm_name)
+                    candidates["__ratio"] = candidates["__norm"].map(
+                        lambda n: difflib.SequenceMatcher(None, target_norm, n).ratio()
+                    )
+                    candidates["__yob"] = pd.to_numeric(
+                        candidates["Year_of_birth"], errors="coerce"
+                    )
+                    candidates = candidates.dropna(subset=["__yob"])
+                    if not candidates.empty:
+                        candidates["__yob_diff"] = (candidates["__yob"] - yob_target).abs()
+                        best = candidates.sort_values(
+                            by=["__ratio", "__yob_diff"],
+                            ascending=[False, True],
+                        ).iloc[0]
+                        ratio = float(best["__ratio"])
+                        yob_diff = float(best["__yob_diff"])
+                        # Evite de tracer un mauvais nageur "proche" du nom demande.
+                        # On accepte le fuzzy uniquement si le nom est tres proche
+                        # ET l'annee de naissance reste coherente.
+                        if ratio >= 0.85 and yob_diff <= 2:
+                            best_name = str(best["Name"]).strip()
+                            best_yob = int(float(best["__yob"]))
+                            df_swimmer = long_df[
+                                (name_norm_series == _norm_name(best_name))
+                                & (yob_series == best_yob)
+                            ].sort_values("Age_swim")
+
+            if not df_swimmer.empty:
+                swimmer_points = int(len(df_swimmer))
+                swimmer_name_used = str(df_swimmer.iloc[0]["Name"]).strip()
+                try:
+                    swimmer_yob_used = int(float(df_swimmer.iloc[0]["Year_of_birth"]))
+                except (TypeError, ValueError):
+                    swimmer_yob_used = yob_target
+
+                ax.plot(
+                    df_swimmer["Age_swim"],
+                    df_swimmer["SwimTimeSeconds"],
+                    color="red",
+                    linewidth=2.5,
+                    marker="o",
+                    label="Nageur cible",
+                )
+                last = df_swimmer.iloc[-1]
+                ax.scatter(last["Age_swim"], last["SwimTimeSeconds"], color="red")
+                ax.annotate(
+                    f"{swimmer_name_used} ({swimmer_yob_used})",
+                    (last["Age_swim"], last["SwimTimeSeconds"]),
+                    xytext=(8, 0),
+                    textcoords="offset points",
+                )
+            else:
+                swimmer_message = (
+                    f"Nageur introuvable pour le trace: {target_name} ({yob_target})"
+                )
+                if solo_only and _event_has_swimmer_any_entry(
+                    df, nom_event, target_norm, yob_target
+                ):
+                    swimmer_message = (
+                        f"Nageur trouve sur {nom_event}, mais exclu par le filtre "
+                        f"solo_only=True. Essaie solo_only=False pour le tracer."
+                    )
+
+        ax.invert_yaxis()
+        ax.set_xlabel("Age")
+        ax.set_ylabel("Temps (secondes)")
+        ax.set_title(f"Couloir de performance global (déciles 10-90) - {nom_event}")
+        ax.grid(alpha=0.3)
+        ax.legend(ncol=2)
+        fig.tight_layout()
+
+        return fig, {
+            "message": "ok",
+            "gender": gender,
+            "event": str(nom_event),
+            "ages_available": [int(x) for x in df_percentiles.index.tolist()],
+            "points_count": int(len(long_df)),
+            "percentiles": percentiles,
+            "swimmer_name": swimmer_name_used,
+            "year_of_birth": swimmer_yob_used,
+            "points_swimmer": swimmer_points,
+            "swimmer_message": swimmer_message,
         }
 
     @staticmethod
@@ -2647,6 +2941,29 @@ class ServiceGraphe:
                     if err:
                         chart_title = err
 
+        elif selected_graph == "Couloir de performance global (déciles 10-90)":
+            if distance and stroke and pool:
+                nom_event = f"{distance} {stroke} {pool}"
+                chart_title = f"Couloir global (déciles 10-90) - {nom_event}"
+                deciles_kwargs: Dict[str, Any] = {}
+                if selected_corridor_swimmer_name and selected_corridor_swimmer_yob is not None:
+                    deciles_kwargs["nom_nageur"] = selected_corridor_swimmer_name
+                    deciles_kwargs["year_of_birth"] = int(selected_corridor_swimmer_yob)
+                elif selected_corridor_swimmer_name:
+                    chart_title = (
+                        "Couloir déciles : le nageur doit inclure l'année de naissance "
+                        "(format « Nom (AAAA) »)."
+                    )
+                fig, meta = svc.plot_performance_corridor_global_deciles_plot_time(
+                    df_scope,
+                    nom_event=nom_event,
+                    **deciles_kwargs,
+                )
+                if fig is None and isinstance(meta, dict):
+                    err = str(meta.get("message", ""))
+                    if err:
+                        chart_title = err
+
         elif selected_graph == "Split Speed vs Distance (Relay Events) with Mean Trend Line":
             if distance and stroke and pool:
                 nom_event = f"{distance} {stroke} {pool}"
@@ -2833,12 +3150,18 @@ Graphe28 = GraphSpec(
     category="Analyse individuelle par epreuve",
     method_name="plot_performance_corridor_global_plot_time",
 )
+Graphe29 = GraphSpec(
+    key="performance_corridor_global_deciles_plot_time",
+    name="Couloir de performance global (déciles 10-90)",
+    category="Analyse individuelle par epreuve",
+    method_name="plot_performance_corridor_global_deciles_plot_time",
+)
 
 GRAPHES_NOTEBOOK: List[GraphSpec] = [
     Graphe1, Graphe2, Graphe3, Graphe4, Graphe5, Graphe6, Graphe7, Graphe8, Graphe9,
     Graphe10, Graphe11, Graphe12, Graphe13, Graphe14, Graphe15, Graphe16, Graphe17,
     Graphe18, Graphe19, Graphe20, Graphe21, Graphe22, Graphe23, Graphe24, Graphe25,
-    Graphe26, Graphe27, Graphe28,
+    Graphe26, Graphe27, Graphe28, Graphe29,
 ]
 GRAPHES_PAR_KEY: Dict[str, GraphSpec] = {g.key: g for g in GRAPHES_NOTEBOOK}
 
