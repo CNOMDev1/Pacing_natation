@@ -10,36 +10,22 @@ if TYPE_CHECKING:
     from desktop_flet import PacingDesktopApp
 
 
-CorridorTask = Tuple[str, int, str, str, int, int] # tâche de calcul couloir (stroke, distance, pool, swimmer_name, swimmer_yob, chronos_sample_size)
+CorridorTask = Tuple[str, int, str, str, int] # tâche de calcul couloir (stroke, distance, pool, swimmer_name, swimmer_yob)
 CorridorRender = Tuple[str, str, Dict[str, Any], str, str, int, Optional[str], Optional[str]] # résultat d’un calcul (render_key, chart_id, options, status, chart_title, row_count, image_base64, error)
 
 
 class CorridorPrefetchManager:
     """Encapsule la collecte, le calcul et l'enregistrement du préfetch couloir."""
-    def __init__(
-        self,
-        app: "PacingDesktopApp",
-        *,
-        corridor_category: str,
-        corridor_graph_name: str,
-        max_renders: Optional[int] = None,
-    ) -> None:
-        """Stocke le contexte nécessaire"""
+    def __init__(self, app: "PacingDesktopApp", *, corridor_category: str, corridor_graph_name: str, max_renders: Optional[int] = None) -> None:
+        """Intialise le manager avec le contexte nécessaire"""
         self.app = app
         self.corridor_category = corridor_category
         self.corridor_graph_name = corridor_graph_name
         self.max_renders = int(max_renders) if max_renders is not None else 0
 
     @staticmethod
-    def corridor_prefetch_render_options_dict(
-        stroke: str,
-        distance: int,
-        pool: str,
-        swimmer_name: str,
-        swimmer_yob: int,
-        chronos_sample_size: int,
-    ) -> Dict[str, Any]:
-        """Construit les options normalisées d’un rendu couloir (pour générer une clé et lancer le calcul avec les bons paramètres)."""
+    def corridor_prefetch_render_options_dict(stroke: str, distance: int, pool: str, swimmer_name: str, swimmer_yob: int) -> Dict[str, Any]:
+        """Construit les options normalisées d'un rendu couloir (pour générer une clé et lancer le calcul avec les bons paramètres)."""
         return {
             "stroke": stroke,
             "distance": int(distance),
@@ -48,16 +34,14 @@ class CorridorPrefetchManager:
             "corridor_swimmer_name": swimmer_name,
             "corridor_swimmer_yob": int(swimmer_yob),
             "pacing_swimmers": [],
-            "chronos_sample_size": int(chronos_sample_size),
         }
 
     def collect_tasks(self) -> List[CorridorTask]:
         """
-        Transforme le cache des nageurs/événements en une liste de tâches.
-        Liste (stroke, distance, pool, nom_nageur, yob, chronos_sample_size) pour préfetch couloir.
+        Transforme le cache des nageurs/événements (prefetched_event_swimmers.json) en une liste de tâches.
+        Liste (stroke, distance, pool, nom_nageur, yob) pour préfetch couloir.
         Respecte max_renders (0 = pas de plafond).
         """
-        chronos = int(self.app.selected_chronos_sample_size)
         tasks: List[CorridorTask] = []
         for stroke, by_d in self.app._event_swimmers_cache.items():
             if not isinstance(stroke, str) or not isinstance(by_d, dict):
@@ -84,7 +68,7 @@ class CorridorPrefetchManager:
                         name, yob = self.app._parse_corridor_swimmer_label(label)
                         if name is None or yob is None:
                             continue
-                        tasks.append((stroke, d_i, pool, name, yob, chronos))
+                        tasks.append((stroke, d_i, pool, name, yob))
                         if self.max_renders > 0 and len(tasks) >= self.max_renders:
                             return tasks
         return tasks
@@ -94,17 +78,11 @@ class CorridorPrefetchManager:
         Exécute un calcul complet pour une tâche
         Retourne (render_key, chart_id, options, status, chart_title, row_count, image_base64, error).
         """
-        stroke, distance, pool, nom, yob, chronos_sz = task
-        options = self.corridor_prefetch_render_options_dict(
-            stroke, int(distance), pool, nom, int(yob), chronos_sz
-        )
-        chart_id, render_key = self.app._render_key_for_category_graph_options(
-            self.corridor_category, self.corridor_graph_name, options
-        )
+        stroke, distance, pool, nom, yob = task
+        options = self.corridor_prefetch_render_options_dict(stroke, int(distance), pool, nom, int(yob)) # Construire un dictionnaire d’options standardisé pour un rendu couloir
+        chart_id, render_key = self.app._render_key_for_category_graph_options(self.corridor_category, self.corridor_graph_name, options)
         graph_svc = ServiceGraphe()
-        df_scope = _materialize_df_scope(
-            self.app.df_nav, self.corridor_graph_name, stroke, int(distance), pool
-        )
+        df_scope = _materialize_df_scope(self.app.df_nav, self.corridor_graph_name, stroke, int(distance), pool)
         if df_scope.empty:
             return (
                 render_key,
@@ -127,7 +105,7 @@ class CorridorPrefetchManager:
                 distance=int(distance),
                 pool=pool,
                 selected_distance=int(distance),
-                selected_chronos_sample_size=chronos_sz,
+                selected_chronos_sample_size=int(self.app.selected_chronos_sample_size),
                 selected_pacing_swimmers=[],
                 selected_heatmap_swimmer=None,
                 selected_corridor_swimmer_name=nom,
@@ -209,9 +187,9 @@ class CorridorPrefetchManager:
         exc: Exception,
     ) -> CorridorRender:
         """Convertit une exception en résultat “propre” de type CorridorRender avec status="error"""
-        stroke, distance, pool, nom, yob, chronos_sz = task
+        stroke, distance, pool, nom, yob = task
         options = self.corridor_prefetch_render_options_dict(
-            stroke, int(distance), pool, nom, int(yob), chronos_sz
+            stroke, int(distance), pool, nom, int(yob)
         )
         _, render_key = self.app._render_key_for_category_graph_options(
             self.corridor_category, self.corridor_graph_name, options
@@ -303,9 +281,9 @@ class CorridorPrefetchManager:
 
         pending: List[CorridorTask] = []
         for task in tasks:
-            stroke, distance, pool, nom, yob, chronos_sz = task
+            stroke, distance, pool, nom, yob = task
             options = self.corridor_prefetch_render_options_dict(
-                stroke, int(distance), pool, nom, int(yob), chronos_sz
+                stroke, int(distance), pool, nom, int(yob)
             )
             _, render_key = self.app._render_key_for_category_graph_options(
                 self.corridor_category, self.corridor_graph_name, options
