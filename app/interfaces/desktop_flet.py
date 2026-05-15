@@ -16,8 +16,13 @@ from project_path import PROJECT_DIR, ensure_project_imports
 ensure_project_imports()
 
 from corridor_prefetch import CorridorPrefetchManager
-from loading_progress import DualPrefetchProgress, LoadingBar
+from loading_progress import LoadingBar, TriplePrefetchProgress
+from services.usaswimming_competitions_data_loader import (
+    DEFAULT_USASWIMMING_PARQUET_DIR,
+    UsaswimmingCompetitionsDataLoader,
+)
 from swimmer_search import SwimmerSearch
+from usaswimming_parquet_tab import UsaswimmingParquetTab
 from desktop_helpers import (
     _build_df_nav,
     _event_combinations,
@@ -94,7 +99,7 @@ class PacingDesktopApp:
         self.page.padding = 0
 
         self.loading_bar: Optional[LoadingBar] = None
-        self._dual_prefetch_ui: Optional[DualPrefetchProgress] = None
+        self._startup_prefetch_ui: Optional[TriplePrefetchProgress] = None
         self._defer_prefetch_json_write: bool = False
         self._ui_light_mode: bool = False
         self._sidebar_container: Optional[ft.Container] = None
@@ -106,9 +111,9 @@ class PacingDesktopApp:
     def _advance_startup_notebook(
         self, detail: str, units: int = 1, *, show_graph_progress: bool = True
     ) -> None:
-        dual = self._dual_prefetch_ui
-        if dual is not None:
-            dual.advance_left(detail, units, show_graph_progress=show_graph_progress)
+        startup = self._startup_prefetch_ui
+        if startup is not None:
+            startup.advance_left(detail, units, show_graph_progress=show_graph_progress)
         elif self.loading_bar is not None:
             self.loading_bar.advance(
                 detail=detail, units=units, show_graph_progress=show_graph_progress
@@ -117,9 +122,9 @@ class PacingDesktopApp:
     def _advance_startup_corridor(
         self, detail: str, units: int = 1, *, show_graph_progress: bool = True
     ) -> None:
-        dual = self._dual_prefetch_ui
-        if dual is not None:
-            dual.advance_right(detail, units, show_graph_progress=show_graph_progress)
+        startup = self._startup_prefetch_ui
+        if startup is not None:
+            startup.advance_middle(detail, units, show_graph_progress=show_graph_progress)
         elif self.loading_bar is not None:
             self.loading_bar.advance(
                 detail=detail, units=units, show_graph_progress=show_graph_progress
@@ -128,16 +133,27 @@ class PacingDesktopApp:
     def _advance_startup_event_swimmers(
         self, detail: str, units: int = 1, *, show_graph_progress: bool = True
     ) -> None:
-        dual = self._dual_prefetch_ui
-        if dual is not None:
-            dual.advance_right(detail, units, show_graph_progress=show_graph_progress)
+        startup = self._startup_prefetch_ui
+        if startup is not None:
+            startup.advance_middle(detail, units, show_graph_progress=show_graph_progress)
+        elif self.loading_bar is not None:
+            self.loading_bar.advance(
+                detail=detail, units=units, show_graph_progress=show_graph_progress
+            )
+
+    def _advance_startup_parquet(
+        self, detail: str, units: int = 1, *, show_graph_progress: bool = True
+    ) -> None:
+        startup = self._startup_prefetch_ui
+        if startup is not None:
+            startup.advance_right(detail, units, show_graph_progress=show_graph_progress)
         elif self.loading_bar is not None:
             self.loading_bar.advance(
                 detail=detail, units=units, show_graph_progress=show_graph_progress
             )
 
     def _run_notebook_prefetch_worker(self) -> None:
-        dual = self._dual_prefetch_ui
+        startup = self._startup_prefetch_ui
         try:
             if (
                 ENABLE_NOTEBOOK_PREFETCH_ON_START
@@ -152,13 +168,13 @@ class PacingDesktopApp:
                     show_graph_progress=True,
                 )
         finally:
-            if dual is not None:
-                dual.close_gap_left("prefetched_graphs.json")
+            if startup is not None:
+                startup.close_gap_left("prefetched_graphs.json")
 
     def _run_corridor_prefetch_worker(
         self, corridor_tasks: List[Tuple[str, int, str, str, int, int]]
     ) -> None:
-        dual = self._dual_prefetch_ui
+        startup = self._startup_prefetch_ui
         try:
             if (
                 corridor_tasks
@@ -173,11 +189,11 @@ class PacingDesktopApp:
                     show_graph_progress=True,
                 )
         finally:
-            if dual is not None:
-                dual.close_gap_right("prefetched_corridor_graphs.json")
+            if startup is not None:
+                startup.close_gap_middle("prefetched_corridor_graphs.json")
 
     def _run_event_swimmers_cache_prefetch_worker(self) -> None:
-        dual = self._dual_prefetch_ui
+        startup = self._startup_prefetch_ui
         try:
             if ENABLE_EVENT_SWIMMERS_CACHE_PREFETCH_ON_START and not self.df.empty:
                 self._load_event_swimmers_cache_json()
@@ -190,8 +206,8 @@ class PacingDesktopApp:
                 else:
                     # Pas de cache exploitable : on régénère pour avoir des suggestions rapides.
                     total_events = self._estimate_event_swimmers_total_events()
-                    if dual is not None:
-                        dual.reconfigure_right_total(total_events, reset_done=True)
+                    if startup is not None:
+                        startup.reconfigure_middle_total(total_events, reset_done=True)
                     self._advance_startup_event_swimmers(
                         "Cache absent/vidé, génération",
                         units=0,
@@ -207,8 +223,38 @@ class PacingDesktopApp:
                     show_graph_progress=True,
                 )
         finally:
-            if dual is not None:
-                dual.close_gap_right("prefetched_event_swimmers.json")
+            if startup is not None:
+                startup.close_gap_middle("prefetched_event_swimmers.json")
+
+    def _run_usaswimming_parquet_cache_worker(self) -> None:
+        startup = self._startup_prefetch_ui
+        loader = UsaswimmingCompetitionsDataLoader()
+        available_years = loader.available_years()
+
+        try:
+            if not available_years:
+                self._advance_startup_parquet(
+                    "Aucune source USA Swimming detectee",
+                    units=1,
+                    show_graph_progress=True,
+                )
+                return
+
+            self._advance_startup_parquet(
+                "Verification du cache parquet",
+                units=0,
+                show_graph_progress=True,
+            )
+            loader.build_parquet_cache(
+                progress_step_callback=lambda message, _index, _total: self._advance_startup_parquet(
+                    message,
+                    units=1,
+                    show_graph_progress=True,
+                )
+            )
+        finally:
+            if startup is not None:
+                startup.close_gap_right("_parquet_cache")
 
     def _bootstrap_startup(self) -> None:
         """pipeline de démarrrage"""
@@ -322,6 +368,12 @@ class PacingDesktopApp:
 
             graph_json_path = GRAPH_EXPORT_PATH.name
             event_swimmers_json_path = EVENT_SWIMMERS_EXPORT_PATH.name
+            try:
+                parquet_cache_path = str(
+                    DEFAULT_USASWIMMING_PARQUET_DIR.relative_to(PROJECT_DIR)
+                )
+            except ValueError:
+                parquet_cache_path = str(DEFAULT_USASWIMMING_PARQUET_DIR)
 
             if ENABLE_PERSISTENT_GRAPH_CACHE:
                 left_total = (
@@ -332,29 +384,38 @@ class PacingDesktopApp:
                     )
                     else 1
                 )
-                right_total = 1
-                dual = DualPrefetchProgress(
+                middle_total = 1
+                parquet_total = max(
+                    1,
+                    len(UsaswimmingCompetitionsDataLoader().available_years()),
+                )
+                startup = TriplePrefetchProgress(
                     self.page,
                     left_total,
-                    right_total,
+                    middle_total,
+                    parquet_total,
                     graph_json_path,
                     event_swimmers_json_path,
-                    right_header="Nageurs événements — prefetched_event_swimmers.json",
-                    right_progress_label="Event swimmers",
+                    parquet_cache_path,
+                    middle_header="Nageurs événements — prefetched_event_swimmers.json",
+                    right_header="Parquet USA Swimming — _parquet_cache",
+                    middle_progress_label="Event swimmers",
+                    right_progress_label="Parquet",
                 )
-                dual.mount()
-                self._dual_prefetch_ui = dual
+                startup.mount()
+                self._startup_prefetch_ui = startup
                 self._defer_prefetch_json_write = True
                 try:
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
                         f_nb = pool.submit(self._run_notebook_prefetch_worker)
-                        f_co = pool.submit(self._run_event_swimmers_cache_prefetch_worker)
-                        concurrent.futures.wait((f_nb, f_co))
-                        for fut in (f_nb, f_co):
+                        f_ev = pool.submit(self._run_event_swimmers_cache_prefetch_worker)
+                        f_pq = pool.submit(self._run_usaswimming_parquet_cache_worker)
+                        concurrent.futures.wait((f_nb, f_ev, f_pq))
+                        for fut in (f_nb, f_ev, f_pq):
                             fut.result()
                 finally:
                     self._defer_prefetch_json_write = False
-                    self._dual_prefetch_ui = None
+                    self._startup_prefetch_ui = None
                     self._write_graph_registry_json()
                     if ENABLE_CORRIDOR_PREFETCH_ON_START:
                         self._write_corridor_graphs_json()
@@ -523,7 +584,7 @@ class PacingDesktopApp:
                     }
                     total_events += 1
                     # Avance la barre pour chaque événement (stroke/distance/pool) finalisé.
-                    if self._dual_prefetch_ui is not None:
+                    if self._startup_prefetch_ui is not None:
                         try:
                             d_i = int(distance)
                         except Exception:
@@ -1474,7 +1535,35 @@ class PacingDesktopApp:
             expand=True,
         )
         self._apply_theme_palette()
-        self.page.add(layout)
+        usaswimming_parquet_tab = UsaswimmingParquetTab(self.page)
+        tabs_content = ft.Column(
+            controls=[
+                ft.TabBar(
+                    tabs=[
+                        ft.Tab(label="Pacing"),
+                        ft.Tab(label="USA Swimming Parquet"),
+                    ],
+                    scrollable=False,
+                ),
+                ft.TabBarView(
+                    controls=[
+                        layout,
+                        usaswimming_parquet_tab.build_view(),
+                    ],
+                    expand=True,
+                ),
+            ],
+            expand=True,
+            spacing=0,
+        )
+        self.page.add(
+            ft.Tabs(
+                content=tabs_content,
+                length=2,
+                selected_index=0,
+                expand=True,
+            )
+        )
         self._refresh_filters_from_data()
 
     def _toggle_theme(self, _: ft.ControlEvent) -> None:

@@ -74,19 +74,47 @@ Fichiers utilisés (dans `services/`) : `state.json`, `bearer_token.txt`. Les mo
 
 ## Structure
 
-```
-app/
-├── main.py              # Point d’entrée FastAPI (Omega + Extranat)
-├── routers/             # omega, extranat
-├── models/              # competition, extranat_models, usaswimming_models
-├── scripts/             # count_omega_pdfs_by_year
-├── visualization/     # notebooks Jupyter (graphics, etc.)
-└── data/                # omega/pdfs/, extranat/, usaswimming/
+```text
+Pacing/
+├── app
+│   ├── interfaces
+│   │   ├── corridor_prefetch.py
+│   │   ├── desktop_flet.py
+│   │   ├── desktop_helpers.py
+│   │   ├── loading_progress.py
+│   │   ├── project_path.py
+│   │   ├── swimmer_search.py
+│   │   └── web_streamlit.py
+│   ├── models
+│   │   ├── __init__.py
+│   │   ├── competitions.py
+│   │   ├── extranat_models.py
+│   │   └── usaswimming_models.py
+│   ├── routers
+│   │   ├── __init__.py
+│   │   ├── extranat.py
+│   │   ├── omega.py
+│   │   └── usaswimming.py
+│   ├── scripts
+│   │   ├── __init__.py
+│   │   ├── extranat_preprocessing.py
+│   │   ├── get_token_usaswimming.py
+│   │   └── usaswimming_preprocessing.py
+│   ├── visualization
+│   │   ├── graphics.ipynb
+│   │   └── graphics_usaswimming.ipynb
+│   └── main.py
+├── services
+│   ├── __init__.py
+│   ├── extranat_competitions_data_loader.py
+│   ├── extranat_service.py
+│   ├── graph_service.py
+│   ├── omega_service.py
+│   ├── usaswimming_competitions_data_loader.py
+│   ├── usaswimming_parquet_cache.py
+│   └── usaswimming_service.py
+├── .gitignore
+└── README.md
 ```
 
-```
-services/
-└── ...                  # omega_service, extranat_service, usaswimming_service
-```
-
-Données générées (ignorées par git) : `data/raw/` et `data/processed/`.
+Les fichiers ignorés par Git (par exemple `data/raw/`, `data/processed/`, `.venv/`, `state.json` ou `bearer_token.txt`) ne sont pas listés ici.

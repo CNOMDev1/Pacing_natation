@@ -317,3 +317,4 @@ class CorridorPrefetchManager:
 
         if not getattr(self.app, "_defer_prefetch_json_write", False):
             self.app._write_corridor_graphs_json()
+

@@ -260,3 +260,245 @@ class DualPrefetchProgress:
             ratio = 0.0
         # On rafraîchit l'affichage sans avancer la progression.
         self._flush_right(ratio, f"0/{self.right_total} — Initialisation...")
+
+
+class TriplePrefetchProgress:
+    """Trois barres de progression en parallèle pour le démarrage."""
+
+    def __init__(
+        self,
+        page: ft.Page,
+        total_left: int,
+        total_middle: int,
+        total_right: int,
+        left_path: str,
+        middle_path: str,
+        right_path: str,
+        *,
+        left_header: str = "Graphes — prefetched_graphs.json",
+        middle_header: str = "Nageurs événements — prefetched_event_swimmers.json",
+        right_header: str = "Parquet USA Swimming",
+        left_progress_label: str = "Graphes",
+        middle_progress_label: str = "Event swimmers",
+        right_progress_label: str = "Parquet",
+    ) -> None:
+        self.page = page
+        self._lock = threading.Lock()
+        self.left_total = max(1, int(total_left))
+        self.middle_total = max(1, int(total_middle))
+        self.right_total = max(1, int(total_right))
+        self.left_done = 0
+        self.middle_done = 0
+        self.right_done = 0
+        self.left_progress_label = left_progress_label
+        self.middle_progress_label = middle_progress_label
+        self.right_progress_label = right_progress_label
+
+        self.left_pb = ft.ProgressBar(width=280, value=0.0, color="#f8fafc", bgcolor="#1f2937")
+        self.middle_pb = ft.ProgressBar(width=280, value=0.0, color="#93c5fd", bgcolor="#1f2937")
+        self.right_pb = ft.ProgressBar(width=280, value=0.0, color="#34d399", bgcolor="#1f2937")
+
+        self.left_pct = ft.Text("0%", size=14, weight=ft.FontWeight.BOLD, color="#f8fafc")
+        self.middle_pct = ft.Text("0%", size=14, weight=ft.FontWeight.BOLD, color="#f8fafc")
+        self.right_pct = ft.Text("0%", size=14, weight=ft.FontWeight.BOLD, color="#f8fafc")
+
+        self.left_detail = ft.Text("…", size=11, color="#9ca3af")
+        self.middle_detail = ft.Text("…", size=11, color="#9ca3af")
+        self.right_detail = ft.Text("…", size=11, color="#9ca3af")
+
+        self.container = ft.Container(
+            expand=True,
+            bgcolor="#000000",
+            padding=ft.Padding(left=24, top=32, right=24, bottom=32),
+            content=ft.Column(
+                [
+                    ft.Text(
+                        "CHARGEMENT (parallèle)",
+                        size=22,
+                        weight=ft.FontWeight.BOLD,
+                        color="#f8fafc",
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                    ft.Container(height=16),
+                    ft.Row(
+                        [
+                            self._build_panel(
+                                header=left_header,
+                                path=left_path,
+                                progress=self.left_pb,
+                                percent=self.left_pct,
+                                detail=self.left_detail,
+                            ),
+                            self._build_panel(
+                                header=middle_header,
+                                path=middle_path,
+                                progress=self.middle_pb,
+                                percent=self.middle_pct,
+                                detail=self.middle_detail,
+                            ),
+                            self._build_panel(
+                                header=right_header,
+                                path=right_path,
+                                progress=self.right_pb,
+                                percent=self.right_pct,
+                                detail=self.right_detail,
+                            ),
+                        ],
+                        expand=True,
+                        alignment=ft.MainAxisAlignment.SPACE_AROUND,
+                    ),
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+    @staticmethod
+    def _build_panel(
+        *,
+        header: str,
+        path: str,
+        progress: ft.ProgressBar,
+        percent: ft.Text,
+        detail: ft.Text,
+    ) -> ft.Control:
+        return ft.Container(
+            expand=True,
+            content=ft.Column(
+                [
+                    ft.Text(header, size=13, weight=ft.FontWeight.BOLD, color="#e5e7eb"),
+                    ft.Text(path, size=10, color="#6b7280"),
+                    progress,
+                    percent,
+                    detail,
+                ],
+                spacing=8,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+    def mount(self) -> None:
+        self.page.bgcolor = "#000000"
+        self.page.clean()
+        self.page.add(self.container)
+        self.page.update()
+        time.sleep(0.06)
+
+    def _flush_slot(
+        self,
+        *,
+        progress_bar: ft.ProgressBar,
+        percent_text: ft.Text,
+        detail_text: ft.Text,
+        ratio: float,
+        detail_str: str,
+    ) -> None:
+        page = self.page
+
+        async def _run() -> None:
+            progress_bar.value = ratio
+            percent_text.value = f"{int(round(ratio * 100))}%"
+            detail_text.value = detail_str
+            page.update()
+
+        page.run_task(_run)
+
+    def advance_left(
+        self, detail: str, units: int = 1, *, show_graph_progress: bool = True
+    ) -> None:
+        with self._lock:
+            self.left_done += max(int(units), 0)
+            ratio = min(self.left_done / self.left_total, 1.0)
+            n, t = self.left_done, self.left_total
+        if show_graph_progress:
+            detail_str = f"{self.left_progress_label} : {n}/{t} — {detail}"
+        else:
+            detail_str = f"{n}/{t} — {detail}"
+        self._flush_slot(
+            progress_bar=self.left_pb,
+            percent_text=self.left_pct,
+            detail_text=self.left_detail,
+            ratio=ratio,
+            detail_str=detail_str,
+        )
+
+    def advance_middle(
+        self, detail: str, units: int = 1, *, show_graph_progress: bool = True
+    ) -> None:
+        with self._lock:
+            self.middle_done += max(int(units), 0)
+            ratio = min(self.middle_done / self.middle_total, 1.0)
+            n, t = self.middle_done, self.middle_total
+        if show_graph_progress:
+            detail_str = f"{self.middle_progress_label} : {n}/{t} — {detail}"
+        else:
+            detail_str = f"{n}/{t} — {detail}"
+        self._flush_slot(
+            progress_bar=self.middle_pb,
+            percent_text=self.middle_pct,
+            detail_text=self.middle_detail,
+            ratio=ratio,
+            detail_str=detail_str,
+        )
+
+    def advance_right(
+        self, detail: str, units: int = 1, *, show_graph_progress: bool = True
+    ) -> None:
+        with self._lock:
+            self.right_done += max(int(units), 0)
+            ratio = min(self.right_done / self.right_total, 1.0)
+            n, t = self.right_done, self.right_total
+        if show_graph_progress:
+            detail_str = f"{self.right_progress_label} : {n}/{t} — {detail}"
+        else:
+            detail_str = f"{n}/{t} — {detail}"
+        self._flush_slot(
+            progress_bar=self.right_pb,
+            percent_text=self.right_pct,
+            detail_text=self.right_detail,
+            ratio=ratio,
+            detail_str=detail_str,
+        )
+
+    def close_gap_left(self, detail: str = "Terminé") -> None:
+        with self._lock:
+            gap = self.left_total - self.left_done
+        if gap > 0:
+            self.advance_left(detail, units=gap, show_graph_progress=True)
+
+    def close_gap_middle(self, detail: str = "Terminé") -> None:
+        with self._lock:
+            gap = self.middle_total - self.middle_done
+        if gap > 0:
+            self.advance_middle(detail, units=gap, show_graph_progress=True)
+
+    def close_gap_right(self, detail: str = "Terminé") -> None:
+        with self._lock:
+            gap = self.right_total - self.right_done
+        if gap > 0:
+            self.advance_right(detail, units=gap, show_graph_progress=True)
+
+    def reconfigure_middle_total(self, total_units: int, *, reset_done: bool = True) -> None:
+        with self._lock:
+            self.middle_total = max(1, int(total_units))
+            if reset_done:
+                self.middle_done = 0
+        self._flush_slot(
+            progress_bar=self.middle_pb,
+            percent_text=self.middle_pct,
+            detail_text=self.middle_detail,
+            ratio=0.0,
+            detail_str=f"0/{self.middle_total} — Initialisation...",
+        )
+
+    def reconfigure_right_total(self, total_units: int, *, reset_done: bool = True) -> None:
+        with self._lock:
+            self.right_total = max(1, int(total_units))
+            if reset_done:
+                self.right_done = 0
+        self._flush_slot(
+            progress_bar=self.right_pb,
+            percent_text=self.right_pct,
+            detail_text=self.right_detail,
+            ratio=0.0,
+            detail_str=f"0/{self.right_total} — Initialisation...",
+        )
