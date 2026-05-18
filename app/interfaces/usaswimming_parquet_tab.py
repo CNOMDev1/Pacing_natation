@@ -17,6 +17,9 @@ from swimmer_search import SwimmerSearch
 
 DEFAULT_PREVIEW_LIMIT = 25
 MAX_CELL_LENGTH = 120
+PREVIEW_MAX_ROWS = 10_000
+MAX_SWIMMER_SUGGESTIONS = 500
+MAX_SWIMMER_SCAN_ROWS = 50_000
 PANEL_BG = "#0b1220"
 CARD_BG = "#111827"
 CARD_BORDER = "#243041"
@@ -69,6 +72,35 @@ def _parquet_overview(parquet_file: Path) -> tuple[int, int]:
         return len(df), len(df.columns)
 
 
+def _read_parquet_for_preview(
+    parquet_file: Path,
+    max_rows: int = PREVIEW_MAX_ROWS,
+) -> tuple[pd.DataFrame, int, int, bool]:
+    """Lit un apercu limite pour eviter de charger des millions de lignes en memoire."""
+    row_count, column_count = _parquet_overview(parquet_file)
+    if row_count <= max_rows:
+        return pd.read_parquet(parquet_file), row_count, column_count, False
+
+    import pyarrow.parquet as pq
+
+    parquet = pq.ParquetFile(parquet_file)
+    chunks: list[pd.DataFrame] = []
+    collected = 0
+    batch_size = min(max_rows, 2048)
+    for batch in parquet.iter_batches(batch_size=batch_size):
+        chunk = batch.to_pandas()
+        remaining = max_rows - collected
+        if len(chunk) > remaining:
+            chunk = chunk.head(remaining)
+        chunks.append(chunk)
+        collected += len(chunk)
+        if collected >= max_rows:
+            break
+
+    preview = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
+    return preview, row_count, column_count, True
+
+
 def _normalize_search_text(value: Any) -> str:
     if value is None:
         return ""
@@ -95,6 +127,9 @@ class UsaswimmingParquetTab:
         self.filtered_df: pd.DataFrame = pd.DataFrame()
         self.corridor_swimmer_search_query: str = ""
         self._cache_check_started = False
+        self._load_seq = 0
+        self._preview_truncated = False
+        self._total_row_count = 0
 
         self.path_field = ft.TextField(
             label="Dossier parquet",
@@ -146,7 +181,7 @@ class UsaswimmingParquetTab:
             content=self.status_text,
             padding=ft.Padding(left=12, top=8, right=12, bottom=8),
             bgcolor=SUCCESS_BG,
-            border=ft.border.all(1, "#166534"),
+            border=ft.Border.all(1, "#166534"),
             border_radius=999,
         )
 
@@ -184,7 +219,7 @@ class UsaswimmingParquetTab:
                     ),
                     ft.Container(
                         bgcolor=PANEL_BG,
-                        border=ft.border.all(1, CARD_BORDER),
+                        border=ft.Border.all(1, CARD_BORDER),
                         border_radius=16,
                         padding=16,
                         content=ft.Column(
@@ -222,7 +257,7 @@ class UsaswimmingParquetTab:
                     ft.Container(
                         expand=True,
                         bgcolor=PANEL_BG,
-                        border=ft.border.all(1, CARD_BORDER),
+                        border=ft.Border.all(1, CARD_BORDER),
                         border_radius=16,
                         padding=16,
                         content=ft.Column(
@@ -333,7 +368,7 @@ class UsaswimmingParquetTab:
         return ft.Container(
             col={"xs": 12, "sm": 6, "lg": 3},
             bgcolor=CARD_BG,
-            border=ft.border.all(1, CARD_BORDER),
+            border=ft.Border.all(1, CARD_BORDER),
             border_radius=16,
             padding=16,
             content=ft.Column(
@@ -351,7 +386,7 @@ class UsaswimmingParquetTab:
             width=960,
             padding=24,
             bgcolor=HEADER_BG,
-            border=ft.border.all(1, CARD_BORDER),
+            border=ft.Border.all(1, CARD_BORDER),
             border_radius=12,
             content=ft.Column(
                 controls=[
@@ -419,7 +454,25 @@ class UsaswimmingParquetTab:
     def _available_swimmer_labels(self, df: pd.DataFrame) -> list[str]:
         labels_by_norm: dict[str, str] = {}
         for column in self._candidate_swimmer_columns(df):
-            for value in df[column].tolist():
+            if len(labels_by_norm) >= MAX_SWIMMER_SUGGESTIONS:
+                break
+
+            column_key = str(column).strip().lower()
+            series = df[column]
+            if column_key == "name":
+                for label in series.dropna().astype(str).unique():
+                    if len(labels_by_norm) >= MAX_SWIMMER_SUGGESTIONS:
+                        break
+                    clean_label = " ".join(label.split())
+                    normalized = _normalize_search_text(clean_label)
+                    if normalized and normalized not in labels_by_norm:
+                        labels_by_norm[normalized] = clean_label
+                continue
+
+            scan_limit = min(len(series), MAX_SWIMMER_SCAN_ROWS)
+            for value in series.iloc[:scan_limit]:
+                if len(labels_by_norm) >= MAX_SWIMMER_SUGGESTIONS:
+                    break
                 for label in self._extract_swimmer_labels_from_value(value):
                     normalized = _normalize_search_text(label)
                     if normalized and normalized not in labels_by_norm:
@@ -463,8 +516,24 @@ class UsaswimmingParquetTab:
         if not search_columns:
             return df
 
+        search_norm = _normalize_search_text(query)
         matches = pd.Series(False, index=df.index)
         for column in search_columns:
+            column_key = str(column).strip().lower()
+            if column_key == "name":
+                labels = df[column].map(
+                    lambda value: _normalize_search_text(
+                        " ".join(str(value).split()) if value is not None and not pd.isna(value) else ""
+                    )
+                )
+                words = labels.str.replace("(", " ", regex=False).str.replace(")", " ", regex=False).str.split()
+                prefix_match = words.apply(
+                    lambda parts: any(part.startswith(search_norm) for part in parts if part)
+                )
+                contains_match = labels.str.contains(search_norm, na=False)
+                matches = matches | prefix_match | contains_match
+                continue
+
             matches = matches | df[column].apply(
                 lambda value: any(
                     self._matches_swimmer_query(label, query)
@@ -578,7 +647,7 @@ class UsaswimmingParquetTab:
             heading_row_color=HEADER_BG,
             data_row_color=CARD_BG,
             bgcolor="#020617",
-            border=ft.border.all(1, CARD_BORDER),
+            border=ft.Border.all(1, CARD_BORDER),
             border_radius=12,
             horizontal_lines=ft.BorderSide(1, CARD_BORDER),
             vertical_lines=ft.BorderSide(1, "#162032"),
@@ -592,13 +661,13 @@ class UsaswimmingParquetTab:
         self.status_text.color = color
         if color == "#fca5a5":
             self.status_badge.bgcolor = ERROR_BG
-            self.status_badge.border = ft.border.all(1, "#991b1b")
+            self.status_badge.border = ft.Border.all(1, "#991b1b")
         elif color == "#fbbf24":
             self.status_badge.bgcolor = WARNING_BG
-            self.status_badge.border = ft.border.all(1, "#a16207")
+            self.status_badge.border = ft.Border.all(1, "#a16207")
         else:
             self.status_badge.bgcolor = SUCCESS_BG
-            self.status_badge.border = ft.border.all(1, "#166534")
+            self.status_badge.border = ft.Border.all(1, "#166534")
 
     def _selected_preview_limit(self) -> int:
         raw_value = self.limit_dropdown.value or str(DEFAULT_PREVIEW_LIMIT)
@@ -615,6 +684,9 @@ class UsaswimmingParquetTab:
         self.table_canvas.controls = [control]
 
     def _clear_preview(self) -> None:
+        self._load_seq += 1
+        self._preview_truncated = False
+        self._total_row_count = 0
         self.current_file = None
         self.current_df = pd.DataFrame()
         self.filtered_df = pd.DataFrame()
@@ -636,7 +708,11 @@ class UsaswimmingParquetTab:
         self.filtered_df = filtered_df
         preview_limit = self._selected_preview_limit()
         preview_count = min(preview_limit, len(filtered_df))
-        resolved_row_count = row_count if row_count is not None else len(self.current_df)
+        resolved_row_count = (
+            self._total_row_count
+            if self._total_row_count > 0
+            else (row_count if row_count is not None else len(self.current_df))
+        )
         resolved_column_count = (
             column_count if column_count is not None else len(self.current_df.columns)
         )
@@ -724,25 +800,67 @@ class UsaswimmingParquetTab:
     def _refresh_files(self, _event: Optional[ft.ControlEvent] = None) -> None:
         self._refresh_files_impl(update_page=True)
 
-    def _load_file(self, parquet_file: Path) -> None:
+    def _begin_file_load(self, parquet_file: Path) -> int:
+        self._load_seq += 1
+        load_id = self._load_seq
+        self.current_file = parquet_file
+        self._set_status(f"Chargement de {parquet_file.name}...", color="#fbbf24")
+        self._safe_page_update()
+        return load_id
+
+    def _load_file_background(self, parquet_file: Path, load_id: int) -> None:
         try:
-            row_count, column_count = _parquet_overview(parquet_file)
-            df = pd.read_parquet(parquet_file)
+            df, row_count, column_count, truncated = _read_parquet_for_preview(parquet_file)
+            error: Optional[Exception] = None
         except Exception as exc:
+            df = pd.DataFrame()
+            row_count = 0
+            column_count = 0
+            truncated = False
+            error = exc
+
+        if load_id != self._load_seq:
+            return
+
+        if error is not None:
             self.current_file = parquet_file
             self.current_df = pd.DataFrame()
+            self._preview_truncated = False
+            self._total_row_count = 0
             self.row_count_value.value = "0"
             self.column_count_value.value = "0"
             self._set_table_content(
-                self._build_empty_table(f"Impossible de lire {parquet_file.name}: {exc}")
+                self._build_empty_table(f"Impossible de lire {parquet_file.name}: {error}")
             )
-            self._set_status(f"Impossible de lire {parquet_file.name}: {exc}", color="#fca5a5")
+            self._set_status(f"Impossible de lire {parquet_file.name}: {error}", color="#fca5a5")
+            self._safe_page_update()
             return
 
         self.current_file = parquet_file
         self.current_df = df
+        self._preview_truncated = truncated
+        self._total_row_count = row_count
+        self.corridor_swimmer_search_query = ""
+        self.swimmer_search.reset(clear_query=True)
         self._render_current_preview(row_count=row_count, column_count=column_count)
-        self._set_status(f"{parquet_file.name} charge avec succes.")
+
+        if truncated:
+            preview_rows = f"{len(df):,}".replace(",", " ")
+            total_rows = f"{row_count:,}".replace(",", " ")
+            self._set_status(
+                f"{parquet_file.name}: apercu de {preview_rows} / {total_rows} ligne(s).",
+                color="#fbbf24",
+            )
+        else:
+            self._set_status(f"{parquet_file.name} charge avec succes.")
+        self._safe_page_update()
+
+    def _schedule_file_load(self, parquet_file: Path) -> None:
+        load_id = self._begin_file_load(parquet_file)
+        self.page.run_thread(self._load_file_background, parquet_file, load_id)
+
+    def _load_file(self, parquet_file: Path) -> None:
+        self._schedule_file_load(parquet_file)
 
     def _on_file_change(self, _event: ft.ControlEvent) -> None:
         selected_name = self.file_dropdown.value
@@ -758,8 +876,7 @@ class UsaswimmingParquetTab:
             self.page.update()
             return
 
-        self._load_file(parquet_file)
-        self.page.update()
+        self._schedule_file_load(parquet_file)
 
     def _on_limit_change(self, _event: ft.ControlEvent) -> None:
         if self.current_file is None or self.current_df.empty:

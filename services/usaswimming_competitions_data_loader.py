@@ -19,8 +19,7 @@ def _default_parquet_engine() -> str:
 
 
 class UsaswimmingCompetitionsDataLoader:
-    """Charge les competitions USA Swimming depuis JSON ou cache Parquet."""
-    
+    """Convertit les JSON USA Swimming en Parquet, puis charge uniquement le cache Parquet."""
     def __init__(self, base_dir: Optional[Path] = None, parquet_dir: Optional[Path] = None, max_workers: Optional[int] = None) -> None:
         self.base_dir = (base_dir if base_dir is not None else DEFAULT_USASWIMMING_COMPETITIONS_DIR)
         self.parquet_dir = (parquet_dir if parquet_dir is not None else DEFAULT_USASWIMMING_PARQUET_DIR)
@@ -38,7 +37,7 @@ class UsaswimmingCompetitionsDataLoader:
 
     @classmethod
     def _serialize_swimmers(cls, swimmers: Any) -> str:
-        """Convertit la liste de nageurs en chaine JSON pour le stockage Parquet."""
+        """Convertit la liste de nageurs en chaine JSON pour le stockage Parquet (Parquet gère mal les listes de dict imbriquées)"""
         return json.dumps(cls._normalize_swimmers(swimmers), ensure_ascii=False)
 
     @classmethod
@@ -57,6 +56,7 @@ class UsaswimmingCompetitionsDataLoader:
 
     @classmethod
     def _build_rows_from_comp(cls, comp: Dict[str, Any], source_year: Optional[int] = None, source_file: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Parcourt une compétition JSON (epreuves → performances) et produit une ligne par performance"""
         rows: List[Dict[str, Any]] = []
 
         for epreuve in comp.get("epreuves", []):
@@ -98,19 +98,16 @@ class UsaswimmingCompetitionsDataLoader:
         return rows
 
     def _load_single_file(self, file: Path, source_year: Optional[int]) -> List[Dict[str, Any]]:
+        """Lit un fichier .json, appelle _build_rows_from_comp"""
         try:
             with file.open("r", encoding="utf-8") as f:
                 comp = json.load(f)
         except Exception:
             return []
-
-        return self._build_rows_from_comp(
-            comp=comp,
-            source_year=source_year,
-            source_file=file.name,
-        )
+        return self._build_rows_from_comp(comp=comp, source_year=source_year, source_file=file.name)
 
     def _load_year_directory(self, year_dir: Path) -> List[Dict[str, Any]]:
+        """Charge tous les *.json d'un dossier année et agrège les lignes"""
         try:
             source_year = int(year_dir.name)
         except ValueError:
@@ -121,10 +118,8 @@ class UsaswimmingCompetitionsDataLoader:
             rows.extend(self._load_single_file(file, source_year=source_year))
         return rows
 
-    def _resolve_year_directories(
-        self,
-        years: Optional[Iterable[int | str]] = None,
-    ) -> List[Path]:
+    def _resolve_year_directories(self, years: Optional[Iterable[int | str]] = None) -> List[Path]:
+        """filtre / liste les dossiers année sous base_dir """
         if not self.base_dir.exists():
             return []
 
@@ -138,12 +133,28 @@ class UsaswimmingCompetitionsDataLoader:
             if path.is_dir() and path.name in requested_years
         )
 
-    def available_years(
-        self,
-        years: Optional[Iterable[int | str]] = None,
-    ) -> List[str]:
-        """Retourne les annees source disponibles pour la conversion parquet."""
+    def available_years(self, years: Optional[Iterable[int | str]] = None) -> List[str]:
+        """Retourne les annees source JSON disponibles pour la conversion Parquet."""
         return [year_dir.name for year_dir in self._resolve_year_directories(years=years)]
+
+    def _resolve_parquet_years(self, years: Optional[Iterable[int | str]] = None) -> List[str]:
+        """filtre/liste les années déjà converties en Parquet"""
+        if not self.parquet_dir.exists():
+            return []
+
+        if years is None:
+            return sorted(path.stem for path in self.parquet_dir.glob("*.parquet"))
+
+        requested_years = {str(year) for year in years}
+        return sorted(
+            year
+            for year in requested_years
+            if self._parquet_path_for_year(year).exists()
+        )
+
+    def available_parquet_years(self, years: Optional[Iterable[int | str]] = None) -> List[str]:
+        """Retourne les annees disponibles dans le cache Parquet."""
+        return self._resolve_parquet_years(years=years)
 
     def _parquet_path_for_year(self, year: int | str) -> Path:
         """Construit le chemin du fichier Parquet associe a une annee."""
@@ -171,6 +182,7 @@ class UsaswimmingCompetitionsDataLoader:
 
     @classmethod
     def _prepare_dataframe_for_parquet(cls, df: pd.DataFrame) -> pd.DataFrame:
+        """Avant écriture : sérialise la colonne swimmer en JSON string."""
         prepared = df.copy()
         if "swimmer" in prepared.columns:
             prepared["swimmer"] = prepared["swimmer"].apply(cls._serialize_swimmers)
@@ -178,12 +190,14 @@ class UsaswimmingCompetitionsDataLoader:
 
     @classmethod
     def _restore_dataframe_from_parquet(cls, df: pd.DataFrame) -> pd.DataFrame:
+        """Après lecture : désérialise swimmer, puis applique _normalize_dataframe."""
         restored = df.copy()
         if "swimmer" in restored.columns:
             restored["swimmer"] = restored["swimmer"].apply(cls._deserialize_swimmers)
         return cls._normalize_dataframe(restored)
 
     def _load_from_json_years(self, year_dirs: List[Path]) -> pd.DataFrame:
+        """Charge plusieurs dossiers année en parallèle (ThreadPoolExecutor) → un seul DataFrame normalisé"""
         if not year_dirs:
             return pd.DataFrame()
 
@@ -202,6 +216,7 @@ class UsaswimmingCompetitionsDataLoader:
         return self._restore_dataframe_from_parquet(df)
 
     def _load_from_parquet_years(self, years: List[int | str]) -> pd.DataFrame:
+        """Lit plusieurs années en parallèle et concatène."""
         parquet_files = [
             self._parquet_path_for_year(year)
             for year in years
@@ -288,39 +303,9 @@ class UsaswimmingCompetitionsDataLoader:
 
         return written_files
 
-    def load(
-        self,
-        years: Optional[Iterable[int | str]] = None,
-        prefer_parquet: bool = True,
-    ) -> pd.DataFrame:
-        """Charge toutes les annees demandees en preferant le cache Parquet."""
-        year_dirs = self._resolve_year_directories(years=years)
-        if not year_dirs:
+    def load(self, years: Optional[Iterable[int | str]] = None) -> pd.DataFrame:
+        """Charge les annees demandees depuis le cache Parquet uniquement."""
+        parquet_years = self._resolve_parquet_years(years=years)
+        if not parquet_years:
             return pd.DataFrame()
-
-        requested_years = [year_dir.name for year_dir in year_dirs]
-        if not prefer_parquet:
-            return self._load_from_json_years(year_dirs)
-
-        cached_years = [
-            year for year in requested_years if self._parquet_path_for_year(year).exists()
-        ]
-        missing_year_dirs = [
-            year_dir
-            for year_dir in year_dirs
-            if not self._parquet_path_for_year(year_dir.name).exists()
-        ]
-
-        frames: List[pd.DataFrame] = []
-        parquet_df = self._load_from_parquet_years(cached_years)
-        if not parquet_df.empty:
-            frames.append(parquet_df)
-
-        json_df = self._load_from_json_years(missing_year_dirs)
-        if not json_df.empty:
-            frames.append(json_df)
-
-        if not frames:
-            return pd.DataFrame()
-
-        return pd.concat(frames, ignore_index=True)
+        return self._load_from_parquet_years(parquet_years)

@@ -1,0 +1,46 @@
+# Installation (à la racine du projet Pacing/) :
+#   python -m venv .venv
+#   source .venv/bin/activate          
+#   pip install -r requirements.txt
+#   playwright install chromium
+#
+# Python 3.10+ requis.
+#
+# Lancer :
+#   API       : uvicorn app.main:app --reload
+#   Desktop   : python app/interfaces/desktop_flet.py
+#   Streamlit : streamlit run app/interfaces/web_streamlit.py
+#   Notebooks : jupyter notebook app/visualization/
+
+# --- API FastAPI ---
+fastapi>=0.100.0
+uvicorn[standard]>=0.22.0
+pydantic>=2.0.0
+
+# --- HTTP & scraping (Extranat, Omega, USA Swimming) ---
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+
+# --- Navigateur headless (Omega, token USA Swimming) ---
+playwright>=1.40.0
+
+# --- Données & cache Parquet ---
+pandas>=2.0.0
+pyarrow>=14.0.0
+numpy>=1.24.0
+
+# --- Visualisation (graph_service, Flet, Streamlit, notebooks) ---
+matplotlib>=3.7.0
+seaborn>=0.13.0
+
+# --- Interface desktop Flet (ft.run) ---
+flet>=0.24.0
+flet-desktop>=0.24.0
+
+# --- Interface web Streamlit ---
+streamlit>=1.28.0
+
+# --- Notebooks Jupyter (app/visualization/*.ipynb) ---
+jupyter>=1.0.0
+notebook>=7.0.0
+ipykernel>=6.25.0
