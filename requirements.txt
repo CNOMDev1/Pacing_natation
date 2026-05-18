@@ -7,7 +7,6 @@
 # Python 3.10+ requis.
 #
 # Lancer :
-#   API       : uvicorn app.main:app --reload
 #   Desktop   : python app/interfaces/desktop_flet.py
 #   Streamlit : streamlit run app/interfaces/web_streamlit.py
 #   Notebooks : jupyter notebook app/visualization/
