@@ -9,9 +9,12 @@ Tour_list.txt
 # Données générées
 data/cleaned_data/
 data/exports/prefetched_graphs.json
+data/exports/prefetched_corridor_graphs.json
+data/exports/prefetched_event_swimmers.json
 data/omega_json_endpoint_single/
 data/raw/
 data/processed/
+
 
 # Fichiers locaux
 cookies_omegatiming.txt
