@@ -24,6 +24,7 @@ EXTRANAT_OUTPUT_BASE_DIR = (
     / "competitions_per_type"
 )
 CHART_PNG_DPI = 96
+CORRIDOR_CHART_PNG_DPI = 72
 
 
 def _primary_swimmer_name(swimmers: Any) -> Optional[str]:
@@ -74,17 +75,13 @@ def load_data() -> pd.DataFrame:
     return ExtranatCompetitionsDataLoader(EXTRANAT_OUTPUT_BASE_DIR).load()
 
 
-def _figure_to_base64(fig: plt.Figure) -> str:
-    """Convertit une figure matplotlib en chaîne base64 PNG (DPI ``CHART_PNG_DPI``)."""
+def _figure_to_base64(fig: plt.Figure, *, dpi: Optional[int] = None) -> str:
+    """Convertit une figure matplotlib en chaîne base64 PNG."""
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight", dpi=CHART_PNG_DPI)
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=int(dpi or CHART_PNG_DPI))
     buf.seek(0)
     b64 = base64.b64encode(buf.read()).decode("ascii")
     return f"data:image/png;base64,{b64}"
-
-
-def _build_df_nav(df: pd.DataFrame) -> pd.DataFrame:
-    return df.copy()
 
 
 def _event_combinations(
@@ -224,4 +221,8 @@ def _materialize_df_scope(
         return pd.DataFrame()
     df_stroke = df_nav[df_nav["Stroke"] == stroke].copy()
     df_distance = df_stroke[df_stroke["Distance"] == distance].copy()
-    return df_distance[df_distance["Course"] == pool].copy()
+    scoped = df_distance[df_distance["Course"] == pool].copy()
+    if "Event" in scoped.columns:
+        nom_event = f"{int(distance)} {stroke} {pool}"
+        scoped = scoped[scoped["Event"].astype(str) == nom_event].copy()
+    return scoped
