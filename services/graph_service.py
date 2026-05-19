@@ -2244,6 +2244,132 @@ class ServiceGraphe:
             "points_count": int(len(long_df)),
         }
 
+    _DEFAULT_AGEGROUP_ORDER: Tuple[str, ...] = (
+        "10 & Under",
+        "11-12",
+        "13-14",
+        "15-18",
+        "19 & Over",
+        "Not Applicable",
+    )
+
+    def plot_performance_corridor_global_by_agegroup(
+        self,
+        df: pd.DataFrame,
+        nom_event: str,
+        nom_nageur: Optional[str] = None,
+        year_of_birth: Optional[int] = None,
+        gender: Optional[str] = None,
+        min_points: int = 5,
+        agegroup_order: Optional[List[str]] = None,
+        figsize: tuple[int, int] = (12, 8),
+    ) -> tuple[Optional[plt.Figure], dict[str, object]]:
+        """Couloir de performance global : SwimTimeSeconds vs AgeGroup (catégories USA Swimming)."""
+        required_cols = ["Event", "SwimTimeSeconds", "AgeGroup"]
+        missing_cols = [c for c in required_cols if c not in df.columns]
+        if missing_cols:
+            return None, {"message": f"Colonnes manquantes: {', '.join(missing_cols)}"}
+
+        optional_cols = [c for c in ("Gender", "Name", "Year_of_birth") if c in df.columns]
+        data = df.loc[:, required_cols + optional_cols].copy()
+        data["AgeGroup"] = (
+            data["AgeGroup"].fillna("").astype(str).str.strip()
+        )
+        data = data[
+            (data["Event"] == nom_event)
+            & (data["SwimTimeSeconds"].notna())
+            & (data["AgeGroup"] != "")
+        ].copy()
+        if data.empty:
+            return None, {"message": f"Aucune donnee exploitable pour {nom_event}"}
+
+        if gender is not None and "Gender" in data.columns:
+            gender_filter = str(gender).strip().upper()
+            data["Gender"] = data["Gender"].astype(str).str.strip().str.upper()
+            data = data[data["Gender"] == gender_filter].copy()
+            if data.empty:
+                return None, {"message": f"Aucune performance pour le genre {gender_filter}."}
+
+        grouped = data.groupby("AgeGroup")["SwimTimeSeconds"].agg(list)
+        grouped = grouped.apply(lambda x: x if len(x) >= min_points else np.nan).dropna()
+        if grouped.empty:
+            return None, {
+                "message": "Pas assez de points par AgeGroup pour calculer les percentiles.",
+            }
+
+        percentiles = [10, 25, 50, 75, 90]
+        df_percentiles = pd.DataFrame(
+            {f"p{p}": grouped.apply(lambda x: np.percentile(x, p)) for p in percentiles}
+        )
+
+        order = list(agegroup_order or self._DEFAULT_AGEGROUP_ORDER)
+        extra_groups = [g for g in df_percentiles.index if g not in order]
+        ordered_index = [g for g in order if g in df_percentiles.index] + sorted(extra_groups)
+        df_percentiles = df_percentiles.loc[ordered_index]
+        if df_percentiles.empty:
+            return None, {"message": "Aucun AgeGroup disponible apres filtrage."}
+
+        x_positions = np.arange(len(df_percentiles))
+        fig, ax = plt.subplots(figsize=figsize)
+        for p in percentiles:
+            ax.plot(
+                x_positions,
+                df_percentiles[f"p{p}"],
+                linestyle="--",
+                label=f"{p}%",
+            )
+        ax.fill_between(
+            x_positions,
+            df_percentiles["p25"],
+            df_percentiles["p75"],
+            alpha=0.2,
+            label="Zone 25-75%",
+        )
+
+        meta: dict[str, object] = {
+            "message": "ok",
+            "event": str(nom_event),
+            "agegroups_available": ordered_index,
+            "points_count": int(len(data)),
+        }
+
+        if nom_nageur and "Name" in data.columns:
+            name_mask = data["Name"].astype(str).str.strip() == str(nom_nageur).strip()
+            if year_of_birth is not None and "Year_of_birth" in data.columns:
+                yob_series = pd.to_numeric(data["Year_of_birth"], errors="coerce")
+                name_mask = name_mask & (yob_series == int(year_of_birth))
+            swimmer_data = data[name_mask].copy()
+            if not swimmer_data.empty:
+                swimmer_curve = swimmer_data.groupby("AgeGroup")["SwimTimeSeconds"].mean()
+                swimmer_curve = swimmer_curve.reindex(ordered_index).dropna()
+                if not swimmer_curve.empty:
+                    swimmer_x = [ordered_index.index(ag) for ag in swimmer_curve.index]
+                    ax.plot(
+                        swimmer_x,
+                        swimmer_curve.values,
+                        color="red",
+                        linewidth=2.5,
+                        marker="o",
+                        label="Nageur cible (moyenne)",
+                        zorder=4,
+                    )
+                    meta["swimmer_name"] = str(swimmer_data.iloc[0]["Name"]).strip()
+                    if year_of_birth is not None:
+                        meta["year_of_birth"] = int(year_of_birth)
+                    meta["points_swimmer"] = int(len(swimmer_data))
+
+        ax.set_xticks(x_positions)
+        ax.set_xticklabels(ordered_index, rotation=20, ha="right")
+        ax.invert_yaxis()
+        ax.set_xlabel("AgeGroup")
+        ax.set_ylabel("Temps (secondes)")
+        ax.set_title(f"Couloir de performance global (AgeGroup) - {nom_event}")
+        ax.grid(alpha=0.3)
+        ax.legend()
+        fig.tight_layout()
+
+        return fig, meta
+
     def plot_performance_corridor_global_deciles_plot_time(
         self,
         df: pd.DataFrame,
@@ -3156,12 +3282,18 @@ Graphe29 = GraphSpec(
     category="Analyse individuelle par epreuve",
     method_name="plot_performance_corridor_global_deciles_plot_time",
 )
+Graphe30 = GraphSpec(
+    key="performance_corridor_global_by_agegroup",
+    name="Couloir de performance global (AgeGroup)",
+    category="Analyse individuelle par epreuve",
+    method_name="plot_performance_corridor_global_by_agegroup",
+)
 
 GRAPHES_NOTEBOOK: List[GraphSpec] = [
     Graphe1, Graphe2, Graphe3, Graphe4, Graphe5, Graphe6, Graphe7, Graphe8, Graphe9,
     Graphe10, Graphe11, Graphe12, Graphe13, Graphe14, Graphe15, Graphe16, Graphe17,
     Graphe18, Graphe19, Graphe20, Graphe21, Graphe22, Graphe23, Graphe24, Graphe25,
-    Graphe26, Graphe27, Graphe28, Graphe29,
+    Graphe26, Graphe27, Graphe28, Graphe29, Graphe30,
 ]
 GRAPHES_PAR_KEY: Dict[str, GraphSpec] = {g.key: g for g in GRAPHES_NOTEBOOK}
 

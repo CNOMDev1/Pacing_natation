@@ -208,14 +208,33 @@ class UsaswimmingCompetitionsDataLoader:
 
         return self._normalize_dataframe(pd.DataFrame(rows))
 
-    def _read_single_parquet(self, parquet_file: Path) -> pd.DataFrame:
+    def _read_single_parquet(
+        self,
+        parquet_file: Path,
+        columns: Optional[List[str]] = None,
+        event: Optional[str] = None,
+    ) -> pd.DataFrame:
+        read_kwargs: Dict[str, Any] = {"engine": self.parquet_engine}
+        if columns is not None:
+            read_columns = list(dict.fromkeys(columns))
+            if event is not None and "Event" not in read_columns:
+                read_columns.insert(0, "Event")
+            read_kwargs["columns"] = read_columns
+        if event is not None:
+            read_kwargs["filters"] = [("Event", "==", str(event).strip())]
+
         try:
-            df = pd.read_parquet(parquet_file, engine=self.parquet_engine)
+            df = pd.read_parquet(parquet_file, **read_kwargs)
         except Exception:
             return pd.DataFrame()
         return self._restore_dataframe_from_parquet(df)
 
-    def _load_from_parquet_years(self, years: List[int | str]) -> pd.DataFrame:
+    def _load_from_parquet_years(
+        self,
+        years: List[int | str],
+        columns: Optional[List[str]] = None,
+        event: Optional[str] = None,
+    ) -> pd.DataFrame:
         """Lit plusieurs années en parallèle et concatène."""
         parquet_files = [
             self._parquet_path_for_year(year)
@@ -226,7 +245,14 @@ class UsaswimmingCompetitionsDataLoader:
             return pd.DataFrame()
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            frames = list(executor.map(self._read_single_parquet, parquet_files))
+            frames = list(
+                executor.map(
+                    lambda path: self._read_single_parquet(
+                        path, columns=columns, event=event
+                    ),
+                    parquet_files,
+                )
+            )
 
         frames = [frame for frame in frames if not frame.empty]
         if not frames:
@@ -303,9 +329,21 @@ class UsaswimmingCompetitionsDataLoader:
 
         return written_files
 
-    def load(self, years: Optional[Iterable[int | str]] = None) -> pd.DataFrame:
-        """Charge les annees demandees depuis le cache Parquet uniquement."""
+    def load(
+        self,
+        years: Optional[Iterable[int | str]] = None,
+        columns: Optional[Iterable[str]] = None,
+        event: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """Charge les annees demandees depuis le cache Parquet uniquement.
+
+        columns: sous-ensemble de colonnes (evite de lire swimmer, Meet, etc.).
+        event: filtre Parquet sur Event (ex. "100 FR LCM") — beaucoup plus rapide.
+        """
         parquet_years = self._resolve_parquet_years(years=years)
         if not parquet_years:
             return pd.DataFrame()
-        return self._load_from_parquet_years(parquet_years)
+        column_list = list(columns) if columns is not None else None
+        return self._load_from_parquet_years(
+            parquet_years, columns=column_list, event=event
+        )
