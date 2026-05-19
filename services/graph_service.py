@@ -2357,6 +2357,13 @@ class ServiceGraphe:
                     if year_of_birth is not None:
                         meta["year_of_birth"] = int(year_of_birth)
                     meta["points_swimmer"] = int(len(swimmer_data))
+                else:
+                    meta["swimmer_message"] = (
+                        f"Nageur trouve ({len(swimmer_data)} perf.) "
+                        "mais aucun AgeGroup exploitable pour la courbe."
+                    )
+            else:
+                meta["swimmer_message"] = f"Nageur introuvable : {nom_nageur}"
 
         ax.set_xticks(x_positions)
         ax.set_xticklabels(ordered_index, rotation=20, ha="right")
