@@ -88,8 +88,10 @@ CORRIDOR_CHART_PREFETCH_GRAPH_NAMES: Tuple[str, ...] = (
     CORRIDOR_GLOBAL_GRAPH_NAME,
     CORRIDOR_GRAPH_NAME,
 )
-CORRIDOR_SWIMMER_SUGGESTIONS_MAX = 100
-CORRIDOR_SWIMMER_DROPDOWN_OPTIONS_MAX = 100
+CORRIDOR_SWIMMER_SUGGESTIONS_MAX = 200
+CORRIDOR_SWIMMER_DROPDOWN_OPTIONS_MAX = 2
+CORRIDOR_SEARCH_DEBOUNCE_SEC = 0.12
+
 USA_CORRIDOR_SWIMMER_SEARCH_LABEL = "Rechercher un nageur (USA Swimming)"
 USA_CORRIDOR_SWIMMER_SEARCH_TOOLTIP = "Nom du nageur"
 FR_CORRIDOR_SWIMMER_SEARCH_LABEL = "Rechercher un nageur"
@@ -281,6 +283,12 @@ class PacingDesktopApp:
             ] = {}
             self._corridor_dd_options_event_key: Optional[Tuple[str, int, str, str]] = None
             self._corridor_swimmer_labels_all: List[str] = []
+            self._corridor_swimmer_search_index_key: Optional[int] = None
+            self._corridor_swimmer_search_index: Optional[
+                List[Tuple[str, str, Tuple[str, ...]]]
+            ] = None
+            self._corridor_swimmer_labels_set: Optional[set] = None
+            self._corridor_search_ui_gen: int = 0
             self.corridor_swimmer_search: Optional[SwimmerSearch] = None
             self._chart_schedule_gen: int = 0
             self._corridor_swimmer_schedule_gen: int = 0
@@ -1602,19 +1610,9 @@ class PacingDesktopApp:
         if self.corridor_swimmer_search is None or not self.selected_usa_event:
             return False
         query = (self.corridor_swimmer_search_query or "").strip()
-        labels = self._filter_corridor_swimmer_labels(labels_all, query)
         event_key = (str(self.selected_usa_event), self.selected_corridor_gender)
-        if query:
-            subset = labels[:cap_ac] if labels else labels_all[:cap_ac]
-            return self.corridor_swimmer_search.set_filtered_suggestions(
-                subset,
-                max_suggestions=cap_ac,
-            )
-        self.corridor_swimmer_search.reset_suggestion_context()
-        return self.corridor_swimmer_search.maybe_sync_suggestions(
-            labels_all[:cap_ac],
-            event_key,
-            max_suggestions=cap_ac,
+        return self._sync_corridor_swimmer_autocomplete(
+            labels_all, query, base_event_key=event_key, cap_ac=cap_ac
         )
 
     def _apply_usa_corridor_swimmer_pick(self) -> bool:
@@ -1626,9 +1624,15 @@ class PacingDesktopApp:
             self.selected_corridor_swimmer_name = None
             self.selected_corridor_swimmer_yob = None
             return changed
-        labels = self._filter_corridor_swimmer_labels(labels_all, query_pick)
+        labels_set = self._corridor_swimmer_labels_set
+        if labels_set is None and labels_all:
+            self._ensure_corridor_swimmer_search_index(labels_all)
+            labels_set = self._corridor_swimmer_labels_set or set()
+        labels, _ = self._filter_corridor_swimmer_labels_with_count(
+            labels_all, query_pick, max_results=2
+        )
         pick: Optional[str] = None
-        if query_pick in labels_all:
+        if labels_set and query_pick in labels_set:
             pick = query_pick
         elif len(labels) == 1:
             pick = labels[0]
@@ -1643,6 +1647,7 @@ class PacingDesktopApp:
 
     def _on_country_change(self, e: ft.ControlEvent) -> None:
         """est appelée quand l'utilisateur change le menu « Pays » pour mettre a jour selected_country et préparer un redraw du graphique."""
+        self._corridor_search_ui_gen += 1
         self._usa_swimmer_schedule_gen += 1
         self._usa_bootstrap_gen += 1
         self.selected_country = e.control.value or COUNTRY_FRANCE
@@ -1820,7 +1825,7 @@ class PacingDesktopApp:
             return
         if token != self._usa_swimmer_schedule_gen or not self._is_usa_corridor_mode():
             return
-        self._corridor_swimmer_labels_all = labels_all
+        self._set_corridor_swimmer_labels_all(labels_all)
         self._refresh_usa_corridor_swimmer_ui_from_labels(labels_all)
         self.page.update()
 
@@ -1861,7 +1866,7 @@ class PacingDesktopApp:
             return
         if token != self._usa_bootstrap_gen or not self._is_usa_corridor_mode():
             return
-        self._corridor_swimmer_labels_all = labels_all
+        self._set_corridor_swimmer_labels_all(labels_all)
         self._refresh_usa_corridor_swimmer_ui_from_labels(labels_all)
         self.page.update()
 
@@ -1928,10 +1933,6 @@ class PacingDesktopApp:
         self._refresh_filters_from_data()
         self._schedule_deferred_chart_update()
 
-    def _on_corridor_swimmer_search_change(self, e: ft.ControlEvent) -> None:
-        self.corridor_swimmer_search_query = (e.control.value or "").strip()
-        self._refresh_filters_from_data()
-
     @staticmethod
     def _parse_corridor_swimmer_label(
         label: Optional[str],
@@ -1962,9 +1963,15 @@ class PacingDesktopApp:
             query = (self.corridor_swimmer_search_query or "").strip()
             labels_all = self._corridor_swimmer_labels_all or []
             if query and labels_all:
-                if query in labels_all:
+                labels_set = self._corridor_swimmer_labels_set
+                if labels_set is None:
+                    self._ensure_corridor_swimmer_search_index(labels_all)
+                    labels_set = self._corridor_swimmer_labels_set or set()
+                if query in labels_set:
                     return query
-                filtered = self._filter_corridor_swimmer_labels(labels_all, query)
+                filtered, _ = self._filter_corridor_swimmer_labels_with_count(
+                    labels_all, query, max_results=2
+                )
                 if query in filtered:
                     return query
                 if len(filtered) == 1:
@@ -1978,9 +1985,15 @@ class PacingDesktopApp:
         query = (self.corridor_swimmer_search_query or "").strip()
         labels_all = self._corridor_swimmer_labels_all or self._selected_event_swimmers
         if query and labels_all:
-            if query in labels_all:
+            labels_set = self._corridor_swimmer_labels_set
+            if labels_set is None:
+                self._ensure_corridor_swimmer_search_index(labels_all)
+                labels_set = self._corridor_swimmer_labels_set or set()
+            if query in labels_set:
                 return query
-            filtered = self._filter_corridor_swimmer_labels(labels_all, query)
+            filtered, _ = self._filter_corridor_swimmer_labels_with_count(
+                labels_all, query, max_results=2
+            )
             if query in filtered:
                 return query
             if len(filtered) == 1:
@@ -2003,35 +2016,210 @@ class PacingDesktopApp:
             return True
         return False
 
-    @staticmethod
-    def _filter_corridor_swimmer_labels(
+    def _invalidate_corridor_swimmer_search_index(self) -> None:
+        self._corridor_swimmer_search_index_key = None
+        self._corridor_swimmer_search_index = None
+        self._corridor_swimmer_labels_set = None
+
+    def _set_corridor_swimmer_labels_all(self, labels: List[str]) -> None:
+        if id(labels) == id(self._corridor_swimmer_labels_all):
+            return
+        self._corridor_swimmer_labels_all = labels
+        self._invalidate_corridor_swimmer_search_index()
+
+    def _ensure_corridor_swimmer_search_index(
+        self, labels: List[str]
+    ) -> List[Tuple[str, str, Tuple[str, ...]]]:
+        key = id(labels)
+        if (
+            self._corridor_swimmer_search_index is not None
+            and self._corridor_swimmer_search_index_key == key
+        ):
+            return self._corridor_swimmer_search_index
+        index: List[Tuple[str, str, Tuple[str, ...]]] = []
+        for label in labels:
+            norm = _normalize_text(label)
+            words = tuple(
+                w
+                for w in norm.replace("(", " ").replace(")", " ").split()
+                if w
+            )
+            index.append((label, norm, words))
+        self._corridor_swimmer_search_index = index
+        self._corridor_swimmer_search_index_key = key
+        self._corridor_swimmer_labels_set = set(labels)
+        return index
+
+    def _filter_corridor_swimmer_labels_with_count(
+        self,
         labels: List[str],
         query: str,
-    ) -> List[str]:
+        *,
+        max_results: Optional[int] = None,
+    ) -> Tuple[List[str], int]:
         """
-        Filtre en 2 passes:
-        1) match préfixe sur au moins un mot (premières lettres),
-        2) si vide, fallback sur recherche "contains" dans le label complet.
+        Filtre en 2 passes (préfixe mot, puis contains) avec index pré-calculé.
+        max_results: arrête la collecte après N correspondances (autocomplete rapide).
         """
+        if not labels:
+            return [], 0
         search_norm = _normalize_text(query)
         if not search_norm:
-            return labels
+            total = len(labels)
+            if max_results is not None:
+                return labels[:max_results], total
+            return list(labels), total
 
+        index = self._ensure_corridor_swimmer_search_index(labels)
         prefix_matches: List[str] = []
-        for label in labels:
-            label_norm = _normalize_text(label)
-            words = [w for w in label_norm.replace("(", " ").replace(")", " ").split() if w]
+        for label, _norm_full, words in index:
             if any(word.startswith(search_norm) for word in words):
                 prefix_matches.append(label)
+                if max_results is not None and len(prefix_matches) >= max_results:
+                    break
 
         if prefix_matches:
-            return prefix_matches
+            if max_results is None or len(prefix_matches) < max_results:
+                return prefix_matches, len(prefix_matches)
+            total_prefix = 0
+            for _label, _norm_full, words in index:
+                if any(word.startswith(search_norm) for word in words):
+                    total_prefix += 1
+            return prefix_matches, total_prefix
 
-        return [
-            label
-            for label in labels
-            if search_norm in _normalize_text(label)
-        ]
+        contains_matches: List[str] = []
+        for label, norm_full, _words in index:
+            if search_norm in norm_full:
+                contains_matches.append(label)
+                if max_results is not None and len(contains_matches) >= max_results:
+                    break
+        if max_results is None or len(contains_matches) < max_results:
+            return contains_matches, len(contains_matches)
+        total_contains = sum(
+            1 for _label, norm_full, _words in index if search_norm in norm_full
+        )
+        return contains_matches, total_contains
+
+    def _filter_corridor_swimmer_labels(
+        self,
+        labels: List[str],
+        query: str,
+        *,
+        max_results: Optional[int] = None,
+    ) -> List[str]:
+        matches, _ = self._filter_corridor_swimmer_labels_with_count(
+            labels, query, max_results=max_results
+        )
+        return matches
+
+    def _corridor_swimmer_labels_for_search(self) -> List[str]:
+        if self._corridor_swimmer_labels_all:
+            return self._corridor_swimmer_labels_all
+        if self._is_usa_corridor_mode():
+            return []
+        if not (
+            self.selected_stroke
+            and self.selected_distance is not None
+            and self.selected_pool
+        ):
+            return []
+        self._refresh_selected_event_swimmers_from_cache()
+        labels = list(self._selected_event_swimmers)
+        self._set_corridor_swimmer_labels_all(labels)
+        return labels
+
+    def _sync_corridor_swimmer_autocomplete(
+        self,
+        labels_all: List[str],
+        query: str,
+        *,
+        base_event_key: Tuple[Any, ...],
+        cap_ac: int = CORRIDOR_SWIMMER_SUGGESTIONS_MAX,
+    ) -> bool:
+        if self.corridor_swimmer_search is None or not labels_all:
+            return False
+        if query:
+            labels, _ = self._filter_corridor_swimmer_labels_with_count(
+                labels_all, query, max_results=cap_ac
+            )
+            subset = labels[:cap_ac] if labels else labels_all[:cap_ac]
+            return self.corridor_swimmer_search.set_filtered_suggestions(
+                subset,
+                max_suggestions=cap_ac,
+            )
+        self.corridor_swimmer_search.reset_suggestion_context()
+        return self.corridor_swimmer_search.maybe_sync_suggestions(
+            labels_all[:cap_ac],
+            base_event_key,
+            max_suggestions=cap_ac,
+        )
+
+    def _on_corridor_swimmer_search_keystroke(self) -> None:
+        """Mise à jour immédiate des suggestions (sans reconstruire tout le panneau)."""
+        if self.selected_category != CORRIDOR_CATEGORY:
+            return
+        labels_all = self._corridor_swimmer_labels_for_search()
+        if not labels_all or self.corridor_swimmer_search is None:
+            return
+        query = (self.corridor_swimmer_search_query or "").strip()
+        cap_ac = CORRIDOR_SWIMMER_SUGGESTIONS_MAX
+        if self._is_usa_corridor_mode():
+            if not self.selected_usa_event:
+                return
+            event_key = (str(self.selected_usa_event), self.selected_corridor_gender)
+            self._sync_corridor_swimmer_autocomplete(
+                labels_all, query, base_event_key=event_key, cap_ac=cap_ac
+            )
+        else:
+            if self.selected_graph not in CORRIDOR_SWIMMER_UI_GRAPHS:
+                return
+            if not (
+                self.selected_stroke
+                and self.selected_distance is not None
+                and self.selected_pool
+            ):
+                return
+            event_key = (
+                self.selected_stroke,
+                int(self.selected_distance),
+                self.selected_pool,
+                self.selected_corridor_gender,
+            )
+            self._sync_corridor_swimmer_autocomplete(
+                labels_all, query, base_event_key=event_key, cap_ac=cap_ac
+            )
+        self._sync_corridor_confirm_button()
+
+    def _schedule_corridor_swimmer_search_ui_refresh(self) -> None:
+        """Debounce: dropdown + libellés après la frappe (évite le travail lourd à chaque touche)."""
+        self._corridor_search_ui_gen += 1
+        token = self._corridor_search_ui_gen
+
+        async def _runner() -> None:
+            await asyncio.sleep(CORRIDOR_SEARCH_DEBOUNCE_SEC)
+            if token != self._corridor_search_ui_gen:
+                return
+            self._refresh_corridor_swimmer_options_lightweight()
+            self._update_corridor_search_sidebar_controls()
+
+        self.page.run_task(_runner)
+
+    def _update_corridor_search_sidebar_controls(self) -> None:
+        controls: List[ft.Control] = []
+        if self.corridor_swimmer_search is not None:
+            controls.extend(
+                [
+                    self.corridor_swimmer_search.input,
+                    self.corridor_swimmer_search.confirm_btn,
+                ]
+            )
+        controls.append(self.corridor_swimmer_dd)
+        for control in controls:
+            try:
+                control.update()
+            except Exception:
+                self.page.update()
+                return
 
     # ----------------------------------------------------------------- Data-driven filters
     @staticmethod
@@ -2402,11 +2590,12 @@ class PacingDesktopApp:
         ):
             return
 
-        self._refresh_selected_event_swimmers_from_cache()
-        labels_all = list(self._selected_event_swimmers)
-        self._corridor_swimmer_labels_all = labels_all
-        labels = self._filter_corridor_swimmer_labels(
-            labels_all, self.corridor_swimmer_search_query
+        labels_all = self._corridor_swimmer_labels_for_search()
+        if not labels_all:
+            return
+        query_pick = (self.corridor_swimmer_search_query or "").strip()
+        labels, shown = self._filter_corridor_swimmer_labels_with_count(
+            labels_all, query_pick
         )
         cap_dd = CORRIDOR_SWIMMER_DROPDOWN_OPTIONS_MAX
         cap_ac = CORRIDOR_SWIMMER_SUGGESTIONS_MAX
@@ -2418,23 +2607,9 @@ class PacingDesktopApp:
             self.selected_pool,
             self.selected_corridor_gender,
         )
-        query_pick = (self.corridor_swimmer_search_query or "").strip()
-        if self.corridor_swimmer_search is not None:
-            if query_pick:
-                filtered_for_ac = self._filter_corridor_swimmer_labels(
-                    labels_all, query_pick
-                )
-                self.corridor_swimmer_search.set_filtered_suggestions(
-                    filtered_for_ac[:cap_ac] if filtered_for_ac else labels_all[:cap_ac],
-                    max_suggestions=cap_ac,
-                )
-            else:
-                self.corridor_swimmer_search.reset_suggestion_context()
-                self.corridor_swimmer_search.maybe_sync_suggestions(
-                    labels_all[:cap_ac],
-                    autocomplete_event_key,
-                    max_suggestions=cap_ac,
-                )
+        self._sync_corridor_swimmer_autocomplete(
+            labels_all, query_pick, base_event_key=autocomplete_event_key, cap_ac=cap_ac
+        )
 
         event_key = (
             self.selected_stroke,
@@ -2450,7 +2625,8 @@ class PacingDesktopApp:
             ]
 
         total = len(labels_all)
-        shown = len(labels) if query_pick else total
+        if not query_pick:
+            shown = total
         suffix = f" ({shown} affichés)" if query_pick and shown < total else ""
         new_label = f"Nageur cible (couloir) — {total} disponibles{suffix}"
         if self.corridor_swimmer_dd.label != new_label:
@@ -2459,8 +2635,9 @@ class PacingDesktopApp:
         if self.corridor_swimmer_dd.menu_height != mh:
             self.corridor_swimmer_dd.menu_height = mh
 
+        labels_set = self._corridor_swimmer_labels_set or set()
         pick: Optional[str] = None
-        if query_pick and query_pick in labels_all:
+        if query_pick and query_pick in labels_set:
             pick = query_pick
         elif query_pick and len(labels) == 1:
             pick = labels[0]
@@ -2468,9 +2645,9 @@ class PacingDesktopApp:
             pick = query_pick
         elif query_pick:
             pick = self.corridor_swimmer_dd.value
-            if pick and pick not in labels_all:
+            if pick and pick not in labels_set:
                 pick = None
-        if pick and pick not in dd_labels and pick in labels_all:
+        if pick and pick not in dd_labels and pick in labels_set:
             self.corridor_swimmer_dd.options = [
                 ft.dropdown.Option(label) for label in ([pick] + dd_labels)[:cap_dd]
             ]
@@ -2885,11 +3062,13 @@ class PacingDesktopApp:
 
     def _refresh_usa_corridor_swimmer_ui_from_labels(self, labels_all: List[str]) -> None:
         """Met à jour recherche + liste nageur USA à partir d'une liste déjà chargée."""
-        self._corridor_swimmer_labels_all = labels_all
+        self._set_corridor_swimmer_labels_all(labels_all)
         self._sync_usa_corridor_swimmer_search_suggestions(labels_all)
         self._apply_usa_corridor_swimmer_pick()
         query = (self.corridor_swimmer_search_query or "").strip()
-        labels = self._filter_corridor_swimmer_labels(labels_all, query)
+        labels, shown = self._filter_corridor_swimmer_labels_with_count(
+            labels_all, query
+        )
         cap_dd = CORRIDOR_SWIMMER_DROPDOWN_OPTIONS_MAX
         dd_labels = labels[:cap_dd]
         pick: Optional[str] = self.selected_corridor_swimmer_name if query else None
@@ -2901,7 +3080,8 @@ class PacingDesktopApp:
             visible=True,
         )
         total = len(labels_all)
-        shown = len(labels) if query else total
+        if not query:
+            shown = total
         suffix = f" ({shown} affichés)" if query and shown < total else ""
         self.corridor_swimmer_dd.label = (
             f"Nageur cible (USA) — {total} disponibles{suffix}"
@@ -3001,7 +3181,7 @@ class PacingDesktopApp:
 
         if self.selected_usa_event:
             if skip_swimmer_options:
-                self._corridor_swimmer_labels_all = []
+                self._set_corridor_swimmer_labels_all([])
                 if self.corridor_swimmer_search is not None:
                     if self.corridor_swimmer_search.clear_suggestions():
                         dirty = True
@@ -3319,10 +3499,10 @@ class PacingDesktopApp:
                 and self.selected_distance is not None
                 and self.selected_pool
             ):
-                labels_all = self._selected_event_swimmers
-                self._corridor_swimmer_labels_all = list(labels_all)
+                labels_all = list(self._selected_event_swimmers)
+                self._set_corridor_swimmer_labels_all(labels_all)
                 search_norm = _normalize_text(self.corridor_swimmer_search_query)
-                labels = self._filter_corridor_swimmer_labels(
+                labels, shown = self._filter_corridor_swimmer_labels_with_count(
                     labels_all,
                     self.corridor_swimmer_search_query,
                 )
@@ -3334,10 +3514,11 @@ class PacingDesktopApp:
                     self.selected_corridor_gender,
                 )
                 if self.corridor_swimmer_search is not None:
-                    if self.corridor_swimmer_search.maybe_sync_suggestions(
-                        labels[:CORRIDOR_SWIMMER_SUGGESTIONS_MAX] or labels_all[:CORRIDOR_SWIMMER_SUGGESTIONS_MAX],
-                        autocomplete_event_key,
-                        max_suggestions=CORRIDOR_SWIMMER_SUGGESTIONS_MAX,
+                    if self._sync_corridor_swimmer_autocomplete(
+                        labels_all,
+                        self.corridor_swimmer_search_query,
+                        base_event_key=autocomplete_event_key,
+                        cap_ac=CORRIDOR_SWIMMER_SUGGESTIONS_MAX,
                     ):
                         dirty = True
                 event_key = (
@@ -3354,8 +3535,9 @@ class PacingDesktopApp:
                     ]
                     dirty = True
                 total = len(labels_all)
-                shown = len(labels)
-                suffix = f" ({shown} affichés)" if shown < total else ""
+                if not search_norm:
+                    shown = total
+                suffix = f" ({shown} affichés)" if search_norm and shown < total else ""
                 new_label = f"Nageur cible (couloir) — {total} disponibles{suffix}"
                 if self.corridor_swimmer_dd.label != new_label:
                     self.corridor_swimmer_dd.label = new_label
