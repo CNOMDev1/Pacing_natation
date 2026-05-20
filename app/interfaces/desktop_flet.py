@@ -74,7 +74,7 @@ CORRIDOR_SWIMMER_UI_GRAPHS: Tuple[str, ...] = (
     CORRIDOR_GLOBAL_GRAPH_NAME,
     CORRIDOR_GLOBAL_DECILES_GRAPH_NAME,
 )
-CHART_UPDATE_AFTER_FILTER_DEBOUNCE_SEC = 0.12
+CHART_UPDATE_AFTER_FILTER_DEBOUNCE_SEC = 0.1
 SCOPE_PERFORMANCES_CACHE_MAX_ENTRIES = 64
 SCOPE_PERFORMANCES_PREFETCH_GRAPHS: Tuple[str, ...] = (
     CORRIDOR_GRAPH_NAME,
@@ -89,7 +89,7 @@ CORRIDOR_CHART_PREFETCH_GRAPH_NAMES: Tuple[str, ...] = (
     CORRIDOR_GRAPH_NAME,
 )
 CORRIDOR_SWIMMER_SUGGESTIONS_MAX = 200
-CORRIDOR_SWIMMER_DROPDOWN_OPTIONS_MAX = 2
+CORRIDOR_SWIMMER_DROPDOWN_OPTIONS_MAX = 100
 CORRIDOR_SEARCH_DEBOUNCE_SEC = 0.12
 
 USA_CORRIDOR_SWIMMER_SEARCH_LABEL = "Rechercher un nageur (USA Swimming)"
@@ -1713,24 +1713,42 @@ class PacingDesktopApp:
         self._refresh_filters_from_data()
         self._schedule_deferred_chart_update()
 
+    def _resolve_corridor_deciles_toggle_target(self, e: ft.ControlEvent) -> bool:
+        """
+        Déduit l'état cible du switch « déciles 10-90 ».
+        Flet peut parfois envoyer l'ancienne valeur dans on_change : on bascule alors
+        par rapport au graphique déjà sélectionné.
+        """
+        want_deciles = bool(e.control.value)
+        is_deciles_graph = self.selected_graph == CORRIDOR_GLOBAL_DECILES_GRAPH_NAME
+        if want_deciles == is_deciles_graph:
+            want_deciles = not is_deciles_graph
+        return want_deciles
+
     def _on_corridor_mode_switch_change(self, e: ft.ControlEvent) -> None:
-        if self.selected_category != CORRIDOR_CATEGORY:
+        if self.selected_category != CORRIDOR_CATEGORY or self._is_usa_corridor_mode():
             return
+        want_deciles = self._resolve_corridor_deciles_toggle_target(e)
         self.selected_graph = (
             CORRIDOR_GLOBAL_DECILES_GRAPH_NAME
-            if bool(e.control.value)
+            if want_deciles
             else CORRIDOR_GRAPH_NAME
         )
-        self.graph_dd.value = self.selected_graph
-        if self.selected_graph != CORRIDOR_GLOBAL_DECILES_GRAPH_NAME:
+        self.corridor_mode_switch.value = want_deciles
+        graphs = self._available_graphs_for_category(self.selected_category)
+        if self.selected_graph in graphs:
+            self.graph_dd.value = self.selected_graph
+        if not want_deciles:
             self.corridor_deciles_confirmed_name = None
             self.corridor_deciles_confirmed_yob = None
-        self._sync_corridor_mode_switch(update_ui=False)
         self._refresh_filters_from_data()
         self._schedule_deferred_chart_update()
 
     def _sync_corridor_mode_switch(self, *, update_ui: bool = True) -> None:
-        should_be_visible = self.selected_category == CORRIDOR_CATEGORY
+        should_be_visible = (
+            self.selected_category == CORRIDOR_CATEGORY
+            and not self._is_usa_corridor_mode()
+        )
         if self.corridor_mode_switch.visible is not should_be_visible:
             self.corridor_mode_switch.visible = should_be_visible
         should_be_deciles = self.selected_graph == CORRIDOR_GLOBAL_DECILES_GRAPH_NAME
@@ -1890,6 +1908,13 @@ class PacingDesktopApp:
 
     def _on_corridor_swimmer_change(self, e: ft.ControlEvent) -> None:
         label = e.control.value
+        if isinstance(label, str) and label.strip():
+            if self._set_corridor_swimmer_search_query(label):
+                if self.corridor_swimmer_search is not None:
+                    try:
+                        self.corridor_swimmer_search.input.update()
+                    except Exception:
+                        self.page.update()
         name, yob = PacingDesktopApp._parse_corridor_swimmer_label(label)
         self.selected_corridor_swimmer_name = name
         self.selected_corridor_swimmer_yob = yob
@@ -2154,6 +2179,16 @@ class PacingDesktopApp:
             max_suggestions=cap_ac,
         )
 
+    def _set_corridor_swimmer_search_query(self, value: str) -> bool:
+        """Met à jour la query et le champ AutoComplete (ex. sélection dans le dropdown)."""
+        if self.corridor_swimmer_search is not None:
+            return self.corridor_swimmer_search.set_query(value)
+        text = (value or "").strip()
+        changed = (self.corridor_swimmer_search_query or "") != text
+        if changed:
+            self.corridor_swimmer_search_query = text
+        return changed
+
     def _on_corridor_swimmer_search_keystroke(self) -> None:
         """Mise à jour immédiate des suggestions (sans reconstruire tout le panneau)."""
         if self.selected_category != CORRIDOR_CATEGORY:
@@ -2222,6 +2257,23 @@ class PacingDesktopApp:
                 return
 
     # ----------------------------------------------------------------- Data-driven filters
+    @staticmethod
+    def _corridor_swimmer_dropdown_label_suffix(
+        *,
+        has_query: bool,
+        total: int,
+        matches: int,
+        in_menu: int,
+    ) -> str:
+        """Suffixe du libellé dropdown (correspondances vs entrées réellement listées)."""
+        if not has_query:
+            return ""
+        if matches > in_menu:
+            return f" ({matches} correspondances, {in_menu} dans le menu)"
+        if matches < total:
+            return f" ({matches} affichés)"
+        return ""
+
     @staticmethod
     def _menu_height_for_count(option_count: int) -> int:
         return max(72, min(320, 56 * max(1, option_count)))
@@ -2627,7 +2679,12 @@ class PacingDesktopApp:
         total = len(labels_all)
         if not query_pick:
             shown = total
-        suffix = f" ({shown} affichés)" if query_pick and shown < total else ""
+        suffix = self._corridor_swimmer_dropdown_label_suffix(
+            has_query=bool(query_pick),
+            total=total,
+            matches=shown,
+            in_menu=len(dd_labels),
+        )
         new_label = f"Nageur cible (couloir) — {total} disponibles{suffix}"
         if self.corridor_swimmer_dd.label != new_label:
             self.corridor_swimmer_dd.label = new_label
@@ -2654,6 +2711,8 @@ class PacingDesktopApp:
         if self.corridor_swimmer_dd.value != pick:
             self.corridor_swimmer_dd.value = pick
         if pick:
+            if (self.corridor_swimmer_search_query or "").strip() != pick:
+                self._set_corridor_swimmer_search_query(pick)
             name, yob = self._parse_corridor_swimmer_label(pick)
             self.selected_corridor_swimmer_name = name
             self.selected_corridor_swimmer_yob = yob
@@ -3082,7 +3141,12 @@ class PacingDesktopApp:
         total = len(labels_all)
         if not query:
             shown = total
-        suffix = f" ({shown} affichés)" if query and shown < total else ""
+        suffix = self._corridor_swimmer_dropdown_label_suffix(
+            has_query=bool(query),
+            total=total,
+            matches=shown,
+            in_menu=len(dd_labels),
+        )
         self.corridor_swimmer_dd.label = (
             f"Nageur cible (USA) — {total} disponibles{suffix}"
         )
@@ -3241,13 +3305,26 @@ class PacingDesktopApp:
 
         graphs = self._available_graphs_for_category(self.selected_category)
         if self.selected_graph not in graphs:
-            self.selected_graph = graphs[0] if graphs else self.selected_graph
+            if not (
+                in_corridor
+                and self.selected_graph
+                in (
+                    CORRIDOR_GLOBAL_DECILES_GRAPH_NAME,
+                    CORRIDOR_GLOBAL_GRAPH_NAME,
+                )
+            ):
+                self.selected_graph = graphs[0] if graphs else self.selected_graph
         graph_keys = tuple(graphs)
+        graph_dd_value = (
+            self.selected_graph
+            if self.selected_graph in graphs
+            else (graphs[0] if graphs else self.selected_graph)
+        )
         if self._sync_dropdown(
             self.graph_dd,
             new_option_keys=graph_keys,
             build_options=lambda gv=graphs: [ft.dropdown.Option(g) for g in gv],
-            value=self.selected_graph,
+            value=graph_dd_value,
             visible=True,
         ):
             dirty = True
@@ -3437,6 +3514,13 @@ class PacingDesktopApp:
 
         # Options spécifiques pour couloir de performance
         if self.selected_graph in CORRIDOR_SWIMMER_UI_GRAPHS:
+            if (
+                in_corridor
+                and not self._is_usa_corridor_mode()
+                and self.corridor_mode_switch.visible is not True
+            ):
+                self.corridor_mode_switch.visible = True
+                dirty = True
             if self._sync_dropdown(
                 self.corridor_gender_dd,
                 new_option_keys=("all", "F", "M"),
@@ -3537,7 +3621,12 @@ class PacingDesktopApp:
                 total = len(labels_all)
                 if not search_norm:
                     shown = total
-                suffix = f" ({shown} affichés)" if search_norm and shown < total else ""
+                suffix = self._corridor_swimmer_dropdown_label_suffix(
+                    has_query=bool(search_norm),
+                    total=total,
+                    matches=shown,
+                    in_menu=len(dd_labels),
+                )
                 new_label = f"Nageur cible (couloir) — {total} disponibles{suffix}"
                 if self.corridor_swimmer_dd.label != new_label:
                     self.corridor_swimmer_dd.label = new_label
@@ -3564,6 +3653,9 @@ class PacingDesktopApp:
                         self.corridor_swimmer_dd.value = pick
                         dirty = True
                     if pick:
+                        if (self.corridor_swimmer_search_query or "").strip() != pick:
+                            if self._set_corridor_swimmer_search_query(pick):
+                                dirty = True
                         name, yob = self._parse_corridor_swimmer_label(pick)
                         self.selected_corridor_swimmer_name = name
                         self.selected_corridor_swimmer_yob = yob

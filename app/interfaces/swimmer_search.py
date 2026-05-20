@@ -63,6 +63,18 @@ class SwimmerSearch:
             self.input.value = query
         return changed
 
+    def set_query(self, value: str) -> bool:
+        """Sync: `app.corridor_swimmer_search_query` et `self.input.value` <- `value`."""
+        text = (value or "").strip()
+        dirty = False
+        if (getattr(self.app, self._query_attr, "") or "") != text:
+            setattr(self.app, self._query_attr, text)
+            dirty = True
+        if (self.input.value or "") != text:
+            self.input.value = text
+            dirty = True
+        return dirty
+
     def clear_suggestions(self) -> bool:
         """Nettoyage léger: suggestions uniquement (pas la query)"""
         had = bool(self.input.suggestions)
