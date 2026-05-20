@@ -13,7 +13,13 @@ class SwimmerSearch:
         input_width = max(int(width) - 46, 120)
         self.label = ft.Text(label_text, size=12, color="#9ca3af")
         # `on_change` met à jour la query dans l'app puis relance le refresh UI.
-        self.input = ft.AutoComplete(width=input_width, suggestions=[], tooltip=tooltip, on_change=self._handle_change)
+        self.input = ft.AutoComplete(
+            width=input_width,
+            suggestions=[],
+            suggestions_max_height=320,
+            tooltip=tooltip,
+            on_change=self._handle_change,
+        )
         self.confirm_btn = ft.IconButton(icon=ft.icons.Icons.CHECK, icon_color="#ffffff", bgcolor="#4ade80", tooltip="Confirmer la recherche", on_click=self._handle_confirm_click, visible=show_confirm_button)
         self.input_row = ft.Row(controls=[self.input, self.confirm_btn], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         self.container = ft.Column(controls=[self.label, self.input_row], spacing=2, visible=False)
@@ -144,12 +150,19 @@ class SwimmerSearch:
         """Met à jour les suggestions pour une recherche (sans recréer des milliers d'entrées)."""
         cap = max(1, int(max_suggestions))
         subset = labels[:cap]
-        keys = tuple(subset)
+        suggestions = [
+            ft.AutoCompleteSuggestion(key=label, value=label) for label in subset
+        ]
+        return self.apply_suggestions(suggestions)
+
+    def apply_suggestions(self, suggestions: List[ft.AutoCompleteSuggestion]) -> bool:
+        """Applique une liste de suggestions (clés Flet adaptées au filtre interne)."""
+        keys = tuple(
+            (str(s.key or ""), str(s.value or "")) for s in (suggestions or [])
+        )
         if keys == self._last_suggestion_keys:
             return False
         self._last_suggestion_keys = keys
-        self.input.suggestions = [
-            ft.AutoCompleteSuggestion(key=label, value=label) for label in subset
-        ]
+        self.input.suggestions = list(suggestions or [])
         return True
 

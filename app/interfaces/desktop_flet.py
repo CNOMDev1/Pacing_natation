@@ -2137,6 +2137,46 @@ class PacingDesktopApp:
         )
         return matches
 
+    @staticmethod
+    def _autocomplete_suggestion_key(label: str, query_norm: str) -> str:
+        """
+        Clé Flet pour AutoComplete : doit commencer par le texte tapé (filtre Flet).
+        value reste le nom complet affiché à l'utilisateur.
+        """
+        norm = _normalize_text(label)
+        if not query_norm:
+            return norm or label
+        for word in norm.replace("(", " ").replace(")", " ").split():
+            if word.startswith(query_norm):
+                return f"{word}|{label}"
+        pos = norm.find(query_norm)
+        if pos >= 0:
+            return f"{norm[pos:]}|{label}"
+        return f"{norm}|{label}"
+
+    def _build_corridor_autocomplete_suggestions(
+        self,
+        labels: List[str],
+        query: str,
+        *,
+        cap: int = CORRIDOR_SWIMMER_SUGGESTIONS_MAX,
+    ) -> List[ft.AutoCompleteSuggestion]:
+        query_norm = _normalize_text(query)
+        suggestions: List[ft.AutoCompleteSuggestion] = []
+        used_keys: set[str] = set()
+        for label in labels[: max(1, int(cap))]:
+            key = self._autocomplete_suggestion_key(label, query_norm)
+            unique_key = key
+            suffix = 2
+            while unique_key in used_keys:
+                unique_key = f"{key}#{suffix}"
+                suffix += 1
+            used_keys.add(unique_key)
+            suggestions.append(
+                ft.AutoCompleteSuggestion(key=unique_key, value=label)
+            )
+        return suggestions
+
     def _corridor_swimmer_labels_for_search(self) -> List[str]:
         if self._corridor_swimmer_labels_all:
             return self._corridor_swimmer_labels_all
@@ -2168,10 +2208,10 @@ class PacingDesktopApp:
                 labels_all, query, max_results=cap_ac
             )
             subset = labels[:cap_ac] if labels else labels_all[:cap_ac]
-            return self.corridor_swimmer_search.set_filtered_suggestions(
-                subset,
-                max_suggestions=cap_ac,
+            suggestions = self._build_corridor_autocomplete_suggestions(
+                subset, query, cap=cap_ac
             )
+            return self.corridor_swimmer_search.apply_suggestions(suggestions)
         self.corridor_swimmer_search.reset_suggestion_context()
         return self.corridor_swimmer_search.maybe_sync_suggestions(
             labels_all[:cap_ac],
@@ -2202,7 +2242,7 @@ class PacingDesktopApp:
             if not self.selected_usa_event:
                 return
             event_key = (str(self.selected_usa_event), self.selected_corridor_gender)
-            self._sync_corridor_swimmer_autocomplete(
+            changed = self._sync_corridor_swimmer_autocomplete(
                 labels_all, query, base_event_key=event_key, cap_ac=cap_ac
             )
         else:
@@ -2220,9 +2260,14 @@ class PacingDesktopApp:
                 self.selected_pool,
                 self.selected_corridor_gender,
             )
-            self._sync_corridor_swimmer_autocomplete(
+            changed = self._sync_corridor_swimmer_autocomplete(
                 labels_all, query, base_event_key=event_key, cap_ac=cap_ac
             )
+        if changed and self.corridor_swimmer_search is not None:
+            try:
+                self.corridor_swimmer_search.input.update()
+            except Exception:
+                pass
         self._sync_corridor_confirm_button()
 
     def _schedule_corridor_swimmer_search_ui_refresh(self) -> None:
