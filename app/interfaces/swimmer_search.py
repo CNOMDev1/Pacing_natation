@@ -107,6 +107,10 @@ class SwimmerSearch:
         ]
         return True
 
+    def reset_suggestion_context(self) -> None:
+        """Force le prochain maybe_sync_suggestions à réappliquer les suggestions."""
+        self._autocomplete_event_key = None
+
     def set_filtered_suggestions(self, labels: List[str], *, max_suggestions: int = 80) -> bool:
         """Met à jour les suggestions pour une recherche (sans recréer des milliers d'entrées)."""
         cap = max(1, int(max_suggestions))

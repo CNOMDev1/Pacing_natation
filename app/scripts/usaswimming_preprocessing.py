@@ -10,6 +10,9 @@ OUTPUT_DIR = Path(__file__).resolve().parents[2] / "data" / "processed" / "usasw
 
 COURSE_CODES = {"LCM", "SCM", "SCY"}
 
+# Lettres, espaces, tiret, apostrophe, point (ex. O'Brien, Jean-Pierre, Jr.)
+_VALID_SWIMMER_NAME_PATTERN = re.compile(r"^[A-Za-zÀ-ÿ\s\-'.]+$")
+
 
 def compute_status_from_swim_time(swim_time: Any) -> str:
     """Détermine le statut à partir de la valeur de SwimTime."""
@@ -101,6 +104,16 @@ def parse_name_year_nationality(
         nat_val = nat_str.strip().upper()
 
     return base_name, year_val, nat_val
+
+
+def is_valid_swimmer_name(name: Optional[str]) -> bool:
+    """True si le nom ne contient ni chiffre ni caractere special (* , #, etc.)."""
+    if name is None:
+        return False
+    value = str(name).strip()
+    if not value:
+        return False
+    return bool(_VALID_SWIMMER_NAME_PATTERN.match(value))
 
 
 def parse_swim_time_to_seconds(raw: str) -> float:
@@ -208,8 +221,8 @@ def parse_event(raw_event: str) -> Tuple[Optional[int], Optional[str], Optional[
     return distance, stroke_code, course
 
 
-def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
-    """Nettoie un enregistrement USA Swimming."""
+def clean_record(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Nettoie un enregistrement USA Swimming. Retourne None si le nom est invalide."""
     cleaned: Dict[str, Any] = {}
 
     name = str(rec.get("Name", "")).strip()
@@ -245,8 +258,10 @@ def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     if base_name:
         name = base_name
 
-    if name:
-        cleaned["Name"] = name.title()
+    if not is_valid_swimmer_name(name):
+        return None
+
+    cleaned["Name"] = name.title()
 
     yob_value = year_of_birth_raw
     if yob_value is None or (isinstance(yob_value, str) and not yob_value.strip()):
@@ -380,6 +395,8 @@ def clean_file(input_path: Path, output_path: Path) -> None:
             cleaned = clean_record(rec)
         except Exception:
             cleaned = {"_raw": rec}
+        if cleaned is None:
+            continue
         cleaned_performances.append(cleaned)
 
     if not cleaned_performances:
@@ -419,8 +436,12 @@ def clean_file(input_path: Path, output_path: Path) -> None:
             return r
 
         for perf in sorted(perfs, key=_rank_key):
+            perf_name = perf.get("Name")
+            if not is_valid_swimmer_name(perf_name):
+                continue
+
             swimmer = {
-                "Name": perf.get("Name"),
+                "Name": perf_name,
                 "Gender": perf.get("Gender"),
                 "Year_of_birth": perf.get("Year_of_birth"),
                 "Age_at_Performance": _age_at_performance(perf.get("SwimDate"), perf.get("Year_of_birth")),

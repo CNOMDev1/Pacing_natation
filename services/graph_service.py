@@ -105,6 +105,7 @@ DESKTOP_GRAPH_MENU: Tuple[DesktopGraphCategory, ...] = (
             "Couloir de performance (âge) - nageur cible",
             "Couloir de performance global (âge)",
             "Couloir de performance global (déciles 10-90)",
+            "Couloir de performance (AgeGroup) - USA Swimming",
         ),
     ),
 )

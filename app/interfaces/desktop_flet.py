@@ -17,6 +17,7 @@ ensure_project_imports()
 
 from loading_progress import TriplePrefetchProgress
 from services.usaswimming_competitions_data_loader import (
+    DEFAULT_USASWIMMING_COMPETITIONS_DIR,
     DEFAULT_USASWIMMING_PARQUET_DIR,
     UsaswimmingCompetitionsDataLoader,
 )
@@ -37,6 +38,7 @@ from desktop_helpers import (
 from services.graph_service import (
     GRAPH_CATEGORIES,
     GRAPHES_NOTEBOOK,
+    GRAPHES_PAR_KEY,
     SCOPE_NO_FILTER_GRAPHS,
     SCOPE_NO_STROKE_GRAPHS,
     SCOPE_POOL_ONLY_GRAPHS,
@@ -57,6 +59,12 @@ ENABLE_SCOPE_PERFORMANCES_CACHE_PREFETCH_ON_START = True
 SCOPE_PERFORMANCES_PREFETCH_LIMIT = int(
     os.environ.get("PACING_SCOPE_PERFORMANCES_PREFETCH_LIMIT", "48")
 )
+COUNTRY_FRANCE = "France"
+COUNTRY_USA = "États-Unis"
+USA_CORRIDOR_GRAPH_NAME = "Couloir de performance (AgeGroup) - USA Swimming"
+USA_CORRIDOR_COLS = ("Event", "SwimTimeSeconds", "AgeGroup", "Gender", "Name")
+USA_CORRIDOR_MIN_POINTS = 100
+
 CORRIDOR_GRAPH_NAME = "Couloir de performance (âge) - nageur cible"
 CORRIDOR_GLOBAL_GRAPH_NAME = "Couloir de performance global (âge)"
 CORRIDOR_GLOBAL_DECILES_GRAPH_NAME = "Couloir de performance global (déciles 10-90)"
@@ -80,8 +88,12 @@ CORRIDOR_CHART_PREFETCH_GRAPH_NAMES: Tuple[str, ...] = (
     CORRIDOR_GLOBAL_GRAPH_NAME,
     CORRIDOR_GRAPH_NAME,
 )
-CORRIDOR_SWIMMER_SUGGESTIONS_MAX = 80
-CORRIDOR_SWIMMER_DROPDOWN_OPTIONS_MAX = 80
+CORRIDOR_SWIMMER_SUGGESTIONS_MAX = 100
+CORRIDOR_SWIMMER_DROPDOWN_OPTIONS_MAX = 100
+USA_CORRIDOR_SWIMMER_SEARCH_LABEL = "Rechercher un nageur (USA Swimming)"
+USA_CORRIDOR_SWIMMER_SEARCH_TOOLTIP = "Nom du nageur"
+FR_CORRIDOR_SWIMMER_SEARCH_LABEL = "Rechercher un nageur"
+FR_CORRIDOR_SWIMMER_SEARCH_TOOLTIP = "Nom ou annee de naissance"
 
 
 class PacingDesktopApp:
@@ -184,7 +196,8 @@ class PacingDesktopApp:
 
     def _run_usaswimming_parquet_cache_worker(self) -> None:
         startup = self._startup_prefetch_ui
-        loader = UsaswimmingCompetitionsDataLoader()
+        # 2 années max en parallèle : chaque conversion charge tout le JSON en RAM (évite OOM / killed).
+        loader = UsaswimmingCompetitionsDataLoader(cache_build_max_workers=5)
         available_years = loader.available_years()
 
         try:
@@ -202,11 +215,16 @@ class PacingDesktopApp:
                 show_graph_progress=True,
             )
             loader.build_parquet_cache(
+                progress_callback=lambda message: self._advance_startup_parquet(
+                    message,
+                    units=0,
+                    show_graph_progress=True,
+                ),
                 progress_step_callback=lambda message, _index, _total: self._advance_startup_parquet(
                     message,
                     units=1,
                     show_graph_progress=True,
-                )
+                ),
             )
         finally:
             if startup is not None:
@@ -217,8 +235,19 @@ class PacingDesktopApp:
         try:
             self.df: pd.DataFrame = load_data()
             self.df_nav: pd.DataFrame = self.df.copy()
+            self.usaswimming_loader = UsaswimmingCompetitionsDataLoader(
+                base_dir=DEFAULT_USASWIMMING_COMPETITIONS_DIR,
+                parquet_dir=DEFAULT_USASWIMMING_PARQUET_DIR,
+            )
+            self._usa_events_cache: Optional[List[str]] = None
+            self._usa_df_by_event: "OrderedDict[str, pd.DataFrame]" = OrderedDict()
+            self._usa_names_by_event_key: "OrderedDict[Tuple[str, str], List[str]]" = (
+                OrderedDict()
+            )
 
             # Selections courantes
+            self.selected_country: str = COUNTRY_FRANCE
+            self.selected_usa_event: Optional[str] = None
             self.selected_category: str = list[str](GRAPH_CATEGORIES.keys())[0]
             self.selected_graph: str = GRAPH_CATEGORIES[self.selected_category][0]
             self.selected_stroke: Optional[str] = None
@@ -231,6 +260,8 @@ class PacingDesktopApp:
             # Déciles 10-90 : nageur réellement tracé après clic sur le bouton ✓ (pas via recherche/liste seuls).
             self.corridor_deciles_confirmed_name: Optional[str] = None
             self.corridor_deciles_confirmed_yob: Optional[int] = None
+            # USA Swimming : surcouche nageur sur le couloir uniquement après confirmation ✓.
+            self.corridor_usa_confirmed_name: Optional[str] = None
             self.corridor_swimmer_search_query: str = ""
             self.selected_pacing_swimmers: List[str] = []
             self.selected_chronos_sample_size: int = 5000
@@ -253,6 +284,9 @@ class PacingDesktopApp:
             self.corridor_swimmer_search: Optional[SwimmerSearch] = None
             self._chart_schedule_gen: int = 0
             self._corridor_swimmer_schedule_gen: int = 0
+            self._usa_swimmer_schedule_gen: int = 0
+            self._usa_bootstrap_gen: int = 0
+            self._usa_events_load_lock = threading.Lock()
             self._pacing_swimmer_options_key: Optional[Tuple[str, ...]] = None
             self._heatmap_swimmer_names_cache_id: Optional[int] = None
             self._heatmap_swimmer_names_cache: Optional[List[str]] = None
@@ -270,6 +304,8 @@ class PacingDesktopApp:
             self.graph_svc = ServiceGraphe()
 
             # Widgets Flet
+            self.country_dd: ft.Dropdown
+            self.usa_event_dd: ft.Dropdown
             self.category_dd: ft.Dropdown
             self.graph_dd: ft.Dropdown
             self.stroke_dd: ft.Dropdown
@@ -380,6 +416,7 @@ class PacingDesktopApp:
                 self._prefetch_scope_performances_cache_on_startup()
             self.page.clean()
             self._build_ui()
+            self.page.run_thread(self._warm_usa_events_cache)
             self._update_chart()
             if (
                 ENABLE_CORRIDOR_CHART_PREFETCH_ON_START
@@ -1204,6 +1241,31 @@ class PacingDesktopApp:
         dropdown_width = 420
         dropdown_menu_width = 420
 
+        self.country_dd = ft.Dropdown(
+            label="Pays",
+            options=[
+                ft.dropdown.Option(COUNTRY_FRANCE),
+                ft.dropdown.Option(COUNTRY_USA),
+            ],
+            value=self.selected_country,
+            on_select=self._on_country_change,
+            filled=True,
+            menu_height=120,
+            width=dropdown_width,
+            menu_width=dropdown_menu_width,
+            visible=False,
+        )
+        self.usa_event_dd = ft.Dropdown(
+            label="Épreuve (USA Swimming)",
+            options=[],
+            value=None,
+            on_select=self._on_usa_event_change,
+            filled=True,
+            menu_height=320,
+            width=dropdown_width,
+            menu_width=dropdown_menu_width,
+            visible=False,
+        )
         self.category_dd = ft.Dropdown(
             label="Catégorie",
             options=[ft.dropdown.Option(k) for k in GRAPH_CATEGORIES.keys()],
@@ -1368,6 +1430,8 @@ class PacingDesktopApp:
                     self.category_dd,
                     self.graph_dd,
                     ft.Divider(),
+                    self.country_dd,
+                    self.usa_event_dd,
                     self.stroke_dd,
                     self.distance_dd,
                     self.pool_dd,
@@ -1461,9 +1525,164 @@ class PacingDesktopApp:
         self._apply_theme_palette()
         self.page.update()
 
+    def _is_usa_corridor_mode(self) -> bool:
+        """ renvoie vrai seulement quand : le pays choisi est États-Unis et la catégorie est « Couloirs de performance »."""
+        return (
+            self.selected_country == COUNTRY_USA
+            and self.selected_category == CORRIDOR_CATEGORY
+        )
+
+    def _available_categories_for_country(self) -> List[str]:
+        return list(GRAPH_CATEGORIES.keys())
+
     def _available_graphs_for_category(self, category: str) -> List[str]:
+        if self.selected_country == COUNTRY_USA and category == CORRIDOR_CATEGORY:
+            return [USA_CORRIDOR_GRAPH_NAME]
         graphs = list(GRAPH_CATEGORIES.get(category, []))
-        return [g for g in graphs if g != CORRIDOR_GLOBAL_GRAPH_NAME]
+        return [
+            g
+            for g in graphs
+            if g not in (CORRIDOR_GLOBAL_GRAPH_NAME, USA_CORRIDOR_GRAPH_NAME)
+        ]
+
+    def _ensure_usa_events_loaded(self) -> List[str]:
+        if self._usa_events_cache is not None:
+            return self._usa_events_cache
+        with self._usa_events_load_lock:
+            if self._usa_events_cache is None:
+                self._usa_events_cache = self.usaswimming_loader.available_events()
+        return self._usa_events_cache
+
+    def _warm_usa_events_cache(self) -> None:
+        """Précharge la liste d'épreuves USA (thread de fond) pour un changement de pays plus fluide."""
+        try:
+            self._ensure_usa_events_loaded()
+        except Exception:
+            pass
+
+    def _get_usa_corridor_df(self, event: str) -> pd.DataFrame:
+        event_key = str(event).strip()
+        cached = self._usa_df_by_event.get(event_key)
+        if cached is not None:
+            self._usa_df_by_event.move_to_end(event_key)
+            return cached
+        df_usa = self.usaswimming_loader.load(
+            columns=list(USA_CORRIDOR_COLS),
+            event=event_key,
+        )
+        self._usa_df_by_event[event_key] = df_usa
+        self._usa_df_by_event.move_to_end(event_key)
+        if len(self._usa_df_by_event) > 32:
+            self._usa_df_by_event.popitem(last=False)
+        return df_usa
+
+    def _usa_swimmer_names_for_event(self, event: str) -> List[str]:
+        """Noms distincts pour une épreuve (cache mémoire ; lecture Parquet Name/Gender uniquement)."""
+        gender = self._normalize_gender_value(self.selected_corridor_gender)
+        gender_key = gender if gender in ("F", "M") else "all"
+        cache_key = (str(event).strip(), gender_key)
+        cached = self._usa_names_by_event_key.get(cache_key)
+        if cached is not None:
+            return cached
+        loader_gender = gender if gender in ("F", "M") else None
+        names = self.usaswimming_loader.list_names_for_event(
+            str(event).strip(),
+            gender=loader_gender,
+        )
+        self._usa_names_by_event_key[cache_key] = names
+        return names
+
+    def _sync_usa_corridor_swimmer_search_suggestions(
+        self,
+        labels_all: List[str],
+        *,
+        cap_ac: int = CORRIDOR_SWIMMER_SUGGESTIONS_MAX,
+    ) -> bool:
+        """Autocomplete USA : suggestions de base au changement d'épreuve/sexe, filtrées à la frappe."""
+        if self.corridor_swimmer_search is None or not self.selected_usa_event:
+            return False
+        query = (self.corridor_swimmer_search_query or "").strip()
+        labels = self._filter_corridor_swimmer_labels(labels_all, query)
+        event_key = (str(self.selected_usa_event), self.selected_corridor_gender)
+        if query:
+            subset = labels[:cap_ac] if labels else labels_all[:cap_ac]
+            return self.corridor_swimmer_search.set_filtered_suggestions(
+                subset,
+                max_suggestions=cap_ac,
+            )
+        self.corridor_swimmer_search.reset_suggestion_context()
+        return self.corridor_swimmer_search.maybe_sync_suggestions(
+            labels_all[:cap_ac],
+            event_key,
+            max_suggestions=cap_ac,
+        )
+
+    def _apply_usa_corridor_swimmer_pick(self) -> bool:
+        """Synchronise la sélection nageur USA depuis la recherche (ou le dropdown)."""
+        labels_all = self._corridor_swimmer_labels_all or []
+        query_pick = (self.corridor_swimmer_search_query or "").strip()
+        if not query_pick:
+            changed = self.selected_corridor_swimmer_name is not None
+            self.selected_corridor_swimmer_name = None
+            self.selected_corridor_swimmer_yob = None
+            return changed
+        labels = self._filter_corridor_swimmer_labels(labels_all, query_pick)
+        pick: Optional[str] = None
+        if query_pick in labels_all:
+            pick = query_pick
+        elif len(labels) == 1:
+            pick = labels[0]
+        if not pick:
+            dd_pick = self.corridor_swimmer_dd.value
+            if isinstance(dd_pick, str) and dd_pick.strip():
+                pick = dd_pick.strip()
+        changed = self.selected_corridor_swimmer_name != pick
+        self.selected_corridor_swimmer_name = pick
+        self.selected_corridor_swimmer_yob = None
+        return changed
+
+    def _on_country_change(self, e: ft.ControlEvent) -> None:
+        """est appelée quand l'utilisateur change le menu « Pays » pour mettre a jour selected_country et préparer un redraw du graphique."""
+        self._usa_swimmer_schedule_gen += 1
+        self._usa_bootstrap_gen += 1
+        self.selected_country = e.control.value or COUNTRY_FRANCE
+        self.corridor_usa_confirmed_name = None
+        defer_usa_bootstrap = False
+        defer_fr_swimmers = False
+        if self.selected_country == COUNTRY_USA:
+            self.selected_graph = USA_CORRIDOR_GRAPH_NAME
+            defer_usa_bootstrap = True
+        else:
+            graphs = self._available_graphs_for_category(self.selected_category)
+            if self.selected_graph not in graphs:
+                self.selected_graph = graphs[0] if graphs else self.selected_graph
+            defer_fr_swimmers = (
+                self.selected_category == CORRIDOR_CATEGORY
+                and self.selected_graph in CORRIDOR_SWIMMER_UI_GRAPHS
+            )
+        self._refresh_filters_from_data(
+            skip_usa_swimmer_options=defer_usa_bootstrap,
+            skip_usa_events=defer_usa_bootstrap and self._usa_events_cache is None,
+            skip_corridor_swimmer_options=defer_fr_swimmers,
+        )
+        if defer_usa_bootstrap:
+            self._try_show_stale_corridor_chart(update_ui=True)
+            self._schedule_deferred_usa_corridor_bootstrap()
+        elif defer_fr_swimmers:
+            self._try_show_stale_corridor_chart(update_ui=True)
+            self._schedule_deferred_corridor_swimmer_update()
+        self._schedule_deferred_chart_update()
+
+    def _on_usa_event_change(self, e: ft.ControlEvent) -> None:
+        self.selected_usa_event = e.control.value
+        self.corridor_usa_confirmed_name = None
+        self.corridor_swimmer_search_query = ""
+        if self.corridor_swimmer_search is not None:
+            self.corridor_swimmer_search.reset(clear_query=True)
+        self._refresh_filters_from_data(skip_usa_swimmer_options=True)
+        self._try_show_stale_corridor_chart(update_ui=True)
+        self._schedule_deferred_usa_corridor_swimmer_update()
+        self._schedule_deferred_chart_update()
 
     def _on_category_change(self, e: ft.ControlEvent) -> None:
         self.selected_category = e.control.value
@@ -1516,6 +1735,18 @@ class PacingDesktopApp:
             self.page.update()
 
     def _on_filter_change(self, e: ft.ControlEvent) -> None:
+        if self._is_usa_corridor_mode():
+            self.selected_corridor_gender = self._normalize_gender_value(
+                self.corridor_gender_dd.value
+            )
+            self.corridor_usa_confirmed_name = None
+            self._usa_names_by_event_key.clear()
+            self._refresh_filters_from_data(skip_usa_swimmer_options=True)
+            self._try_show_stale_corridor_chart(update_ui=True)
+            self._schedule_deferred_usa_corridor_swimmer_update()
+            self._schedule_deferred_chart_update()
+            return
+
         self.selected_stroke = self.stroke_dd.value
         self.selected_distance = int(self.distance_dd.value) if self.distance_dd.value else None
         self.selected_pool = self.pool_dd.value
@@ -1546,11 +1777,92 @@ class PacingDesktopApp:
 
         self.page.run_task(_runner)
 
+    def _schedule_deferred_usa_corridor_swimmer_update(self) -> None:
+        self._usa_swimmer_schedule_gen += 1
+        token = self._usa_swimmer_schedule_gen
+
+        async def _runner() -> None:
+            await self._refresh_usa_corridor_swimmers_async(token)
+
+        self.page.run_task(_runner)
+
+    def _schedule_deferred_usa_corridor_bootstrap(self) -> None:
+        """Charge épreuves (1ère fois) puis nageurs USA sans bloquer l'UI."""
+        self._usa_bootstrap_gen += 1
+        token = self._usa_bootstrap_gen
+
+        async def _runner() -> None:
+            await self._usa_corridor_bootstrap_async(token)
+
+        self.page.run_task(_runner)
+
     async def _refresh_corridor_swimmers_async(self, token: int) -> None:
         await asyncio.sleep(0)
         if token != self._corridor_swimmer_schedule_gen:
             return
         self._refresh_corridor_swimmer_options_lightweight()
+        self.page.update()
+
+    async def _refresh_usa_corridor_swimmers_async(self, token: int) -> None:
+        await asyncio.sleep(0)
+        if token != self._usa_swimmer_schedule_gen or not self._is_usa_corridor_mode():
+            return
+        event = self.selected_usa_event
+        if not event:
+            return
+        loop = asyncio.get_running_loop()
+        try:
+            labels_all = await loop.run_in_executor(
+                self._chart_executor,
+                lambda ev=event: self._usa_swimmer_names_for_event(ev),
+            )
+        except Exception:
+            return
+        if token != self._usa_swimmer_schedule_gen or not self._is_usa_corridor_mode():
+            return
+        self._corridor_swimmer_labels_all = labels_all
+        self._refresh_usa_corridor_swimmer_ui_from_labels(labels_all)
+        self.page.update()
+
+    async def _usa_corridor_bootstrap_async(self, token: int) -> None:
+        await asyncio.sleep(0)
+        if token != self._usa_bootstrap_gen or not self._is_usa_corridor_mode():
+            return
+        loop = asyncio.get_running_loop()
+        if self._usa_events_cache is None:
+            try:
+                await loop.run_in_executor(
+                    self._chart_executor, self._ensure_usa_events_loaded
+                )
+            except Exception:
+                pass
+            if token != self._usa_bootstrap_gen or not self._is_usa_corridor_mode():
+                return
+            events = self._usa_events_cache or []
+            if events and self.selected_usa_event not in events:
+                self.selected_usa_event = events[0]
+            self._refresh_filters_from_data(
+                update_ui=False,
+                skip_usa_swimmer_options=True,
+            )
+        if token != self._usa_bootstrap_gen or not self._is_usa_corridor_mode():
+            return
+        event = self.selected_usa_event
+        if not event:
+            self.page.update()
+            return
+        try:
+            labels_all = await loop.run_in_executor(
+                self._chart_executor,
+                lambda ev=event: self._usa_swimmer_names_for_event(ev),
+            )
+        except Exception:
+            self.page.update()
+            return
+        if token != self._usa_bootstrap_gen or not self._is_usa_corridor_mode():
+            return
+        self._corridor_swimmer_labels_all = labels_all
+        self._refresh_usa_corridor_swimmer_ui_from_labels(labels_all)
         self.page.update()
 
     def _on_heatmap_swimmer_change(self, e: ft.ControlEvent) -> None:
@@ -1576,6 +1888,9 @@ class PacingDesktopApp:
         name, yob = PacingDesktopApp._parse_corridor_swimmer_label(label)
         self.selected_corridor_swimmer_name = name
         self.selected_corridor_swimmer_yob = yob
+        if self._is_usa_corridor_mode():
+            self._refresh_filters_from_data()
+            return
         if self.selected_graph in (
             CORRIDOR_GLOBAL_GRAPH_NAME,
             CORRIDOR_GLOBAL_DECILES_GRAPH_NAME,
@@ -1588,6 +1903,15 @@ class PacingDesktopApp:
         label = self._resolved_corridor_swimmer_label() or self.corridor_swimmer_dd.value
         if label and self.corridor_swimmer_dd.value != label:
             self.corridor_swimmer_dd.value = label
+        if self._is_usa_corridor_mode():
+            if not label:
+                return
+            confirmed = label.strip()
+            self.corridor_usa_confirmed_name = confirmed
+            self.selected_corridor_swimmer_name = confirmed
+            self.selected_corridor_swimmer_yob = None
+            self._schedule_deferred_chart_update()
+            return
         name, yob = PacingDesktopApp._parse_corridor_swimmer_label(label)
         if not name:
             return
@@ -1634,6 +1958,23 @@ class PacingDesktopApp:
 
     def _resolved_corridor_swimmer_label(self) -> Optional[str]:
         """Label nageur depuis la recherche ou le dropdown (pour afficher le bouton ✓)."""
+        if self._is_usa_corridor_mode():
+            query = (self.corridor_swimmer_search_query or "").strip()
+            labels_all = self._corridor_swimmer_labels_all or []
+            if query and labels_all:
+                if query in labels_all:
+                    return query
+                filtered = self._filter_corridor_swimmer_labels(labels_all, query)
+                if query in filtered:
+                    return query
+                if len(filtered) == 1:
+                    return filtered[0]
+            pick = self.corridor_swimmer_dd.value
+            if isinstance(pick, str) and pick.strip():
+                return pick.strip()
+            name = self.selected_corridor_swimmer_name
+            return name.strip() if isinstance(name, str) and name.strip() else None
+
         query = (self.corridor_swimmer_search_query or "").strip()
         labels_all = self._corridor_swimmer_labels_all or self._selected_event_swimmers
         if query and labels_all:
@@ -1650,7 +1991,9 @@ class PacingDesktopApp:
         return None
 
     def _sync_corridor_confirm_button(self) -> bool:
-        if self.selected_graph not in CORRIDOR_SWIMMER_UI_GRAPHS:
+        if self._is_usa_corridor_mode():
+            visible = bool(self._resolved_corridor_swimmer_label())
+        elif self.selected_graph not in CORRIDOR_SWIMMER_UI_GRAPHS:
             visible = False
         else:
             visible = bool(self._resolved_corridor_swimmer_label())
@@ -1926,18 +2269,24 @@ class PacingDesktopApp:
         deciles_name = self.corridor_deciles_confirmed_name
         deciles_yob = self.corridor_deciles_confirmed_yob
         graph = self.selected_graph
-        if graph == CORRIDOR_GLOBAL_GRAPH_NAME:
+        if self._is_usa_corridor_mode():
+            corridor_name = self.corridor_usa_confirmed_name
+            corridor_yob = None
+        elif graph == CORRIDOR_GLOBAL_GRAPH_NAME:
             corridor_name = None
             corridor_yob = None
         elif graph == CORRIDOR_GLOBAL_DECILES_GRAPH_NAME:
             corridor_name = deciles_name
             corridor_yob = deciles_yob
         return {
+            "country": self.selected_country,
             "category": self.selected_category,
             "graph": graph,
+            "usa_event": self.selected_usa_event,
             "stroke": self.selected_stroke,
             "distance": self.selected_distance,
             "pool": self.selected_pool,
+            "corridor_gender": self.selected_corridor_gender,
             "corridor_name": corridor_name,
             "corridor_yob": corridor_yob,
             "deciles_name": deciles_name,
@@ -1947,9 +2296,26 @@ class PacingDesktopApp:
             "chronos_sample_size": int(self.selected_chronos_sample_size),
         }
 
-    def _build_render_key_from_snapshot(
-        self, snapshot: Dict[str, Any]
-    ) -> Tuple[str, Dict[str, Any], str]:
+    def _build_render_key_from_snapshot(self, snapshot: Dict[str, Any]) -> Tuple[str, Dict[str, Any], str]:
+        """Fabriquer la clé de cache (et les options associées) à partir d'un instantané d'UI, pour savoir si un PNG déjà calculé peut être réutilisé"""
+        if snapshot.get("country") == COUNTRY_USA:
+            gender = snapshot.get("corridor_gender") or "all"
+            gender_key = (
+                gender if gender in ("F", "M") else "all"
+            )
+            options = {
+                "country": COUNTRY_USA,
+                "usa_event": snapshot.get("usa_event"),
+                "gender": gender_key,
+                "swimmer_name": snapshot.get("corridor_name"),
+            }
+            chart_id, render_key = self._render_key_for_category_graph_options(
+                str(snapshot["category"]),
+                str(snapshot["graph"]),
+                options,
+            )
+            return chart_id, options, render_key
+
         graph_name = str(snapshot["graph"])
         heatmap = snapshot.get("heatmap")
         pacing = snapshot.get("pacing") or []
@@ -2001,6 +2367,10 @@ class PacingDesktopApp:
 
     def _try_show_stale_corridor_chart(self, *, update_ui: bool) -> bool:
         """Affiche une image couloir déjà en cache pendant le recalcul (stale-while-revalidate)."""
+        if self._is_usa_corridor_mode():
+            snapshot = self._chart_render_snapshot()
+            _, _, exact_key = self._build_render_key_from_snapshot(snapshot)
+            return self._try_apply_chart_from_cache(exact_key, update_ui=update_ui)
         if self.selected_graph not in CORRIDOR_SWIMMER_UI_GRAPHS:
             return False
         snapshot = self._chart_render_snapshot()
@@ -2016,6 +2386,13 @@ class PacingDesktopApp:
 
     def _refresh_corridor_swimmer_options_lightweight(self) -> None:
         """Met à jour le sélecteur nageur sans créer des milliers de widgets Flet."""
+        if self._is_usa_corridor_mode():
+            labels_all = self._corridor_swimmer_labels_all
+            if not self.selected_usa_event or not labels_all:
+                return
+            self._refresh_usa_corridor_swimmer_ui_from_labels(labels_all)
+            return
+
         if self.selected_graph not in CORRIDOR_SWIMMER_UI_GRAPHS:
             return
         if not (
@@ -2041,15 +2418,23 @@ class PacingDesktopApp:
             self.selected_pool,
             self.selected_corridor_gender,
         )
+        query_pick = (self.corridor_swimmer_search_query or "").strip()
         if self.corridor_swimmer_search is not None:
-            filtered_for_ac = self._filter_corridor_swimmer_labels(
-                labels_all, self.corridor_swimmer_search_query
-            )
-            self.corridor_swimmer_search.maybe_sync_suggestions(
-                filtered_for_ac or labels_all,
-                autocomplete_event_key,
-                max_suggestions=cap_ac,
-            )
+            if query_pick:
+                filtered_for_ac = self._filter_corridor_swimmer_labels(
+                    labels_all, query_pick
+                )
+                self.corridor_swimmer_search.set_filtered_suggestions(
+                    filtered_for_ac[:cap_ac] if filtered_for_ac else labels_all[:cap_ac],
+                    max_suggestions=cap_ac,
+                )
+            else:
+                self.corridor_swimmer_search.reset_suggestion_context()
+                self.corridor_swimmer_search.maybe_sync_suggestions(
+                    labels_all[:cap_ac],
+                    autocomplete_event_key,
+                    max_suggestions=cap_ac,
+                )
 
         event_key = (
             self.selected_stroke,
@@ -2065,8 +2450,8 @@ class PacingDesktopApp:
             ]
 
         total = len(labels_all)
-        shown = len(labels)
-        suffix = f" ({shown} affichés)" if shown < total else ""
+        shown = len(labels) if query_pick else total
+        suffix = f" ({shown} affichés)" if query_pick and shown < total else ""
         new_label = f"Nageur cible (couloir) — {total} disponibles{suffix}"
         if self.corridor_swimmer_dd.label != new_label:
             self.corridor_swimmer_dd.label = new_label
@@ -2074,20 +2459,21 @@ class PacingDesktopApp:
         if self.corridor_swimmer_dd.menu_height != mh:
             self.corridor_swimmer_dd.menu_height = mh
 
-        query_pick = (self.corridor_swimmer_search_query or "").strip()
-        pick = self.corridor_swimmer_dd.value
+        pick: Optional[str] = None
         if query_pick and query_pick in labels_all:
             pick = query_pick
         elif query_pick and len(labels) == 1:
             pick = labels[0]
         elif query_pick and query_pick in labels:
             pick = query_pick
+        elif query_pick:
+            pick = self.corridor_swimmer_dd.value
+            if pick and pick not in labels_all:
+                pick = None
         if pick and pick not in dd_labels and pick in labels_all:
             self.corridor_swimmer_dd.options = [
                 ft.dropdown.Option(label) for label in ([pick] + dd_labels)[:cap_dd]
             ]
-        if pick not in (labels_all or []):
-            pick = None
         if self.corridor_swimmer_dd.value != pick:
             self.corridor_swimmer_dd.value = pick
         if pick:
@@ -2133,8 +2519,122 @@ class PacingDesktopApp:
             return True
         return False
 
+    def _compute_usa_corridor_chart_payload(self, snap: Dict[str, Any]) -> Dict[str, Any]:
+        """prépare l'image du couloir USA pour l'interface"""
+        category = str(snap["category"])
+        graph_name = str(snap["graph"])
+        usa_event = snap.get("usa_event")
+        _, _, render_key = self._build_render_key_from_snapshot(snap)
+
+        cached, cached_image = self._lookup_chart_cache(render_key)
+        if (
+            cached is not None
+            and cached.get("status") == "ok"
+            and cached_image is not None
+        ):
+            return {
+                "render_key": render_key,
+                "category": category,
+                "graph_name": graph_name,
+                "country": COUNTRY_USA,
+                "usa_event": usa_event,
+                "status": "cached",
+                "image_base64": cached_image,
+                "chart_title": str(cached.get("chart_title", graph_name)),
+                "row_count": int(cached.get("row_count", 0)),
+                "error": None,
+            }
+
+        if not usa_event:
+            return {
+                "render_key": render_key,
+                "category": category,
+                "graph_name": graph_name,
+                "country": COUNTRY_USA,
+                "usa_event": usa_event,
+                "status": "empty_scope",
+                "image_base64": None,
+                "chart_title": "Sélectionnez une épreuve USA Swimming",
+                "row_count": 0,
+                "error": None,
+            }
+
+        df_usa = self._get_usa_corridor_df(str(usa_event))
+        if df_usa.empty:
+            return {
+                "render_key": render_key,
+                "category": category,
+                "graph_name": graph_name,
+                "country": COUNTRY_USA,
+                "usa_event": usa_event,
+                "status": "empty_scope",
+                "image_base64": None,
+                "chart_title": f"Aucune donnée pour {usa_event}",
+                "row_count": 0,
+                "error": None,
+            }
+
+        spec = GRAPHES_PAR_KEY["performance_corridor_global_by_agegroup"]
+        gender = self._normalize_gender_value(snap.get("corridor_gender") or "all")
+        kwargs: Dict[str, Any] = {
+            "nom_event": str(usa_event),
+            "min_points": USA_CORRIDOR_MIN_POINTS,
+        }
+        if gender in ("F", "M"):
+            kwargs["gender"] = gender
+        swimmer_name = snap.get("corridor_name")
+        if isinstance(swimmer_name, str) and swimmer_name.strip():
+            kwargs["nom_nageur"] = swimmer_name.strip()
+
+        fig, meta = self.graph_svc.build_figure(spec, df_usa, **kwargs)
+        chart_title = f"Couloir de performance global (AgeGroup) - {usa_event}"
+        if isinstance(meta, dict):
+            if meta.get("message") != "ok":
+                err = str(meta.get("message", ""))
+                if err:
+                    chart_title = err
+            elif meta.get("swimmer_message"):
+                chart_title = str(meta["swimmer_message"])
+
+        if fig is None:
+            return {
+                "render_key": render_key,
+                "category": category,
+                "graph_name": graph_name,
+                "country": COUNTRY_USA,
+                "usa_event": usa_event,
+                "status": "no_figure",
+                "image_base64": None,
+                "chart_title": chart_title,
+                "row_count": len(df_usa),
+                "error": None,
+                "corridor_name": snap.get("corridor_name"),
+                "corridor_gender": snap.get("corridor_gender"),
+            }
+
+        image_base64 = _figure_to_base64(fig, dpi=CORRIDOR_CHART_PNG_DPI)
+        plt.close(fig)
+        return {
+            "render_key": render_key,
+            "category": category,
+            "graph_name": graph_name,
+            "country": COUNTRY_USA,
+            "usa_event": usa_event,
+            "status": "ok",
+            "image_base64": image_base64,
+            "chart_title": chart_title,
+            "row_count": len(df_usa),
+            "error": None,
+            "corridor_name": snap.get("corridor_name"),
+            "corridor_gender": snap.get("corridor_gender"),
+        }
+
     def _compute_chart_payload(self, *, snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """point central qui produit tout ce qu'il faut pour afficher le graphique : à partir du snapshot courant"""
         snap = snapshot if snapshot is not None else self._chart_render_snapshot()
+        if snap.get("country") == COUNTRY_USA:
+            return self._compute_usa_corridor_chart_payload(snap)
+
         graph_name = str(snap["graph"])
         category = str(snap["category"])
         stroke = snap.get("stroke")
@@ -2272,11 +2772,14 @@ class PacingDesktopApp:
         render_key = str(payload["render_key"])
         chart_id, options, _ = self._build_render_key_from_snapshot(
             {
+                "country": payload.get("country", self.selected_country),
                 "category": payload["category"],
                 "graph": payload["graph_name"],
+                "usa_event": payload.get("usa_event"),
                 "stroke": payload.get("stroke"),
                 "distance": payload.get("distance"),
                 "pool": payload.get("pool"),
+                "corridor_gender": payload.get("corridor_gender"),
                 "corridor_name": payload.get("corridor_name"),
                 "corridor_yob": payload.get("corridor_yob"),
                 "deciles_name": payload.get("deciles_name"),
@@ -2361,7 +2864,7 @@ class PacingDesktopApp:
         if self._try_apply_chart_from_cache(render_key, update_ui=update_ui):
             return
         stale_shown = False
-        if self.selected_graph in CORRIDOR_SWIMMER_UI_GRAPHS:
+        if self.selected_graph in CORRIDOR_SWIMMER_UI_GRAPHS or self._is_usa_corridor_mode():
             stale_shown = self._try_show_stale_corridor_chart(update_ui=update_ui)
         if update_ui and not stale_shown:
             self.loader.visible = True
@@ -2380,14 +2883,207 @@ class PacingDesktopApp:
 
         self.page.run_task(_runner)
 
+    def _refresh_usa_corridor_swimmer_ui_from_labels(self, labels_all: List[str]) -> None:
+        """Met à jour recherche + liste nageur USA à partir d'une liste déjà chargée."""
+        self._corridor_swimmer_labels_all = labels_all
+        self._sync_usa_corridor_swimmer_search_suggestions(labels_all)
+        self._apply_usa_corridor_swimmer_pick()
+        query = (self.corridor_swimmer_search_query or "").strip()
+        labels = self._filter_corridor_swimmer_labels(labels_all, query)
+        cap_dd = CORRIDOR_SWIMMER_DROPDOWN_OPTIONS_MAX
+        dd_labels = labels[:cap_dd]
+        pick: Optional[str] = self.selected_corridor_swimmer_name if query else None
+        self._sync_dropdown(
+            self.corridor_swimmer_dd,
+            new_option_keys=tuple(dd_labels),
+            build_options=lambda dl=dd_labels: [ft.dropdown.Option(l) for l in dl],
+            value=pick,
+            visible=True,
+        )
+        total = len(labels_all)
+        shown = len(labels) if query else total
+        suffix = f" ({shown} affichés)" if query and shown < total else ""
+        self.corridor_swimmer_dd.label = (
+            f"Nageur cible (USA) — {total} disponibles{suffix}"
+        )
+        self._sync_corridor_confirm_button()
+
+    def _refresh_filters_usa_corridor(
+        self,
+        update_ui: bool = True,
+        *,
+        skip_swimmer_options: bool = False,
+        skip_usa_events: bool = False,
+    ) -> None:
+        """Filtres couloir USA Swimming (épreuve + nageur, sans stroke/distance/bassin Extranat)."""
+        dirty = False
+        if skip_usa_events:
+            events: List[str] = list(self._usa_events_cache or [])
+        else:
+            events = self._ensure_usa_events_loaded()
+            if not events:
+                if self.status_text.value != "Cache Parquet USA Swimming introuvable.":
+                    self.status_text.value = "Cache Parquet USA Swimming introuvable."
+                    dirty = True
+            elif self.selected_usa_event not in events:
+                self.selected_usa_event = events[0]
+
+        if skip_usa_events:
+            waiting_event_label = "Épreuve (USA Swimming) — chargement..."
+            if self.usa_event_dd.label != waiting_event_label:
+                self.usa_event_dd.label = waiting_event_label
+                dirty = True
+            if self._sync_dropdown(
+                self.usa_event_dd,
+                new_option_keys=tuple(),
+                build_options=lambda: [],
+                value=None,
+                visible=True,
+            ):
+                dirty = True
+        else:
+            if self.usa_event_dd.label != "Épreuve (USA Swimming)":
+                self.usa_event_dd.label = "Épreuve (USA Swimming)"
+                dirty = True
+            event_keys = tuple(str(e) for e in events)
+            if self._sync_dropdown(
+                self.usa_event_dd,
+                new_option_keys=event_keys,
+                build_options=lambda ev=events: [ft.dropdown.Option(e) for e in ev],
+                value=self.selected_usa_event,
+                visible=True,
+            ):
+                dirty = True
+
+        for dd, visible in (
+            (self.stroke_dd, False),
+            (self.distance_dd, False),
+            (self.pool_dd, False),
+        ):
+            if self._sync_dropdown(
+                dd,
+                new_option_keys=tuple(),
+                build_options=lambda: [],
+                value=None,
+                visible=visible,
+            ):
+                dirty = True
+
+        if self._sync_dropdown(
+            self.corridor_gender_dd,
+            new_option_keys=("all", "F", "M"),
+            build_options=lambda: [
+                ft.dropdown.Option(key="all", text="Tous"),
+                ft.dropdown.Option(key="F", text="Femme"),
+                ft.dropdown.Option(key="M", text="Homme"),
+            ],
+            value=self.selected_corridor_gender,
+            visible=True,
+        ):
+            dirty = True
+
+        if self.corridor_mode_switch.visible is not False:
+            self.corridor_mode_switch.visible = False
+            dirty = True
+
+        if self.corridor_swimmer_search_container.visible is not True:
+            self.corridor_swimmer_search_container.visible = True
+            dirty = True
+        if self.corridor_swimmer_search_label.value != USA_CORRIDOR_SWIMMER_SEARCH_LABEL:
+            self.corridor_swimmer_search_label.value = USA_CORRIDOR_SWIMMER_SEARCH_LABEL
+            dirty = True
+        if self.corridor_swimmer_search_tf.tooltip != USA_CORRIDOR_SWIMMER_SEARCH_TOOLTIP:
+            self.corridor_swimmer_search_tf.tooltip = USA_CORRIDOR_SWIMMER_SEARCH_TOOLTIP
+            dirty = True
+        if self.corridor_swimmer_search is not None:
+            if self.corridor_swimmer_search.sync_value_to_query():
+                dirty = True
+
+        if self.selected_usa_event:
+            if skip_swimmer_options:
+                self._corridor_swimmer_labels_all = []
+                if self.corridor_swimmer_search is not None:
+                    if self.corridor_swimmer_search.clear_suggestions():
+                        dirty = True
+                waiting_label = "Nageur cible (USA) — chargement..."
+                if self.corridor_swimmer_dd.label != waiting_label:
+                    self.corridor_swimmer_dd.label = waiting_label
+                    dirty = True
+                if self.corridor_swimmer_dd.menu_height != self._menu_height_for_count(1):
+                    self.corridor_swimmer_dd.menu_height = self._menu_height_for_count(1)
+                    dirty = True
+                if self.corridor_swimmer_dd.visible is not True:
+                    self.corridor_swimmer_dd.visible = True
+                    dirty = True
+            else:
+                labels_all = self._usa_swimmer_names_for_event(self.selected_usa_event)
+                self._refresh_usa_corridor_swimmer_ui_from_labels(labels_all)
+                dirty = True
+
+        if self._sync_corridor_confirm_button():
+            dirty = True
+
+        self._sync_corridor_mode_switch(update_ui=False)
+        if update_ui:
+            self.page.update()
+
     def _refresh_filters_from_data(
         self,
         update_ui: bool = True,
         *,
         skip_corridor_swimmer_options: bool = False,
+        skip_usa_swimmer_options: bool = False,
+        skip_usa_events: bool = False,
     ) -> None:
         """Met à jour les listes d'options des filtres en fonction du graphique choisi."""
         dirty = False
+        in_corridor = self.selected_category == CORRIDOR_CATEGORY
+
+        if not in_corridor and self.selected_country != COUNTRY_FRANCE:
+            self.selected_country = COUNTRY_FRANCE
+            self.country_dd.value = COUNTRY_FRANCE
+
+        if self.country_dd.visible is not in_corridor:
+            self.country_dd.visible = in_corridor
+            dirty = True
+
+        cat_vals = self._available_categories_for_country()
+        if self.selected_category not in cat_vals:
+            self.selected_category = cat_vals[0]
+        if self._sync_dropdown(
+            self.category_dd,
+            new_option_keys=tuple(cat_vals),
+            build_options=lambda cv=cat_vals: [ft.dropdown.Option(c) for c in cv],
+            value=self.selected_category,
+            visible=True,
+        ):
+            dirty = True
+
+        graphs = self._available_graphs_for_category(self.selected_category)
+        if self.selected_graph not in graphs:
+            self.selected_graph = graphs[0] if graphs else self.selected_graph
+        graph_keys = tuple(graphs)
+        if self._sync_dropdown(
+            self.graph_dd,
+            new_option_keys=graph_keys,
+            build_options=lambda gv=graphs: [ft.dropdown.Option(g) for g in gv],
+            value=self.selected_graph,
+            visible=True,
+        ):
+            dirty = True
+
+        if self._is_usa_corridor_mode():
+            self._refresh_filters_usa_corridor(
+                update_ui=update_ui,
+                skip_swimmer_options=skip_usa_swimmer_options,
+                skip_usa_events=skip_usa_events,
+            )
+            return
+
+        if self.usa_event_dd.visible is not False:
+            self.usa_event_dd.visible = False
+            dirty = True
+
         df_nav = self.df_nav
 
         stroke, distance, pool = _resolve_scope_filters(
@@ -2594,6 +3290,12 @@ class PacingDesktopApp:
                 dirty = True
             if self.corridor_swimmer_search_container.visible is not True:
                 self.corridor_swimmer_search_container.visible = True
+                dirty = True
+            if self.corridor_swimmer_search_label.value != FR_CORRIDOR_SWIMMER_SEARCH_LABEL:
+                self.corridor_swimmer_search_label.value = FR_CORRIDOR_SWIMMER_SEARCH_LABEL
+                dirty = True
+            if self.corridor_swimmer_search_tf.tooltip != FR_CORRIDOR_SWIMMER_SEARCH_TOOLTIP:
+                self.corridor_swimmer_search_tf.tooltip = FR_CORRIDOR_SWIMMER_SEARCH_TOOLTIP
                 dirty = True
             if self.corridor_swimmer_search is not None:
                 if self.corridor_swimmer_search.sync_value_to_query():
