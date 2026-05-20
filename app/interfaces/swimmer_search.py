@@ -20,6 +20,17 @@ class SwimmerSearch:
     # UI interactions
     def _handle_change(self, e: ft.ControlEvent) -> None:
         setattr(self.app, self._query_attr, (e.control.value or "").strip())
+        light = getattr(self.app, "_refresh_corridor_swimmer_options_lightweight", None)
+        if (
+            callable(light)
+            and getattr(self.app, "selected_category", None) == "Couloirs de performance"
+        ):
+            light()
+            sync_confirm = getattr(self.app, "_sync_corridor_confirm_button", None)
+            if callable(sync_confirm):
+                sync_confirm()
+            self.app.page.update()
+            return
         refresh_callback = getattr(self.app, self._refresh_method_name, None)
         if callable(refresh_callback):
             refresh_callback()
@@ -74,17 +85,45 @@ class SwimmerSearch:
 
         return dirty
 
-    def maybe_sync_suggestions(self, labels_all: List[str], event_key: Tuple[str, int, str, str]) -> bool:
+    def maybe_sync_suggestions(
+        self,
+        labels_all: List[str],
+        event_key: Tuple[str, int, str, str],
+        *,
+        max_suggestions: int = 80,
+    ) -> bool:
         """
         Met à jour `input.suggestions` uniquement si le contexte change
-        (Stroke/Distance/Bassin/Sexe).
+        (Stroke/Distance/Bassin/Sexe). Limite le nombre de widgets Flet créés.
         """
         if event_key == self._autocomplete_event_key:
             return False
 
         self._autocomplete_event_key = event_key
+        cap = max(1, int(max_suggestions))
+        subset = labels_all[:cap]
         self.input.suggestions = [
-            ft.AutoCompleteSuggestion(key=label, value=label) for label in labels_all
+            ft.AutoCompleteSuggestion(key=label, value=label) for label in subset
         ]
+        return True
+
+    def reset_suggestion_context(self) -> None:
+        """Force le prochain maybe_sync_suggestions à réappliquer les suggestions."""
+        self._autocomplete_event_key = None
+
+    def set_filtered_suggestions(self, labels: List[str], *, max_suggestions: int = 80) -> bool:
+        """Met à jour les suggestions pour une recherche (sans recréer des milliers d'entrées)."""
+        cap = max(1, int(max_suggestions))
+        subset = labels[:cap]
+        new_suggestions = [
+            ft.AutoCompleteSuggestion(key=label, value=label) for label in subset
+        ]
+        if len(new_suggestions) == len(self.input.suggestions or []):
+            if all(
+                a.key == b.key
+                for a, b in zip(new_suggestions, self.input.suggestions or [])
+            ):
+                return False
+        self.input.suggestions = new_suggestions
         return True
 

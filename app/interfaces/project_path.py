@@ -1,3 +1,5 @@
+"""Point de référence unique pour savoir où se trouve la racine du dépôt Pacing et pour que Python puisse importer le code du projet."""
+
 from __future__ import annotations
 import sys
 from pathlib import Path

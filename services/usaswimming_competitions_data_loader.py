@@ -1,6 +1,8 @@
 from __future__ import annotations
 import importlib.util
 import json
+import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -12,6 +14,11 @@ DEFAULT_USASWIMMING_COMPETITIONS_DIR = (_PROJECT_DIR / "data" / "processed" / "u
 DEFAULT_USASWIMMING_PARQUET_DIR = (DEFAULT_USASWIMMING_COMPETITIONS_DIR / "_parquet_cache")
 
 
+def _default_cache_build_workers() -> int:
+    """Limite le parallélisme de conversion : chaque année charge tout le JSON en RAM."""
+    return min(2, os.cpu_count() or 1)
+
+
 def _default_parquet_engine() -> str:
     if importlib.util.find_spec("pyarrow") is not None:
         return "pyarrow"
@@ -20,10 +27,21 @@ def _default_parquet_engine() -> str:
 
 class UsaswimmingCompetitionsDataLoader:
     """Convertit les JSON USA Swimming en Parquet, puis charge uniquement le cache Parquet."""
-    def __init__(self, base_dir: Optional[Path] = None, parquet_dir: Optional[Path] = None, max_workers: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        base_dir: Optional[Path] = None,
+        parquet_dir: Optional[Path] = None,
+        max_workers: Optional[int] = None,
+        cache_build_max_workers: Optional[int] = None,
+    ) -> None:
         self.base_dir = (base_dir if base_dir is not None else DEFAULT_USASWIMMING_COMPETITIONS_DIR)
         self.parquet_dir = (parquet_dir if parquet_dir is not None else DEFAULT_USASWIMMING_PARQUET_DIR)
         self.max_workers = max_workers
+        self.cache_build_max_workers = (
+            cache_build_max_workers
+            if cache_build_max_workers is not None
+            else _default_cache_build_workers()
+        )
         self.parquet_engine = _default_parquet_engine()
 
     @staticmethod
@@ -208,14 +226,33 @@ class UsaswimmingCompetitionsDataLoader:
 
         return self._normalize_dataframe(pd.DataFrame(rows))
 
-    def _read_single_parquet(self, parquet_file: Path) -> pd.DataFrame:
+    def _read_single_parquet(
+        self,
+        parquet_file: Path,
+        columns: Optional[List[str]] = None,
+        event: Optional[str] = None,
+    ) -> pd.DataFrame:
+        read_kwargs: Dict[str, Any] = {"engine": self.parquet_engine}
+        if columns is not None:
+            read_columns = list(dict.fromkeys(columns))
+            if event is not None and "Event" not in read_columns:
+                read_columns.insert(0, "Event")
+            read_kwargs["columns"] = read_columns
+        if event is not None:
+            read_kwargs["filters"] = [("Event", "==", str(event).strip())]
+
         try:
-            df = pd.read_parquet(parquet_file, engine=self.parquet_engine)
+            df = pd.read_parquet(parquet_file, **read_kwargs)
         except Exception:
             return pd.DataFrame()
         return self._restore_dataframe_from_parquet(df)
 
-    def _load_from_parquet_years(self, years: List[int | str]) -> pd.DataFrame:
+    def _load_from_parquet_years(
+        self,
+        years: List[int | str],
+        columns: Optional[List[str]] = None,
+        event: Optional[str] = None,
+    ) -> pd.DataFrame:
         """Lit plusieurs années en parallèle et concatène."""
         parquet_files = [
             self._parquet_path_for_year(year)
@@ -226,12 +263,84 @@ class UsaswimmingCompetitionsDataLoader:
             return pd.DataFrame()
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            frames = list(executor.map(self._read_single_parquet, parquet_files))
+            frames = list(
+                executor.map(
+                    lambda path: self._read_single_parquet(
+                        path, columns=columns, event=event
+                    ),
+                    parquet_files,
+                )
+            )
 
         frames = [frame for frame in frames if not frame.empty]
         if not frames:
             return pd.DataFrame()
         return pd.concat(frames, ignore_index=True)
+
+    def _build_parquet_for_year_directory(
+        self,
+        year_dir: Path,
+        *,
+        index: int,
+        total_years: int,
+        overwrite: bool,
+        progress_callback: Optional[Callable[[str], None]] = None,
+        progress_step_callback: Optional[Callable[[str, int, int], None]] = None,
+        progress_lock: Optional[threading.Lock] = None,
+    ) -> Optional[Path]:
+        """Convertit un dossier année JSON en fichier Parquet (appelé en parallèle)."""
+        def _report(message: str, *, year_finished: bool = False) -> None:
+            if progress_lock is not None:
+                progress_lock.acquire()
+            try:
+                if progress_callback is not None:
+                    progress_callback(message)
+                if year_finished and progress_step_callback is not None:
+                    progress_step_callback(message, index, total_years)
+            finally:
+                if progress_lock is not None:
+                    progress_lock.release()
+
+        parquet_file = self._parquet_path_for_year(year_dir.name)
+        json_file_count = len(list(year_dir.glob("*.json")))
+
+        if parquet_file.exists() and not overwrite:
+            _report(
+                f"[{index}/{total_years}] {year_dir.name}: "
+                f"cache deja present ({parquet_file.name}), ignore.",
+                year_finished=True,
+            )
+            return parquet_file
+
+        start_time = time.perf_counter()
+        _report(
+            f"[{index}/{total_years}] {year_dir.name}: "
+            f"conversion de {json_file_count} fichier(s) JSON...",
+        )
+
+        year_df = self._load_from_json_years([year_dir])
+        if year_df.empty:
+            _report(
+                f"[{index}/{total_years}] {year_dir.name}: "
+                "aucune ligne detectee, aucun Parquet ecrit.",
+                year_finished=True,
+            )
+            return None
+
+        parquet_df = self._prepare_dataframe_for_parquet(year_df)
+        parquet_df.to_parquet(
+            parquet_file,
+            engine=self.parquet_engine,
+            index=False,
+        )
+        elapsed = time.perf_counter() - start_time
+        _report(
+            f"[{index}/{total_years}] {year_dir.name}: "
+            f"{len(year_df):,} ligne(s) -> {parquet_file.name} "
+            f"en {elapsed:.1f}s".replace(",", " "),
+            year_finished=True,
+        )
+        return parquet_file
 
     def build_parquet_cache(
         self,
@@ -247,65 +356,89 @@ class UsaswimmingCompetitionsDataLoader:
 
         self.parquet_dir.mkdir(parents=True, exist_ok=True)
 
-        written_files: List[Path] = []
         total_years = len(year_dirs)
-        for index, year_dir in enumerate(year_dirs, start=1):
-            parquet_file = self._parquet_path_for_year(year_dir.name)
-            json_file_count = len(list(year_dir.glob("*.json")))
-            if parquet_file.exists() and not overwrite:
-                message = (
-                    f"[{index}/{total_years}] {year_dir.name}: "
-                    f"cache deja present ({parquet_file.name}), ignore."
+        progress_lock = (
+            threading.Lock()
+            if progress_callback is not None or progress_step_callback is not None
+            else None
+        )
+        written_files: List[Path] = []
+
+        with ThreadPoolExecutor(max_workers=self.cache_build_max_workers) as executor:
+            futures = [
+                executor.submit(
+                    self._build_parquet_for_year_directory,
+                    year_dir,
+                    index=index,
+                    total_years=total_years,
+                    overwrite=overwrite,
+                    progress_callback=progress_callback,
+                    progress_step_callback=progress_step_callback,
+                    progress_lock=progress_lock,
                 )
-                if progress_callback is not None:
-                    progress_callback(message)
-                if progress_step_callback is not None:
-                    progress_step_callback(message, index, total_years)
-                written_files.append(parquet_file)
+                for index, year_dir in enumerate(year_dirs, start=1)
+            ]
+            for future in futures:
+                parquet_file = future.result()
+                if parquet_file is not None:
+                    written_files.append(parquet_file)
+
+        return sorted(written_files, key=lambda path: path.stem)
+
+    def available_events(self, years: Optional[Iterable[int | str]] = None) -> List[str]:
+        """Liste triée des épreuves présentes dans le cache Parquet."""
+        parquet_years = self._resolve_parquet_years(years=years)
+        events: set[str] = set()
+        for year in parquet_years:
+            parquet_file = self._parquet_path_for_year(year)
+            try:
+                events_df = pd.read_parquet(
+                    parquet_file,
+                    columns=["Event"],
+                    engine=self.parquet_engine,
+                )
+            except Exception:
                 continue
-
-            start_time = time.perf_counter()
-            if progress_callback is not None:
-                progress_callback(
-                    f"[{index}/{total_years}] {year_dir.name}: "
-                    f"conversion de {json_file_count} fichier(s) JSON..."
-                )
-
-            year_df = self._load_from_json_years([year_dir])
-            if year_df.empty:
-                message = (
-                    f"[{index}/{total_years}] {year_dir.name}: "
-                    "aucune ligne detectee, aucun Parquet ecrit."
-                )
-                if progress_callback is not None:
-                    progress_callback(message)
-                if progress_step_callback is not None:
-                    progress_step_callback(message, index, total_years)
+            if events_df.empty or "Event" not in events_df.columns:
                 continue
+            for value in events_df["Event"].dropna().astype(str).str.strip().unique():
+                if value:
+                    events.add(value)
+        return sorted(events)
 
-            parquet_df = self._prepare_dataframe_for_parquet(year_df)
-            parquet_df.to_parquet(
-                parquet_file,
-                engine=self.parquet_engine,
-                index=False,
-            )
-            elapsed = time.perf_counter() - start_time
-            message = (
-                f"[{index}/{total_years}] {year_dir.name}: "
-                f"{len(year_df):,} ligne(s) -> {parquet_file.name} "
-                f"en {elapsed:.1f}s".replace(",", " ")
-            )
-            if progress_callback is not None:
-                progress_callback(message)
-            if progress_step_callback is not None:
-                progress_step_callback(message, index, total_years)
-            written_files.append(parquet_file)
+    def list_names_for_event(
+        self,
+        event: str,
+        *,
+        gender: Optional[str] = None,
+        years: Optional[Iterable[int | str]] = None,
+    ) -> List[str]:
+        """Noms distincts pour une épreuve (optionnellement filtrés par genre)."""
+        columns = ["Name", "Gender"]
+        df = self.load(years=years, columns=columns, event=event)
+        if df.empty or "Name" not in df.columns:
+            return []
+        names = df["Name"].dropna().astype(str).str.strip()
+        if gender and gender.upper() in ("F", "M") and "Gender" in df.columns:
+            g = df["Gender"].astype(str).str.strip().str.upper()
+            names = df.loc[g == gender.upper(), "Name"].dropna().astype(str).str.strip()
+        return sorted({n for n in names if n})
 
-        return written_files
+    def load(
+        self,
+        years: Optional[Iterable[int | str]] = None,
+        columns: Optional[Iterable[str]] = None,
+        event: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """Charge les annees demandees depuis le cache Parquet uniquement.
 
-    def load(self, years: Optional[Iterable[int | str]] = None) -> pd.DataFrame:
-        """Charge les annees demandees depuis le cache Parquet uniquement."""
+        columns: sous-ensemble de colonnes (evite de lire swimmer, Meet, etc.).
+        event: filtre Parquet sur Event (ex. "100 FR LCM") — beaucoup plus rapide.
+        """
         parquet_years = self._resolve_parquet_years(years=years)
         if not parquet_years:
             return pd.DataFrame()
-        return self._load_from_parquet_years(parquet_years)
+        column_list = list(columns) if columns is not None else None
+        return self._load_from_parquet_years(
+            parquet_years, columns=column_list, event=event
+        )
