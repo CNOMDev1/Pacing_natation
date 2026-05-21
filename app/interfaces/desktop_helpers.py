@@ -219,10 +219,16 @@ def _materialize_df_scope(
 
     if stroke is None or distance is None or pool is None:
         return pd.DataFrame()
-    df_stroke = df_nav[df_nav["Stroke"] == stroke].copy()
-    df_distance = df_stroke[df_stroke["Distance"] == distance].copy()
-    scoped = df_distance[df_distance["Course"] == pool].copy()
+    dist_num = int(distance)
+    stroke_key = str(stroke).strip()
+    pool_key = str(pool).strip()
+    mask = (
+        (df_nav["Stroke"].astype(str).str.strip() == stroke_key)
+        & (pd.to_numeric(df_nav["Distance"], errors="coerce") == dist_num)
+        & (df_nav["Course"].astype(str).str.strip() == pool_key)
+    )
+    scoped = df_nav.loc[mask].copy()
     if "Event" in scoped.columns:
-        nom_event = f"{int(distance)} {stroke} {pool}"
-        scoped = scoped[scoped["Event"].astype(str) == nom_event].copy()
+        nom_event = f"{dist_num} {stroke_key} {pool_key}"
+        scoped = scoped[scoped["Event"].astype(str).str.strip() == nom_event].copy()
     return scoped

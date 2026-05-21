@@ -283,6 +283,9 @@ class PacingDesktopApp:
             ] = {}
             self._corridor_dd_options_event_key: Optional[Tuple[str, int, str, str]] = None
             self._corridor_swimmer_labels_all: List[str] = []
+            self._corridor_swimmer_labels_filter_key: Optional[
+                Tuple[str, int, str, str]
+            ] = None
             self._corridor_swimmer_search_index_key: Optional[int] = None
             self._corridor_swimmer_search_index: Optional[
                 List[Tuple[str, str, Tuple[str, ...]]]
@@ -724,6 +727,61 @@ class PacingDesktopApp:
             .get(gender_key, [])
         )
 
+    def _corridor_swimmer_labels_from_nav(
+        self,
+        stroke: Optional[str],
+        distance: Optional[int],
+        pool: Optional[str],
+        gender: str = "all",
+    ) -> List[str]:
+        """
+        Liste des nageurs pour le couloir France : calculée en direct sur df_nav
+        (même épreuve que le graphique), pas seulement le JSON prefetched_event_swimmers.
+        """
+        if not stroke or distance is None or not pool:
+            return []
+        gender_key = self._normalize_gender_value(gender)
+        if gender_key not in ("all", "F", "M"):
+            gender_key = "all"
+
+        dist_num = int(distance)
+        stroke_key = str(stroke).strip()
+        pool_key = str(pool).strip()
+        mask = (
+            (self.df_nav["Stroke"].astype(str).str.strip() == stroke_key)
+            & (pd.to_numeric(self.df_nav["Distance"], errors="coerce") == dist_num)
+            & (self.df_nav["Course"].astype(str).str.strip() == pool_key)
+        )
+        scoped = self.df_nav.loc[mask]
+        if "Event" in scoped.columns:
+            nom_event = f"{dist_num} {stroke_key} {pool_key}"
+            scoped = scoped[scoped["Event"].astype(str).str.strip() == nom_event]
+        if scoped.empty:
+            return []
+
+        labels: set[str] = set()
+        for swimmers_raw in scoped["swimmer"].tolist():
+            swimmers: List[Any]
+            if isinstance(swimmers_raw, list):
+                swimmers = swimmers_raw
+            elif isinstance(swimmers_raw, dict):
+                swimmers = [swimmers_raw]
+            else:
+                swimmers = []
+            for swimmer in swimmers:
+                if not isinstance(swimmer, dict):
+                    continue
+                swimmer_gender = self._normalize_gender_value(swimmer.get("Gender"))
+                if gender_key in ("F", "M") and swimmer_gender != gender_key:
+                    continue
+                nm, yob = _primary_swimmer_name_and_yob([swimmer])
+                if nm and yob is not None:
+                    labels.add(f"{nm} ({yob})")
+                elif isinstance(swimmer.get("Name"), str) and swimmer["Name"].strip():
+                    labels.add(swimmer["Name"].strip())
+
+        return sorted(labels, key=lambda label: _normalize_text(label))
+
     def _cached_event_swimmer_options_for_filters(
         self,
         stroke: Optional[str],
@@ -744,13 +802,28 @@ class PacingDesktopApp:
         return options
 
     def _refresh_selected_event_swimmers_from_cache(self) -> None:
+        gender = (
+            self.selected_corridor_gender
+            if self.selected_graph in CORRIDOR_SWIMMER_UI_GRAPHS
+            else "all"
+        )
+        if (
+            self.selected_graph in CORRIDOR_SWIMMER_UI_GRAPHS
+            and not self._is_usa_corridor_mode()
+        ):
+            self._selected_event_swimmers = self._corridor_swimmer_labels_from_nav(
+                self.selected_stroke,
+                self.selected_distance,
+                self.selected_pool,
+                gender,
+            )
+            self._event_swimmer_options_cache.clear()
+            return
         self._selected_event_swimmers = self._cached_event_swimmers_for_filters(
             self.selected_stroke,
             self.selected_distance,
             self.selected_pool,
-            self.selected_corridor_gender
-            if self.selected_graph in CORRIDOR_SWIMMER_UI_GRAPHS
-            else "all",
+            gender,
         )
 
     @staticmethod
@@ -1652,6 +1725,10 @@ class PacingDesktopApp:
         self._usa_bootstrap_gen += 1
         self.selected_country = e.control.value or COUNTRY_FRANCE
         self.corridor_usa_confirmed_name = None
+        self._clear_corridor_swimmer_labels_cache()
+        if self.corridor_swimmer_search is not None:
+            self.corridor_swimmer_search.reset(clear_query=True)
+        self.corridor_swimmer_search_query = ""
         defer_usa_bootstrap = False
         defer_fr_swimmers = False
         if self.selected_country == COUNTRY_USA:
@@ -1681,6 +1758,7 @@ class PacingDesktopApp:
     def _on_usa_event_change(self, e: ft.ControlEvent) -> None:
         self.selected_usa_event = e.control.value
         self.corridor_usa_confirmed_name = None
+        self._clear_corridor_swimmer_labels_cache()
         self.corridor_swimmer_search_query = ""
         if self.corridor_swimmer_search is not None:
             self.corridor_swimmer_search.reset(clear_query=True)
@@ -2046,10 +2124,27 @@ class PacingDesktopApp:
         self._corridor_swimmer_search_index = None
         self._corridor_swimmer_labels_set = None
 
+    def _corridor_swimmer_filter_key(self) -> Optional[Tuple[str, int, str, str]]:
+        if (
+            not self.selected_stroke
+            or self.selected_distance is None
+            or not self.selected_pool
+        ):
+            return None
+        return (
+            str(self.selected_stroke),
+            int(self.selected_distance),
+            str(self.selected_pool),
+            str(self.selected_corridor_gender),
+        )
+
+    def _clear_corridor_swimmer_labels_cache(self) -> None:
+        self._corridor_swimmer_labels_filter_key = None
+        self._set_corridor_swimmer_labels_all([])
+
     def _set_corridor_swimmer_labels_all(self, labels: List[str]) -> None:
-        if id(labels) == id(self._corridor_swimmer_labels_all):
-            return
         self._corridor_swimmer_labels_all = labels
+        self._corridor_swimmer_labels_filter_key = self._corridor_swimmer_filter_key()
         self._invalidate_corridor_swimmer_search_index()
 
     def _ensure_corridor_swimmer_search_index(
@@ -2178,16 +2273,21 @@ class PacingDesktopApp:
         return suggestions
 
     def _corridor_swimmer_labels_for_search(self) -> List[str]:
-        if self._corridor_swimmer_labels_all:
-            return self._corridor_swimmer_labels_all
         if self._is_usa_corridor_mode():
-            return []
+            return list(self._corridor_swimmer_labels_all)
         if not (
             self.selected_stroke
             and self.selected_distance is not None
             and self.selected_pool
         ):
             return []
+        filter_key = self._corridor_swimmer_filter_key()
+        if (
+            self._corridor_swimmer_labels_all
+            and filter_key is not None
+            and self._corridor_swimmer_labels_filter_key == filter_key
+        ):
+            return self._corridor_swimmer_labels_all
         self._refresh_selected_event_swimmers_from_cache()
         labels = list(self._selected_event_swimmers)
         self._set_corridor_swimmer_labels_all(labels)
@@ -3398,7 +3498,6 @@ class PacingDesktopApp:
         self.selected_stroke = stroke
         self.selected_distance = distance
         self.selected_pool = pool
-        self._refresh_selected_event_swimmers_from_cache()
         df_scope_mem: Optional[pd.DataFrame] = None
 
         def _df_scope() -> pd.DataFrame:
@@ -3420,6 +3519,10 @@ class PacingDesktopApp:
                 self.selected_graph not in SCOPE_NO_STROKE_GRAPHS
                 and self.selected_graph not in SCOPE_POOL_ONLY_GRAPHS
                 and bool(self._event_swimmers_cache)
+                and not (
+                    self.selected_graph in CORRIDOR_SWIMMER_UI_GRAPHS
+                    and not self._is_usa_corridor_mode()
+                )
             )
             if use_swimmers_file_for_triplet:
                 combos_key: Tuple[Any, ...] = (
@@ -3590,6 +3693,8 @@ class PacingDesktopApp:
                 self.selected_corridor_swimmer_yob = None
                 self.corridor_deciles_confirmed_name = None
                 self.corridor_deciles_confirmed_yob = None
+                self._corridor_dd_options_event_key = None
+                self._clear_corridor_swimmer_labels_cache()
                 if self.corridor_swimmer_search is not None:
                     self.corridor_swimmer_search.clear_suggestions()
                 if self.corridor_swimmer_search_query:
@@ -3610,6 +3715,7 @@ class PacingDesktopApp:
                 if self.corridor_swimmer_search.sync_value_to_query():
                     dirty = True
             if skip_corridor_swimmer_options:
+                self._clear_corridor_swimmer_labels_cache()
                 if self.corridor_swimmer_dd.visible is not True:
                     self.corridor_swimmer_dd.visible = True
                     dirty = True
@@ -3628,6 +3734,7 @@ class PacingDesktopApp:
                 and self.selected_distance is not None
                 and self.selected_pool
             ):
+                self._refresh_selected_event_swimmers_from_cache()
                 labels_all = list(self._selected_event_swimmers)
                 self._set_corridor_swimmer_labels_all(labels_all)
                 search_norm = _normalize_text(self.corridor_swimmer_search_query)
