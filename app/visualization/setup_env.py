@@ -1,5 +1,4 @@
 """Configuration pour les notebooks sous app/visualization/."""
-"""configure l'environnement Python du notebook pour qu'il « voie » le dépôt Pacing comme un package importable"""
 
 from __future__ import annotations
 import importlib.util
