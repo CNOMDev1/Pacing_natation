@@ -484,12 +484,62 @@ def corridor_age_limits(
     return lo, hi
 
 
+def corridor_swimmer_missing_hint(
+    df: pd.DataFrame,
+    nom_event: str,
+    name: str,
+    year_of_birth: Optional[int] = None,
+) -> str:
+    """Précise pourquoi un nageur confirmé n'apparaît pas sur le couloir (solo)."""
+    target = str(name).strip()
+    if not target or df.empty or "Event" not in df.columns:
+        return ""
+    scoped = df[df["Event"].astype(str).str.strip() == str(nom_event).strip()]
+    if scoped.empty:
+        return ""
+    has_solo = False
+    has_relay = False
+    has_invalid_time = False
+    for row in scoped.itertuples(index=False):
+        swim_seconds = getattr(row, "SwimTimeSeconds", None)
+        swimmers_raw = getattr(row, "swimmer", None)
+        if not isinstance(swimmers_raw, list):
+            continue
+        for swimmer in swimmers_raw:
+            if not isinstance(swimmer, dict):
+                continue
+            if str(swimmer.get("Name", "")).strip() != target:
+                continue
+            if year_of_birth is not None:
+                try:
+                    if int(swimmer.get("Year_of_birth")) != int(year_of_birth):
+                        continue
+                except (TypeError, ValueError):
+                    continue
+            if swim_seconds is None or swim_seconds != swim_seconds:
+                has_invalid_time = True
+                continue
+            if len(swimmers_raw) == 1:
+                has_solo = True
+            else:
+                has_relay = True
+    if has_solo:
+        return " (nage individuelle présente mais âge ou chrono non exploitable)"
+    if has_relay:
+        return " (présent uniquement en relais sur cette épreuve, pas en nage solo)"
+    if has_invalid_time:
+        return " (présent mais sans chrono valide sur cette épreuve)"
+    return ""
+
+
 def plot_corridor_swimmer_specs(
     ax,
     long_df: pd.DataFrame,
     specs: Sequence[CorridorSwimmerSpec],
     *,
     fuzzy_min_ratio: float = 0.55,
+    source_df: Optional[pd.DataFrame] = None,
+    nom_event: Optional[str] = None,
 ) -> List[str]:
     """Trace plusieurs nageurs (âge × temps en secondes). Retourne les messages d'erreur."""
     messages: List[str] = []
@@ -509,10 +559,18 @@ def plot_corridor_swimmer_specs(
                 else ""
             )
             hint = ""
-            target_norm = corridor_norm_name(spec.name)
-            name_norm = long_df["Name"].astype(str).map(corridor_norm_name)
-            if (name_norm == target_norm).any():
-                hint = " (présent mais sans chrono ou âge valide sur cette épreuve)"
+            if source_df is not None and nom_event:
+                hint = corridor_swimmer_missing_hint(
+                    source_df,
+                    str(nom_event),
+                    spec.name,
+                    spec.year_of_birth,
+                )
+            else:
+                target_norm = corridor_norm_name(spec.name)
+                name_norm = long_df["Name"].astype(str).map(corridor_norm_name)
+                if (name_norm == target_norm).any():
+                    hint = " (présent mais sans chrono ou âge valide sur cette épreuve)"
             messages.append(
                 f"{spec.label} introuvable : {spec.name}{yob_txt}{hint}"
             )

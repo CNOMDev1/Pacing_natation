@@ -280,7 +280,20 @@ class PacingDesktopApp:
             self.corridor_fr_confirmed_yob: Optional[int] = None
             self.selected_moroccan_corridor_swimmer_name: Optional[str] = None
             self.selected_moroccan_corridor_swimmer_yob: Optional[int] = None
+            self.corridor_ma_confirmed_name: Optional[str] = None
+            self.corridor_ma_confirmed_yob: Optional[int] = None
             self._moroccan_corridor_dd_options_key: Optional[Tuple[Any, ...]] = None
+            self.moroccan_corridor_swimmer_search_query: str = ""
+            self._moroccan_corridor_swimmer_labels_all: List[str] = []
+            self._moroccan_corridor_swimmer_labels_filter_key: Optional[
+                Tuple[Any, ...]
+            ] = None
+            self._moroccan_corridor_swimmer_labels_set: Optional[set] = None
+            self._moroccan_corridor_swimmer_search_index_key: Optional[int] = None
+            self._moroccan_corridor_swimmer_search_index: Optional[
+                List[Tuple[str, str, Tuple[str, ...]]]
+            ] = None
+            self._moroccan_corridor_search_ui_gen: int = 0
             self.corridor_swimmer_search_query: str = ""
             self.selected_pacing_swimmers: List[str] = []
             self.selected_chronos_sample_size: int = 5000
@@ -343,6 +356,9 @@ class PacingDesktopApp:
             self.heatmap_swimmer_dd: ft.Dropdown
             self.corridor_swimmer_dd: ft.Dropdown
             self.corridor_moroccan_swimmer_dd: ft.Dropdown
+            self.moroccan_corridor_swimmer_search: Optional[SwimmerSearch]
+            self.moroccan_corridor_swimmer_search_container: ft.Column
+            self.moroccan_corridor_swimmer_confirm_btn: ft.IconButton
             self.corridor_swimmer_confirm_btn: ft.IconButton
             self.corridor_swimmer_search_tf: ft.AutoComplete
             self.corridor_swimmer_search_container: ft.Column
@@ -786,13 +802,9 @@ class PacingDesktopApp:
             except (TypeError, ValueError):
                 continue
             swimmers_raw = getattr(row, "swimmer", None)
-            swimmers: List[Any]
-            if isinstance(swimmers_raw, list):
-                swimmers = swimmers_raw
-            elif isinstance(swimmers_raw, dict):
-                swimmers = [swimmers_raw]
-            else:
-                swimmers = []
+            if not (isinstance(swimmers_raw, list) and len(swimmers_raw) == 1):
+                continue
+            swimmers = swimmers_raw
             for swimmer in swimmers:
                 if not isinstance(swimmer, dict):
                     continue
@@ -955,8 +967,8 @@ class PacingDesktopApp:
         elif graph_name == CORRIDOR_GLOBAL_DECILES_GRAPH_NAME:
             corridor_swimmer_name = self.corridor_deciles_confirmed_name
             corridor_swimmer_yob = self.corridor_deciles_confirmed_yob
-        moroccan_name = self.selected_moroccan_corridor_swimmer_name
-        moroccan_yob = self.selected_moroccan_corridor_swimmer_yob
+        moroccan_name = self.corridor_ma_confirmed_name
+        moroccan_yob = self.corridor_ma_confirmed_yob
         if not self._needs_moroccan_corridor_swimmer_dd():
             moroccan_name = None
             moroccan_yob = None
@@ -1476,6 +1488,24 @@ class PacingDesktopApp:
             menu_width=dropdown_menu_width,
             visible=False,
         )
+        self.moroccan_corridor_swimmer_search = SwimmerSearch(
+            self,
+            width=dropdown_width,
+            label_text=MA_CORRIDOR_SWIMMER_SEARCH_LABEL,
+            tooltip=MA_CORRIDOR_SWIMMER_SEARCH_TOOLTIP,
+            query_attr="moroccan_corridor_swimmer_search_query",
+            keystroke_callback_name="_on_moroccan_corridor_swimmer_search_keystroke",
+            schedule_ui_refresh_callback_name="_schedule_moroccan_corridor_swimmer_search_ui_refresh",
+            confirm_callback_name="_on_confirm_moroccan_corridor_swimmer",
+            pick_callback_name="_on_moroccan_corridor_swimmer_search_pick",
+            show_confirm_button=True,
+        )
+        self.moroccan_corridor_swimmer_search_container = (
+            self.moroccan_corridor_swimmer_search.container
+        )
+        self.moroccan_corridor_swimmer_confirm_btn = (
+            self.moroccan_corridor_swimmer_search.confirm_btn
+        )
         self.corridor_swimmer_search = SwimmerSearch(
             self, width=dropdown_width, show_confirm_button=True
         )
@@ -1567,6 +1597,7 @@ class PacingDesktopApp:
                     self.heatmap_swimmer_dd,
                     self.corridor_swimmer_search_container,
                     self.corridor_swimmer_dd,
+                    self.moroccan_corridor_swimmer_search_container,
                     self.corridor_moroccan_swimmer_dd,
                     ft.Divider(),
                     ft.Row(
@@ -1675,6 +1706,13 @@ class PacingDesktopApp:
             )
         )
 
+    def _moroccan_corridor_uses_confirm_button(self) -> bool:
+        """Recherche marocaine avec ✓ (France âge ou couloir USA AgeGroup)."""
+        return self._needs_moroccan_corridor_swimmer_dd() and (
+            self._is_usa_corridor_mode()
+            or self.selected_graph in CORRIDOR_SWIMMER_UI_GRAPHS
+        )
+
     def _corridor_swimmer_search_labels(self) -> Tuple[str, str]:
         if self._is_usa_corridor_mode():
             return USA_CORRIDOR_SWIMMER_SEARCH_LABEL, USA_CORRIDOR_SWIMMER_SEARCH_TOOLTIP
@@ -1721,14 +1759,413 @@ class PacingDesktopApp:
     def _clear_moroccan_corridor_swimmer_selection(self) -> None:
         self.selected_moroccan_corridor_swimmer_name = None
         self.selected_moroccan_corridor_swimmer_yob = None
+        self.corridor_ma_confirmed_name = None
+        self.corridor_ma_confirmed_yob = None
         self._moroccan_corridor_dd_options_key = None
+        self._moroccan_corridor_swimmer_labels_filter_key = None
+        self._set_moroccan_corridor_swimmer_labels_all([])
         if hasattr(self, "corridor_moroccan_swimmer_dd"):
             self.corridor_moroccan_swimmer_dd.value = None
+        if self.moroccan_corridor_swimmer_search is not None:
+            self.moroccan_corridor_swimmer_search.reset(clear_query=True)
+        self.moroccan_corridor_swimmer_search_query = ""
+
+    def _moroccan_corridor_confirmed_label(self) -> Optional[str]:
+        """Label affichable « Nom (AAAA) » pour le nageur marocain confirmé (✓)."""
+        name = self.corridor_ma_confirmed_name
+        if not isinstance(name, str) or not name.strip():
+            return None
+        name = name.strip()
+        yob = self.corridor_ma_confirmed_yob
+        labels_all = self._moroccan_corridor_swimmer_labels_all or []
+        if labels_all:
+            labels_set = self._moroccan_corridor_swimmer_labels_set
+            if labels_set is None:
+                self._ensure_moroccan_corridor_swimmer_search_index(labels_all)
+                labels_set = self._moroccan_corridor_swimmer_labels_set or set()
+            if yob is not None:
+                label = f"{name} ({yob})"
+                if label in labels_set:
+                    return label
+            if name in labels_set:
+                return name
+            for candidate in labels_all:
+                parsed_name, parsed_yob = self._parse_corridor_swimmer_label(candidate)
+                if parsed_name == name and (
+                    yob is None or parsed_yob == yob or parsed_yob is None
+                ):
+                    return candidate
+        if yob is not None:
+            return f"{name} ({yob})"
+        return name
+
+    def _restore_moroccan_corridor_swimmer_confirmed_to_ui(self) -> bool:
+        """Réaffiche le nageur marocain confirmé après un rafraîchissement des listes."""
+        label = self._moroccan_corridor_confirmed_label()
+        if not label:
+            return False
+        changed = False
+        name = self.corridor_ma_confirmed_name
+        yob = self.corridor_ma_confirmed_yob
+        if self.selected_moroccan_corridor_swimmer_name != name:
+            self.selected_moroccan_corridor_swimmer_name = name
+            changed = True
+        if self.selected_moroccan_corridor_swimmer_yob != yob:
+            self.selected_moroccan_corridor_swimmer_yob = yob
+            changed = True
+        if self._set_moroccan_corridor_swimmer_search_query(label):
+            changed = True
+        if (
+            hasattr(self, "corridor_moroccan_swimmer_dd")
+            and self.corridor_moroccan_swimmer_dd.value != label
+        ):
+            self.corridor_moroccan_swimmer_dd.value = label
+            changed = True
+        return changed
+
+    def _invalidate_moroccan_corridor_swimmer_label_cache(self) -> None:
+        """Invalide les caches de labels marocains sans effacer la sélection confirmée."""
+        self._moroccan_corridor_swimmer_search_index_key = None
+        self._moroccan_corridor_swimmer_search_index = None
+        self._moroccan_corridor_swimmer_labels_set = None
+
+    def _moroccan_corridor_swimmer_filter_key(self) -> Optional[Tuple[Any, ...]]:
+        if self._is_usa_corridor_mode():
+            if not self.selected_usa_event:
+                return None
+            return (
+                "usa",
+                str(self.selected_usa_event),
+                self.selected_corridor_gender,
+            )
+        if not (
+            self.selected_stroke
+            and self.selected_distance is not None
+            and self.selected_pool
+        ):
+            return None
+        return (
+            "fr",
+            str(self.selected_stroke),
+            int(self.selected_distance),
+            str(self.selected_pool),
+            self.selected_corridor_gender,
+        )
+
+    def _set_moroccan_corridor_swimmer_labels_all(self, labels: List[str]) -> None:
+        self._moroccan_corridor_swimmer_labels_all = labels
+        self._moroccan_corridor_swimmer_labels_filter_key = (
+            self._moroccan_corridor_swimmer_filter_key()
+        )
+        self._moroccan_corridor_swimmer_search_index_key = None
+        self._moroccan_corridor_swimmer_search_index = None
+        self._moroccan_corridor_swimmer_labels_set = None
+
+    def _ensure_moroccan_corridor_swimmer_search_index(
+        self, labels: List[str]
+    ) -> List[Tuple[str, str, Tuple[str, ...]]]:
+        key = id(labels)
+        if (
+            self._moroccan_corridor_swimmer_search_index is not None
+            and self._moroccan_corridor_swimmer_search_index_key == key
+        ):
+            return self._moroccan_corridor_swimmer_search_index
+        index: List[Tuple[str, str, Tuple[str, ...]]] = []
+        for label in labels:
+            norm = _normalize_text(label)
+            words = tuple(
+                w for w in norm.replace("(", " ").replace(")", " ").split() if w
+            )
+            index.append((label, norm, words))
+        self._moroccan_corridor_swimmer_search_index = index
+        self._moroccan_corridor_swimmer_search_index_key = key
+        self._moroccan_corridor_swimmer_labels_set = set(labels)
+        return index
+
+    def _moroccan_corridor_swimmer_autocomplete_event_key(self) -> Tuple[Any, ...]:
+        fk = self._moroccan_corridor_swimmer_filter_key()
+        return fk if fk is not None else ("ma",)
+
+    def _sync_moroccan_corridor_swimmer_autocomplete(
+        self,
+        labels_all: List[str],
+        query: str,
+        *,
+        cap_ac: int = CORRIDOR_SWIMMER_SUGGESTIONS_MAX,
+    ) -> bool:
+        search = self.moroccan_corridor_swimmer_search
+        if search is None or not labels_all:
+            return False
+        base_event_key = self._moroccan_corridor_swimmer_autocomplete_event_key()
+        if query and self._moroccan_corridor_swimmer_query_is_exact_label(query):
+            return search.clear_suggestions()
+        if query:
+            labels, _ = self._filter_moroccan_corridor_swimmer_labels_with_count(
+                labels_all, query, max_results=cap_ac
+            )
+            subset = labels[:cap_ac]
+            suggestions = self._build_corridor_autocomplete_suggestions(
+                subset, query, cap=cap_ac
+            )
+            return search.apply_suggestions(suggestions)
+        search.reset_suggestion_context()
+        return search.maybe_sync_suggestions(
+            labels_all[:cap_ac],
+            base_event_key,
+            max_suggestions=cap_ac,
+        )
+
+    def _set_moroccan_corridor_swimmer_search_query(self, value: str) -> bool:
+        if self.moroccan_corridor_swimmer_search is not None:
+            return self.moroccan_corridor_swimmer_search.set_query(value)
+        text = (value or "").strip()
+        changed = (self.moroccan_corridor_swimmer_search_query or "") != text
+        if changed:
+            self.moroccan_corridor_swimmer_search_query = text
+        return changed
+
+    def _moroccan_corridor_swimmer_dropdown_value(
+        self, labels_all: List[str], *, has_query: bool
+    ) -> Optional[str]:
+        if not has_query:
+            pick = self.corridor_moroccan_swimmer_dd.value
+            if isinstance(pick, str) and pick.strip():
+                return pick.strip()
+            return None
+        query = (self.moroccan_corridor_swimmer_search_query or "").strip()
+        labels_set = self._moroccan_corridor_swimmer_labels_set
+        if labels_set is None and labels_all:
+            self._ensure_moroccan_corridor_swimmer_search_index(labels_all)
+            labels_set = self._moroccan_corridor_swimmer_labels_set or set()
+        if query and labels_set and query in labels_set:
+            return query
+        name = self.selected_moroccan_corridor_swimmer_name
+        yob = self.selected_moroccan_corridor_swimmer_yob
+        if not name:
+            return None
+        if yob is not None:
+            label = f"{name} ({yob})"
+            if labels_set and label in labels_set:
+                return label
+        if labels_set and name in labels_set:
+            return name
+        for candidate in labels_all:
+            parsed_name, parsed_yob = self._parse_corridor_swimmer_label(candidate)
+            if parsed_name == name and (
+                yob is None or parsed_yob == yob or parsed_yob is None
+            ):
+                return candidate
+        return name
+
+    def _apply_moroccan_corridor_swimmer_pick(self) -> bool:
+        labels_all = self._moroccan_corridor_swimmer_labels_all or []
+        query_pick = (self.moroccan_corridor_swimmer_search_query or "").strip()
+        if not query_pick:
+            changed = self.selected_moroccan_corridor_swimmer_name is not None
+            self.selected_moroccan_corridor_swimmer_name = None
+            self.selected_moroccan_corridor_swimmer_yob = None
+            return changed
+        labels_set = self._moroccan_corridor_swimmer_labels_set
+        if labels_set is None and labels_all:
+            self._ensure_moroccan_corridor_swimmer_search_index(labels_all)
+            labels_set = self._moroccan_corridor_swimmer_labels_set or set()
+        labels, _ = self._filter_moroccan_corridor_swimmer_labels_with_count(
+            labels_all, query_pick, max_results=2
+        )
+        pick: Optional[str] = None
+        if labels_set and query_pick in labels_set:
+            pick = query_pick
+        elif len(labels) == 1:
+            pick = labels[0]
+        if not pick:
+            dd_pick = self.corridor_moroccan_swimmer_dd.value
+            if isinstance(dd_pick, str) and dd_pick.strip():
+                pick = dd_pick.strip()
+        name, yob = PacingDesktopApp._parse_corridor_swimmer_label(pick)
+        resolved_name = name or pick
+        changed = self.selected_moroccan_corridor_swimmer_name != resolved_name
+        self.selected_moroccan_corridor_swimmer_name = resolved_name
+        self.selected_moroccan_corridor_swimmer_yob = yob
+        return changed
+
+    def _refresh_moroccan_corridor_swimmer_ui_from_labels(
+        self, labels_all: List[str]
+    ) -> None:
+        """Met à jour recherche + dropdown nageurs marocains (FRM)."""
+        self._set_moroccan_corridor_swimmer_labels_all(labels_all)
+        query = (self.moroccan_corridor_swimmer_search_query or "").strip()
+        if self.moroccan_corridor_swimmer_search is not None:
+            self.moroccan_corridor_swimmer_search.clear_suggestions()
+        self._apply_moroccan_corridor_swimmer_pick()
+        labels, shown = self._filter_moroccan_corridor_swimmer_labels_with_count(
+            labels_all, query
+        )
+        cap_dd = CORRIDOR_SWIMMER_DROPDOWN_OPTIONS_MAX
+        dd_labels = labels[:cap_dd]
+        pick = self._moroccan_corridor_swimmer_dropdown_value(
+            labels_all, has_query=bool(query)
+        )
+        labels_set = self._moroccan_corridor_swimmer_labels_set or set()
+        if pick and pick not in dd_labels and pick in labels_set:
+            dd_labels = ([pick] + dd_labels)[:cap_dd]
+        self._sync_dropdown(
+            self.corridor_moroccan_swimmer_dd,
+            new_option_keys=tuple(dd_labels),
+            build_options=lambda dl=dd_labels: [ft.dropdown.Option(l) for l in dl],
+            value=pick,
+            visible=not self._active_moroccan_corridor_swimmer_search(query),
+        )
+        total = len(labels_all)
+        if not query:
+            shown = total
+        suffix = self._corridor_swimmer_dropdown_label_suffix(
+            has_query=bool(query),
+            total=total,
+            matches=shown,
+            in_menu=len(dd_labels),
+        )
+        self.corridor_moroccan_swimmer_dd.label = (
+            f"Nageur marocain (FRM) — {total} disponibles{suffix}"
+        )
+        self._sync_moroccan_corridor_confirm_button()
+        if self._active_moroccan_corridor_swimmer_search(query):
+            self._push_moroccan_corridor_search_results_to_bar(labels_all)
+        elif self.moroccan_corridor_swimmer_search is not None:
+            self.moroccan_corridor_swimmer_search.clear_search_results()
+
+    def _push_corridor_search_results_to_bar(self, labels_all: List[str]) -> None:
+        search = self.corridor_swimmer_search
+        if search is None:
+            return
+        search.clear_suggestions()
+        query = (self.corridor_swimmer_search_query or "").strip()
+        if not query:
+            search.clear_search_results()
+            return
+        if self._corridor_swimmer_query_is_exact_label(query):
+            search.clear_search_results()
+            return
+        labels, _ = self._filter_corridor_swimmer_labels_with_count(
+            labels_all,
+            query,
+            max_results=CORRIDOR_SWIMMER_SUGGESTIONS_MAX,
+        )
+        search.set_search_results(
+            labels,
+            query=query,
+            max_rows=min(12, CORRIDOR_SWIMMER_SUGGESTIONS_MAX),
+        )
+
+    def _push_moroccan_corridor_search_results_to_bar(self, labels_all: List[str]) -> None:
+        search = self.moroccan_corridor_swimmer_search
+        if search is None:
+            return
+        search.clear_suggestions()
+        query = (self.moroccan_corridor_swimmer_search_query or "").strip()
+        if not query:
+            search.clear_search_results()
+            return
+        if self._moroccan_corridor_swimmer_query_is_exact_label(query):
+            search.clear_search_results()
+            return
+        labels, _ = self._filter_moroccan_corridor_swimmer_labels_with_count(
+            labels_all,
+            query,
+            max_results=CORRIDOR_SWIMMER_SUGGESTIONS_MAX,
+        )
+        search.set_search_results(
+            labels,
+            query=query,
+            max_rows=min(12, CORRIDOR_SWIMMER_SUGGESTIONS_MAX),
+        )
+
+    def _refresh_moroccan_corridor_swimmer_options_lightweight(self) -> None:
+        if not self._needs_moroccan_corridor_swimmer_dd():
+            return
+        labels_all = self._moroccan_corridor_swimmer_labels_for_current_scope()
+        if not labels_all:
+            return
+        self._refresh_moroccan_corridor_swimmer_ui_from_labels(labels_all)
+
+    def _on_moroccan_corridor_swimmer_search_keystroke(self) -> None:
+        """Précharge les labels ; suggestions affichées après debounce uniquement."""
+        if self.selected_category != CORRIDOR_CATEGORY:
+            return
+        if not self._needs_moroccan_corridor_swimmer_dd():
+            return
+        if self._moroccan_corridor_swimmer_labels_all:
+            return
+        fk = self._moroccan_corridor_swimmer_filter_key()
+        if fk is None:
+            return
+        labels_all = self._moroccan_corridor_swimmer_labels_for_current_scope()
+        if labels_all:
+            self._set_moroccan_corridor_swimmer_labels_all(labels_all)
+
+    def _schedule_moroccan_corridor_swimmer_search_ui_refresh(self) -> None:
+        self._moroccan_corridor_search_ui_gen += 1
+        token = self._moroccan_corridor_search_ui_gen
+
+        async def _runner() -> None:
+            await asyncio.sleep(CORRIDOR_SEARCH_DEBOUNCE_SEC)
+            if token != self._moroccan_corridor_search_ui_gen:
+                return
+            self._refresh_moroccan_corridor_swimmer_options_lightweight()
+            self._update_moroccan_corridor_search_sidebar_controls()
+
+        self.page.run_task(_runner)
+
+    def _update_moroccan_corridor_search_sidebar_controls(self) -> None:
+        self._finish_moroccan_search_ui()
+        labels_all = self._moroccan_corridor_swimmer_labels_all or []
+        if not labels_all:
+            fk = self._moroccan_corridor_swimmer_filter_key()
+            if fk is not None:
+                labels_all = self._moroccan_corridor_swimmer_labels_for_current_scope()
+                if labels_all:
+                    self._set_moroccan_corridor_swimmer_labels_all(labels_all)
+        query = (self.moroccan_corridor_swimmer_search_query or "").strip()
+        search = self.moroccan_corridor_swimmer_search
+        dd_visible = True
+        if search is not None and labels_all and query:
+            if self._moroccan_corridor_swimmer_query_is_exact_label(query):
+                search.clear_suggestions()
+                search.clear_search_results()
+            elif self._active_moroccan_corridor_swimmer_search(query):
+                self._push_moroccan_corridor_search_results_to_bar(labels_all)
+                dd_visible = False
+            else:
+                search.clear_search_results()
+        elif search is not None:
+            search.clear_suggestions()
+            search.clear_search_results()
+        if self.corridor_moroccan_swimmer_dd.visible is not dd_visible:
+            self.corridor_moroccan_swimmer_dd.visible = dd_visible
+        controls: List[ft.Control] = []
+        if self.moroccan_corridor_swimmer_search is not None:
+            controls.extend(
+                [
+                    self.moroccan_corridor_swimmer_search.input,
+                    self.moroccan_corridor_swimmer_search.loading_btn,
+                    self.moroccan_corridor_swimmer_search.confirm_btn,
+                    self.moroccan_corridor_swimmer_search.results_panel,
+                ]
+            )
+        controls.append(self.corridor_moroccan_swimmer_dd)
+        for control in controls:
+            try:
+                control.update()
+            except Exception:
+                self.page.update()
+                return
 
     def _refresh_moroccan_corridor_swimmer_dropdown(self) -> bool:
-        """Liste déroulante des nageurs marocains (html_results). Retourne True si l'UI a changé."""
+        """Recherche + liste déroulante des nageurs marocains (html_results)."""
         visible = self._needs_moroccan_corridor_swimmer_dd()
         changed = False
+        if self.moroccan_corridor_swimmer_search_container.visible is not visible:
+            self.moroccan_corridor_swimmer_search_container.visible = visible
+            changed = True
         if not visible:
             if self.corridor_moroccan_swimmer_dd.visible is not False:
                 self.corridor_moroccan_swimmer_dd.visible = False
@@ -1738,53 +2175,38 @@ class PacingDesktopApp:
                 changed = True
             return changed
 
-        labels_all = self._moroccan_corridor_swimmer_labels_for_current_scope()
-        if self._is_usa_corridor_mode():
-            scope_key: Tuple[Any, ...] = (
-                "usa",
-                str(self.selected_usa_event or ""),
-                self.selected_corridor_gender,
-            )
-        else:
-            scope_key = (
-                "fr",
-                str(self.selected_stroke or ""),
-                int(self.selected_distance)
-                if self.selected_distance is not None
-                else None,
-                str(self.selected_pool or ""),
-                self.selected_corridor_gender,
-            )
-        dd_labels = labels_all[:CORRIDOR_SWIMMER_DROPDOWN_OPTIONS_MAX]
-        label_keys = tuple(dd_labels)
+        scope_key = self._moroccan_corridor_swimmer_filter_key()
         if scope_key != self._moroccan_corridor_dd_options_key:
             self._moroccan_corridor_dd_options_key = scope_key
-            self._clear_moroccan_corridor_swimmer_selection()
+            self._invalidate_moroccan_corridor_swimmer_label_cache()
             changed = True
 
-        pick = self.corridor_moroccan_swimmer_dd.value
-        if pick and pick not in labels_all:
-            pick = None
-            self._clear_moroccan_corridor_swimmer_selection()
+        labels_all = self._moroccan_corridor_swimmer_labels_for_current_scope()
+        if labels_all:
+            before = (
+                self.selected_moroccan_corridor_swimmer_name,
+                self.selected_moroccan_corridor_swimmer_yob,
+                self.corridor_moroccan_swimmer_dd.value,
+                self.moroccan_corridor_swimmer_search_query,
+            )
+            self._refresh_moroccan_corridor_swimmer_ui_from_labels(labels_all)
+            if self._restore_moroccan_corridor_swimmer_confirmed_to_ui():
+                changed = True
+            after = (
+                self.selected_moroccan_corridor_swimmer_name,
+                self.selected_moroccan_corridor_swimmer_yob,
+                self.corridor_moroccan_swimmer_dd.value,
+                self.moroccan_corridor_swimmer_search_query,
+            )
+            if before != after:
+                changed = True
+        elif self.corridor_moroccan_swimmer_dd.visible is not True:
+            self.corridor_moroccan_swimmer_dd.visible = True
             changed = True
-
-        if self._sync_dropdown(
-            self.corridor_moroccan_swimmer_dd,
-            new_option_keys=label_keys,
-            build_options=lambda dl=dd_labels: [ft.dropdown.Option(l) for l in dl],
-            value=pick,
-            visible=True,
-        ):
-            changed = True
-
-        total = len(labels_all)
-        new_label = f"Nageur marocain (FRM) — {total} disponibles"
-        if self.corridor_moroccan_swimmer_dd.label != new_label:
-            self.corridor_moroccan_swimmer_dd.label = new_label
-            changed = True
-        mh = self._menu_height_for_count(len(dd_labels) if dd_labels else 1)
-        if self.corridor_moroccan_swimmer_dd.menu_height != mh:
-            self.corridor_moroccan_swimmer_dd.menu_height = mh
+        if self.moroccan_corridor_swimmer_search is not None:
+            if self.moroccan_corridor_swimmer_search.sync_value_to_query():
+                changed = True
+        if self._sync_moroccan_corridor_confirm_button():
             changed = True
         return changed
 
@@ -2087,6 +2509,48 @@ class PacingDesktopApp:
             self.selected_corridor_gender,
         )
 
+    def _corridor_swimmer_query_is_exact_label(self, query: str) -> bool:
+        q = (query or "").strip()
+        if not q:
+            return False
+        labels_set = self._corridor_swimmer_labels_set
+        if labels_set is None:
+            labels_all = self._corridor_swimmer_labels_all or []
+            if labels_all:
+                self._ensure_corridor_swimmer_search_index(labels_all)
+                labels_set = self._corridor_swimmer_labels_set
+        return bool(labels_set and q in labels_set)
+
+    def _moroccan_corridor_swimmer_query_is_exact_label(self, query: str) -> bool:
+        q = (query or "").strip()
+        if not q:
+            return False
+        labels_set = self._moroccan_corridor_swimmer_labels_set
+        if labels_set is None:
+            labels_all = self._moroccan_corridor_swimmer_labels_all or []
+            if labels_all:
+                self._ensure_moroccan_corridor_swimmer_search_index(labels_all)
+                labels_set = self._moroccan_corridor_swimmer_labels_set
+        return bool(labels_set and q in labels_set)
+
+    def _active_corridor_swimmer_search(self, query: Optional[str] = None) -> bool:
+        q = (
+            query
+            if query is not None
+            else (self.corridor_swimmer_search_query or "")
+        ).strip()
+        return bool(q) and not self._corridor_swimmer_query_is_exact_label(q)
+
+    def _active_moroccan_corridor_swimmer_search(
+        self, query: Optional[str] = None
+    ) -> bool:
+        q = (
+            query
+            if query is not None
+            else (self.moroccan_corridor_swimmer_search_query or "")
+        ).strip()
+        return bool(q) and not self._moroccan_corridor_swimmer_query_is_exact_label(q)
+
     def _corridor_swimmer_dropdown_value(
         self, labels_all: List[str], *, has_query: bool
     ) -> Optional[str]:
@@ -2165,7 +2629,6 @@ class PacingDesktopApp:
         self.corridor_fr_confirmed_name = None
         self.corridor_fr_confirmed_yob = None
         self._apply_nav_df_for_country()
-        self._clear_moroccan_corridor_swimmer_selection()
         self._clear_corridor_swimmer_labels_cache()
         if self.corridor_swimmer_search is not None:
             self.corridor_swimmer_search.reset(clear_query=True)
@@ -2202,7 +2665,6 @@ class PacingDesktopApp:
         self.corridor_usa_confirmed_name = None
         self.corridor_fr_confirmed_name = None
         self.corridor_fr_confirmed_yob = None
-        self._clear_moroccan_corridor_swimmer_selection()
         self._clear_corridor_swimmer_labels_cache()
         self.corridor_swimmer_search_query = ""
         if self.corridor_swimmer_search is not None:
@@ -2292,7 +2754,6 @@ class PacingDesktopApp:
             self.corridor_fr_confirmed_name = None
             self.corridor_fr_confirmed_yob = None
             self._usa_names_by_event_key.clear()
-            self._clear_moroccan_corridor_swimmer_selection()
             self._refresh_filters_from_data(skip_usa_swimmer_options=True)
             self._try_show_stale_corridor_chart(update_ui=True)
             self._schedule_deferred_usa_corridor_swimmer_update()
@@ -2352,8 +2813,17 @@ class PacingDesktopApp:
         await asyncio.sleep(0)
         if token != self._corridor_swimmer_schedule_gen:
             return
-        self._refresh_corridor_swimmer_options_lightweight()
-        self._refresh_moroccan_corridor_swimmer_dropdown()
+        if self.corridor_swimmer_search is not None:
+            self.corridor_swimmer_search.set_busy(True)
+        if self.moroccan_corridor_swimmer_search is not None:
+            self.moroccan_corridor_swimmer_search.set_busy(True)
+        try:
+            self._refresh_corridor_swimmer_options_lightweight()
+            self._refresh_moroccan_corridor_swimmer_options_lightweight()
+            self._refresh_moroccan_corridor_swimmer_dropdown()
+        finally:
+            self._finish_corridor_search_ui()
+            self._finish_moroccan_search_ui()
         self.page.update()
 
     async def _refresh_usa_corridor_swimmers_async(self, token: int) -> None:
@@ -2373,9 +2843,17 @@ class PacingDesktopApp:
             return
         if token != self._usa_swimmer_schedule_gen or not self._is_usa_corridor_mode():
             return
-        self._set_corridor_swimmer_labels_all(labels_all)
-        self._refresh_usa_corridor_swimmer_ui_from_labels(labels_all)
-        self._refresh_moroccan_corridor_swimmer_dropdown()
+        if self.corridor_swimmer_search is not None:
+            self.corridor_swimmer_search.set_busy(True)
+        if self.moroccan_corridor_swimmer_search is not None:
+            self.moroccan_corridor_swimmer_search.set_busy(True)
+        try:
+            self._set_corridor_swimmer_labels_all(labels_all)
+            self._refresh_usa_corridor_swimmer_ui_from_labels(labels_all)
+            self._refresh_moroccan_corridor_swimmer_dropdown()
+        finally:
+            self._finish_corridor_search_ui()
+            self._finish_moroccan_search_ui()
         self.page.update()
 
     async def _usa_corridor_bootstrap_async(self, token: int) -> None:
@@ -2438,20 +2916,118 @@ class PacingDesktopApp:
         self.selected_pacing_swimmers = cleaned[:3]
         self._update_chart()
 
-    def _on_moroccan_corridor_swimmer_change(self, e: ft.ControlEvent) -> None:
-        label = e.control.value
+    def _apply_moroccan_corridor_swimmer_label_pick(self, label: str) -> None:
+        if isinstance(label, str) and label.strip():
+            if self._set_moroccan_corridor_swimmer_search_query(label):
+                if self.moroccan_corridor_swimmer_search is not None:
+                    self.moroccan_corridor_swimmer_search.clear_suggestions()
+                    self.moroccan_corridor_swimmer_search.clear_search_results()
+                    try:
+                        self.moroccan_corridor_swimmer_search.input.update()
+                        self.moroccan_corridor_swimmer_search.results_panel.update()
+                    except Exception:
+                        self.page.update()
         name, yob = PacingDesktopApp._parse_corridor_swimmer_label(label)
         self.selected_moroccan_corridor_swimmer_name = name
         self.selected_moroccan_corridor_swimmer_yob = yob
+        if self._moroccan_corridor_uses_confirm_button():
+            self._sync_moroccan_corridor_confirm_button()
+            try:
+                self.page.update()
+            except Exception:
+                pass
+            return
         self._schedule_deferred_chart_update()
 
-    def _on_corridor_swimmer_change(self, e: ft.ControlEvent) -> None:
+    def _on_moroccan_corridor_swimmer_search_pick(self, label: str) -> None:
+        if self.corridor_moroccan_swimmer_dd.value != label:
+            self.corridor_moroccan_swimmer_dd.value = label
+        self._apply_moroccan_corridor_swimmer_label_pick(label)
+
+    def _on_moroccan_corridor_swimmer_change(self, e: ft.ControlEvent) -> None:
         label = e.control.value
+        if not isinstance(label, str) or not label.strip():
+            return
+        self._apply_moroccan_corridor_swimmer_label_pick(label.strip())
+
+    def _resolved_moroccan_corridor_swimmer_label(self) -> Optional[str]:
+        """Label nageur marocain depuis la recherche ou le dropdown (bouton ✓)."""
+        query = (self.moroccan_corridor_swimmer_search_query or "").strip()
+        labels_all = self._moroccan_corridor_swimmer_labels_all or []
+        name, yob = self._parse_corridor_swimmer_label(query or None)
+        if name:
+            self.selected_moroccan_corridor_swimmer_name = name
+            self.selected_moroccan_corridor_swimmer_yob = yob
+        if query and labels_all:
+            labels_set = self._moroccan_corridor_swimmer_labels_set
+            if labels_set is None:
+                self._ensure_moroccan_corridor_swimmer_search_index(labels_all)
+                labels_set = self._moroccan_corridor_swimmer_labels_set or set()
+            if query in labels_set:
+                return query
+            filtered, _ = self._filter_moroccan_corridor_swimmer_labels_with_count(
+                labels_all, query, max_results=2
+            )
+            if query in filtered:
+                return query
+            if len(filtered) == 1:
+                return filtered[0]
+        pick = self.corridor_moroccan_swimmer_dd.value
+        if isinstance(pick, str) and pick.strip():
+            return pick.strip()
+        return None
+
+    def _on_confirm_moroccan_corridor_swimmer(self, _: ft.ControlEvent) -> None:
+        label = (
+            self._resolved_moroccan_corridor_swimmer_label()
+            or self.corridor_moroccan_swimmer_dd.value
+        )
+        if label and self.corridor_moroccan_swimmer_dd.value != label:
+            self.corridor_moroccan_swimmer_dd.value = label
+        name, yob = PacingDesktopApp._parse_corridor_swimmer_label(label)
+        if not name:
+            return
+        self.selected_moroccan_corridor_swimmer_name = name
+        self.selected_moroccan_corridor_swimmer_yob = yob
+        self.corridor_ma_confirmed_name = name
+        self.corridor_ma_confirmed_yob = yob
+        if self._set_moroccan_corridor_swimmer_search_query(label or ""):
+            if self.moroccan_corridor_swimmer_search is not None:
+                try:
+                    self.moroccan_corridor_swimmer_search.input.update()
+                except Exception:
+                    pass
+        self._schedule_deferred_chart_update()
+
+    def _moroccan_confirm_visible(self) -> bool:
+        return self._moroccan_corridor_uses_confirm_button() and bool(
+            self._resolved_moroccan_corridor_swimmer_label()
+        )
+
+    def _finish_moroccan_search_ui(self) -> bool:
+        if self.moroccan_corridor_swimmer_search is None:
+            return False
+        return self.moroccan_corridor_swimmer_search.sync_trailing(
+            busy=False,
+            confirm_available=self._moroccan_confirm_visible(),
+        )
+
+    def _sync_moroccan_corridor_confirm_button(self) -> bool:
+        if self.moroccan_corridor_swimmer_search is None:
+            return False
+        return self.moroccan_corridor_swimmer_search.sync_trailing(
+            confirm_available=self._moroccan_confirm_visible()
+        )
+
+    def _apply_corridor_swimmer_label_pick(self, label: str) -> None:
         if isinstance(label, str) and label.strip():
             if self._set_corridor_swimmer_search_query(label):
                 if self.corridor_swimmer_search is not None:
+                    self.corridor_swimmer_search.clear_suggestions()
+                    self.corridor_swimmer_search.clear_search_results()
                     try:
                         self.corridor_swimmer_search.input.update()
+                        self.corridor_swimmer_search.results_panel.update()
                     except Exception:
                         self.page.update()
         name, yob = PacingDesktopApp._parse_corridor_swimmer_label(label)
@@ -2470,6 +3046,18 @@ class PacingDesktopApp:
             self._refresh_filters_from_data()
             return
         self._update_chart()
+
+    def _on_corridor_swimmer_search_pick(self, label: str) -> None:
+        if self.corridor_swimmer_dd.value != label:
+            self.corridor_swimmer_dd.value = label
+        self._apply_corridor_swimmer_label_pick(label)
+        self._sync_corridor_confirm_button()
+
+    def _on_corridor_swimmer_change(self, e: ft.ControlEvent) -> None:
+        label = e.control.value
+        if not isinstance(label, str) or not label.strip():
+            return
+        self._apply_corridor_swimmer_label_pick(label.strip())
 
     def _on_confirm_corridor_swimmer(self, _: ft.ControlEvent) -> None:
         label = self._resolved_corridor_swimmer_label() or self.corridor_swimmer_dd.value
@@ -2561,25 +3149,43 @@ class PacingDesktopApp:
             return pick.strip()
         return None
 
-    def _sync_corridor_confirm_button(self) -> bool:
+    def _corridor_confirm_visible(self) -> bool:
         if self._is_usa_corridor_mode():
-            visible = bool(self._resolved_corridor_swimmer_label())
-        elif self.selected_graph not in CORRIDOR_SWIMMER_UI_GRAPHS:
-            visible = False
-        else:
-            visible = bool(self._resolved_corridor_swimmer_label())
-        btn = self.corridor_swimmer_confirm_btn
-        if btn.visible is not visible:
-            btn.visible = visible
-            return True
-        return False
+            return bool(self._resolved_corridor_swimmer_label())
+        if self.selected_graph not in CORRIDOR_SWIMMER_UI_GRAPHS:
+            return False
+        return bool(self._resolved_corridor_swimmer_label())
+
+    def _finish_corridor_search_ui(self) -> bool:
+        """Fin de recherche : icône rechargement → bouton ✓ si nageur résolu."""
+        if self.corridor_swimmer_search is None:
+            return False
+        return self.corridor_swimmer_search.sync_trailing(
+            busy=False,
+            confirm_available=self._corridor_confirm_visible(),
+        )
+
+    def _sync_corridor_confirm_button(self) -> bool:
+        if self.corridor_swimmer_search is None:
+            return False
+        return self.corridor_swimmer_search.sync_trailing(
+            confirm_available=self._corridor_confirm_visible()
+        )
 
     def _invalidate_corridor_swimmer_search_index(self) -> None:
         self._corridor_swimmer_search_index_key = None
         self._corridor_swimmer_search_index = None
         self._corridor_swimmer_labels_set = None
 
-    def _corridor_swimmer_filter_key(self) -> Optional[Tuple[str, int, str, str]]:
+    def _corridor_swimmer_filter_key(self) -> Optional[Tuple[Any, ...]]:
+        if self._is_usa_corridor_mode():
+            if not self.selected_usa_event:
+                return None
+            return (
+                "usa",
+                str(self.selected_usa_event),
+                str(self.selected_corridor_gender),
+            )
         if (
             not self.selected_stroke
             or self.selected_distance is None
@@ -2687,22 +3293,60 @@ class PacingDesktopApp:
         )
         return matches
 
+    def _filter_moroccan_corridor_swimmer_labels_with_count(
+        self,
+        labels: List[str],
+        query: str,
+        *,
+        max_results: Optional[int] = None,
+    ) -> Tuple[List[str], int]:
+        if not labels:
+            return [], 0
+        index = self._ensure_moroccan_corridor_swimmer_search_index(labels)
+        search_norm = _normalize_text(query)
+        if not search_norm:
+            total = len(labels)
+            if max_results is not None:
+                return labels[:max_results], total
+            return list(labels), total
+        prefix_matches: List[str] = []
+        for label, _norm_full, words in index:
+            if any(word.startswith(search_norm) for word in words):
+                prefix_matches.append(label)
+                if max_results is not None and len(prefix_matches) >= max_results:
+                    break
+        if prefix_matches:
+            if max_results is None or len(prefix_matches) < max_results:
+                return prefix_matches, len(prefix_matches)
+            total_prefix = sum(
+                1
+                for _label, _norm_full, words in index
+                if any(word.startswith(search_norm) for word in words)
+            )
+            return prefix_matches, total_prefix
+        contains_matches: List[str] = []
+        for label, norm_full, _words in index:
+            if search_norm in norm_full:
+                contains_matches.append(label)
+                if max_results is not None and len(contains_matches) >= max_results:
+                    break
+        if max_results is None or len(contains_matches) < max_results:
+            return contains_matches, len(contains_matches)
+        total_contains = sum(
+            1 for _label, norm_full, _words in index if search_norm in norm_full
+        )
+        return contains_matches, total_contains
+
     @staticmethod
     def _autocomplete_suggestion_key(label: str, query_norm: str) -> str:
         """
         Clé Flet pour AutoComplete : doit commencer par le texte tapé (filtre Flet).
         value reste le nom complet affiché à l'utilisateur.
         """
-        norm = _normalize_text(label)
         if not query_norm:
+            norm = _normalize_text(label)
             return norm or label
-        for word in norm.replace("(", " ").replace(")", " ").split():
-            if word.startswith(query_norm):
-                return f"{word}|{label}"
-        pos = norm.find(query_norm)
-        if pos >= 0:
-            return f"{norm[pos:]}|{label}"
-        return f"{norm}|{label}"
+        return f"{query_norm}|{label}"
 
     def _build_corridor_autocomplete_suggestions(
         self,
@@ -2729,7 +3373,19 @@ class PacingDesktopApp:
 
     def _corridor_swimmer_labels_for_search(self) -> List[str]:
         if self._is_usa_corridor_mode():
-            return list(self._corridor_swimmer_labels_all)
+            if not self.selected_usa_event:
+                return []
+            filter_key = self._corridor_swimmer_filter_key()
+            if (
+                self._corridor_swimmer_labels_all
+                and filter_key is not None
+                and self._corridor_swimmer_labels_filter_key == filter_key
+            ):
+                return list(self._corridor_swimmer_labels_all)
+            labels = self._usa_swimmer_names_for_event(str(self.selected_usa_event))
+            if labels:
+                self._set_corridor_swimmer_labels_all(labels)
+            return labels
         if not (
             self.selected_stroke
             and self.selected_distance is not None
@@ -2757,11 +3413,13 @@ class PacingDesktopApp:
     ) -> bool:
         if self.corridor_swimmer_search is None or not labels_all:
             return False
+        if query and self._corridor_swimmer_query_is_exact_label(query):
+            return self.corridor_swimmer_search.clear_suggestions()
         if query:
             labels, _ = self._filter_corridor_swimmer_labels_with_count(
                 labels_all, query, max_results=cap_ac
             )
-            subset = labels[:cap_ac] if labels else labels_all[:cap_ac]
+            subset = labels[:cap_ac]
             suggestions = self._build_corridor_autocomplete_suggestions(
                 subset, query, cap=cap_ac
             )
@@ -2784,48 +3442,10 @@ class PacingDesktopApp:
         return changed
 
     def _on_corridor_swimmer_search_keystroke(self) -> None:
-        """Mise à jour immédiate des suggestions (sans reconstruire tout le panneau)."""
-        if self.selected_category != CORRIDOR_CATEGORY:
-            return
-        labels_all = self._corridor_swimmer_labels_for_search()
-        if not labels_all or self.corridor_swimmer_search is None:
-            return
-        query = (self.corridor_swimmer_search_query or "").strip()
-        cap_ac = CORRIDOR_SWIMMER_SUGGESTIONS_MAX
-        if self._is_usa_corridor_mode():
-            if not self.selected_usa_event:
-                return
-            event_key = (str(self.selected_usa_event), self.selected_corridor_gender)
-            changed = self._sync_corridor_swimmer_autocomplete(
-                labels_all, query, base_event_key=event_key, cap_ac=cap_ac
-            )
-        else:
-            if self.selected_graph not in CORRIDOR_SWIMMER_UI_GRAPHS:
-                return
-            if not (
-                self.selected_stroke
-                and self.selected_distance is not None
-                and self.selected_pool
-            ):
-                return
-            event_key = (
-                self.selected_stroke,
-                int(self.selected_distance),
-                self.selected_pool,
-                self.selected_corridor_gender,
-            )
-            changed = self._sync_corridor_swimmer_autocomplete(
-                labels_all, query, base_event_key=event_key, cap_ac=cap_ac
-            )
-        if changed and self.corridor_swimmer_search is not None:
-            try:
-                self.corridor_swimmer_search.input.update()
-            except Exception:
-                pass
-        self._sync_corridor_confirm_button()
+        """Suggestions et panneau résultats affichés après debounce uniquement."""
 
     def _schedule_corridor_swimmer_search_ui_refresh(self) -> None:
-        """Debounce: dropdown + libellés après la frappe (évite le travail lourd à chaque touche)."""
+        """Debounce: suggestions, dropdown et libellés après la frappe."""
         self._corridor_search_ui_gen += 1
         token = self._corridor_search_ui_gen
 
@@ -2839,12 +3459,33 @@ class PacingDesktopApp:
         self.page.run_task(_runner)
 
     def _update_corridor_search_sidebar_controls(self) -> None:
+        self._finish_corridor_search_ui()
+        query = (self.corridor_swimmer_search_query or "").strip()
+        labels_all = self._corridor_swimmer_labels_for_search()
+        search = self.corridor_swimmer_search
+        dd_visible = True
+        if search is not None and labels_all and query:
+            if self._corridor_swimmer_query_is_exact_label(query):
+                search.clear_suggestions()
+                search.clear_search_results()
+            elif self._active_corridor_swimmer_search(query):
+                self._push_corridor_search_results_to_bar(labels_all)
+                dd_visible = False
+            else:
+                search.clear_search_results()
+        elif search is not None:
+            search.clear_suggestions()
+            search.clear_search_results()
+        if self.corridor_swimmer_dd.visible is not dd_visible:
+            self.corridor_swimmer_dd.visible = dd_visible
         controls: List[ft.Control] = []
         if self.corridor_swimmer_search is not None:
             controls.extend(
                 [
                     self.corridor_swimmer_search.input,
+                    self.corridor_swimmer_search.loading_btn,
                     self.corridor_swimmer_search.confirm_btn,
+                    self.corridor_swimmer_search.results_panel,
                 ]
             )
         controls.append(self.corridor_swimmer_dd)
@@ -3144,8 +3785,8 @@ class PacingDesktopApp:
             "corridor_gender": self.selected_corridor_gender,
             "corridor_name": corridor_name,
             "corridor_yob": corridor_yob,
-            "moroccan_corridor_name": self.selected_moroccan_corridor_swimmer_name,
-            "moroccan_corridor_yob": self.selected_moroccan_corridor_swimmer_yob,
+            "moroccan_corridor_name": self.corridor_ma_confirmed_name,
+            "moroccan_corridor_yob": self.corridor_ma_confirmed_yob,
             "deciles_name": deciles_name,
             "deciles_yob": deciles_yob,
             "heatmap": self.selected_heatmap_swimmer,
@@ -3248,8 +3889,10 @@ class PacingDesktopApp:
     def _refresh_corridor_swimmer_options_lightweight(self) -> None:
         """Met à jour recherche + dropdown nageur (même logique France / USA)."""
         if self._is_usa_corridor_mode():
-            labels_all = self._corridor_swimmer_labels_all
-            if not self.selected_usa_event or not labels_all:
+            if not self.selected_usa_event:
+                return
+            labels_all = self._corridor_swimmer_labels_for_search()
+            if not labels_all:
                 return
             self._refresh_corridor_swimmer_ui_from_labels(labels_all)
             return
@@ -3750,16 +4393,11 @@ class PacingDesktopApp:
         self.page.run_task(_runner)
 
     def _refresh_corridor_swimmer_ui_from_labels(self, labels_all: List[str]) -> None:
-        """Met à jour autocomplete, dropdown et sélection (France = USA)."""
+        """Met à jour panneau de recherche, dropdown et sélection (France = USA)."""
         self._set_corridor_swimmer_labels_all(labels_all)
         query = (self.corridor_swimmer_search_query or "").strip()
         if self.corridor_swimmer_search is not None:
-            self._sync_corridor_swimmer_autocomplete(
-                labels_all,
-                query,
-                base_event_key=self._corridor_swimmer_autocomplete_event_key(),
-                cap_ac=CORRIDOR_SWIMMER_SUGGESTIONS_MAX,
-            )
+            self.corridor_swimmer_search.clear_suggestions()
         self._apply_corridor_swimmer_pick()
         labels, shown = self._filter_corridor_swimmer_labels_with_count(
             labels_all, query
@@ -3778,7 +4416,7 @@ class PacingDesktopApp:
             new_option_keys=tuple(dd_labels),
             build_options=lambda dl=dd_labels: [ft.dropdown.Option(l) for l in dl],
             value=pick,
-            visible=True,
+            visible=not self._active_corridor_swimmer_search(query),
         )
         total = len(labels_all)
         if not query:
@@ -3799,6 +4437,10 @@ class PacingDesktopApp:
         )
         self._refresh_moroccan_corridor_swimmer_dropdown()
         self._sync_corridor_confirm_button()
+        if self._active_corridor_swimmer_search(query):
+            self._push_corridor_search_results_to_bar(labels_all)
+        elif self.corridor_swimmer_search is not None:
+            self.corridor_swimmer_search.clear_search_results()
 
     def _refresh_usa_corridor_swimmer_ui_from_labels(self, labels_all: List[str]) -> None:
         self._refresh_corridor_swimmer_ui_from_labels(labels_all)
@@ -3919,6 +4561,8 @@ class PacingDesktopApp:
         if self._refresh_moroccan_corridor_swimmer_dropdown():
             dirty = True
         if self._sync_corridor_confirm_button():
+            dirty = True
+        if self._sync_moroccan_corridor_confirm_button():
             dirty = True
 
         self._sync_corridor_mode_switch(update_ui=False)
@@ -4205,7 +4849,7 @@ class PacingDesktopApp:
                 self.corridor_fr_confirmed_name = None
                 self.corridor_fr_confirmed_yob = None
                 self._corridor_dd_options_event_key = None
-                self._clear_moroccan_corridor_swimmer_selection()
+                self._invalidate_moroccan_corridor_swimmer_label_cache()
                 self._clear_corridor_swimmer_labels_cache()
                 if self.corridor_swimmer_search is not None:
                     self.corridor_swimmer_search.clear_suggestions()
@@ -4284,6 +4928,8 @@ class PacingDesktopApp:
                 dirty = True
             if self._sync_corridor_confirm_button():
                 dirty = True
+            if self._sync_moroccan_corridor_confirm_button():
+                dirty = True
         else:
             if self._sync_dropdown(
                 self.corridor_gender_dd,
@@ -4325,9 +4971,19 @@ class PacingDesktopApp:
             if self.corridor_swimmer_search_container.visible is not False:
                 self.corridor_swimmer_search_container.visible = False
                 dirty = True
-            if self.corridor_swimmer_confirm_btn.visible is not False:
-                self.corridor_swimmer_confirm_btn.visible = False
+            if self.moroccan_corridor_swimmer_search_container.visible is not False:
+                self.moroccan_corridor_swimmer_search_container.visible = False
                 dirty = True
+            if self.corridor_swimmer_search is not None:
+                if self.corridor_swimmer_search.sync_trailing(
+                    busy=False, confirm_available=False
+                ):
+                    dirty = True
+            if self.moroccan_corridor_swimmer_search is not None:
+                if self.moroccan_corridor_swimmer_search.sync_trailing(
+                    busy=False, confirm_available=False
+                ):
+                    dirty = True
             self.selected_corridor_swimmer_name = None
             self.selected_corridor_swimmer_yob = None
             self.corridor_deciles_confirmed_name = None

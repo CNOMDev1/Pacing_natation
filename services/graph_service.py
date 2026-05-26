@@ -2014,7 +2014,9 @@ class ServiceGraphe:
             label="Zone 25-75%",
             zorder=1,
         )
-        trace_messages = plot_corridor_swimmer_specs(ax, long_plot, specs)
+        trace_messages = plot_corridor_swimmer_specs(
+            ax, long_plot, specs, source_df=df, nom_event=nom_event
+        )
         ax.invert_yaxis()
         ax.set_xlabel("Age")
         ax.set_ylabel("Temps (secondes)")
@@ -2111,7 +2113,9 @@ class ServiceGraphe:
             alpha=0.2,
             label="Zone 25-75%",
         )
-        trace_messages = plot_corridor_swimmer_specs(ax, long_plot, specs)
+        trace_messages = plot_corridor_swimmer_specs(
+            ax, long_plot, specs, source_df=df, nom_event=nom_event
+        )
         ax.invert_yaxis()
         ax.set_xlabel("Age")
         ax.set_ylabel("Temps (secondes)")
@@ -2409,7 +2413,12 @@ class ServiceGraphe:
         )
 
         trace_messages = plot_corridor_swimmer_specs(
-            ax, long_plot, specs, fuzzy_min_ratio=0.85
+            ax,
+            long_plot,
+            specs,
+            fuzzy_min_ratio=0.85,
+            source_df=df,
+            nom_event=nom_event,
         )
 
         ax.invert_yaxis()
