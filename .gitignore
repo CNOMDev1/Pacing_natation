@@ -1,32 +1,24 @@
 # Python
 __pycache__/
-services/playwright_tmp_profile/
-app/scripts/playwright_tmp_profile/
+
+# profils navigateur temporaires Playwright 
 playwright_tmp_profile/
-Tour_list.txt
+
+# cache polices Matplotlib (genere au 1er import)
 .mplconfig/fontlist-v390.json
 
-# Données générées
-data/cleaned_data/
-data/exports/prefetched_graphs.json
-data/exports/prefetched_corridor_graphs.json
-data/exports/prefetched_event_swimmers.json
-data/omega_json_endpoint_single/
-data/raw/
-data/processed/
-
+# Donnees locales et generees
+data/
 
 # Fichiers locaux
 cookies_omegatiming.txt
 .env
+
 bearer_token.txt
 state.json
-app/visualization/desktop_app.py
 
 # Environnement virtuel
 .venv/
-venv/
 
 # OS
 .DS_Store
-

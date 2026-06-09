@@ -13,11 +13,75 @@ import seaborn as sns
 from matplotlib.colors import to_hex
 
 from services.corridor_data import (
+    CorridorSwimmerSpec,
+    CORRIDOR_FR_SWIMMER_COLOR,
+    CORRIDOR_MA_SWIMMER_COLOR,
+    build_corridor_chart_plot_kwargs,
     compute_corridor_percentiles_df,
+    corridor_age_limits,
     corridor_norm_name,
+    filter_corridor_long_df_gender,
+    merge_corridor_swimmer_specs_for_plot,
+    plot_corridor_swimmer_specs,
     prepare_corridor_long_df,
+    prepare_corridor_long_df_combined,
+    resolve_corridor_plot_gender,
     resolve_corridor_swimmer,
+    resolve_corridor_swimmer_flexible,
 )
+
+CORRIDOR_OVERLAY_SWIMMER_COLOR = CORRIDOR_MA_SWIMMER_COLOR
+CORRIDOR_OVERLAY_SWIMMER_LABEL = "Nageur marocain (MAR)"
+
+
+def _corridor_swimmer_specs_from_kwargs(
+    kwargs: Dict[str, Any],
+) -> List[CorridorSwimmerSpec]:
+    raw = kwargs.get("swimmer_specs")
+    if isinstance(raw, list):
+        return [s for s in raw if isinstance(s, CorridorSwimmerSpec)]
+    specs: List[CorridorSwimmerSpec] = []
+    overlay_name = kwargs.get("overlay_nageur")
+    if isinstance(overlay_name, str) and overlay_name.strip():
+        overlay_yob = kwargs.get("overlay_year_of_birth")
+        yob_int: Optional[int] = None
+        if overlay_yob is not None:
+            try:
+                yob_int = int(overlay_yob)
+            except (TypeError, ValueError):
+                yob_int = None
+        specs.append(
+            CorridorSwimmerSpec(
+                name=overlay_name.strip(),
+                year_of_birth=yob_int,
+                color=CORRIDOR_MA_SWIMMER_COLOR,
+                label=CORRIDOR_OVERLAY_SWIMMER_LABEL,
+            )
+        )
+    return specs
+
+
+def plot_corridor_swimmer_age_curve(
+    ax: plt.Axes,
+    long_df: pd.DataFrame,
+    nom_nageur: str,
+    year_of_birth: Optional[int] = None,
+    *,
+    color: str = CORRIDOR_OVERLAY_SWIMMER_COLOR,
+    label: str = CORRIDOR_OVERLAY_SWIMMER_LABEL,
+    fuzzy_min_ratio: float = 0.55,
+) -> Optional[str]:
+    """Trace un nageur sur un couloir âge/temps. Retourne un message d'erreur ou None."""
+    spec = CorridorSwimmerSpec(
+        name=str(nom_nageur).strip(),
+        year_of_birth=year_of_birth,
+        color=color,
+        label=label,
+    )
+    msgs = plot_corridor_swimmer_specs(
+        ax, long_df, [spec], fuzzy_min_ratio=fuzzy_min_ratio
+    )
+    return msgs[0] if msgs else None
 
 
 @dataclass(frozen=True)
@@ -1872,53 +1936,59 @@ class ServiceGraphe:
         self,
         df: pd.DataFrame,
         nom_event: str,
-        nom_nageur: str,
-        year_of_birth: int,
+        nom_nageur: Optional[str] = None,
+        year_of_birth: Optional[int] = None,
         age_min: int = 14,
         age_max: int = 35,
         solo_only: bool = True,
         min_points: int = 5,
         figsize: tuple[int, int] = (12, 8),
+        overlay_nageur: Optional[str] = None,
+        overlay_year_of_birth: Optional[int] = None,
+        overlay_df: Optional[pd.DataFrame] = None,
+        gender_filter: Optional[str] = None,
+        swimmer_specs: Optional[List[CorridorSwimmerSpec]] = None,
     ) -> tuple[Optional[plt.Figure], dict[str, object]]:
-        long_df = prepare_corridor_long_df(
-            df, nom_event, solo_only=solo_only, require_name=True
+        long_ref = prepare_corridor_long_df(
+            df, nom_event, solo_only=solo_only, require_name=False
         )
-        if long_df.empty:
+        if long_ref.empty:
             return None, {"message": f"Aucune donnee pour {nom_event}"}
 
-        target_name = str(nom_nageur).strip()
-        df_swimmer, resolved_name, resolved_yob = resolve_corridor_swimmer(
-            long_df, target_name, int(year_of_birth), fuzzy_min_ratio=0.55
+        long_plot = prepare_corridor_long_df_combined(
+            df, nom_event, df_extra=overlay_df, solo_only=solo_only
         )
-        if df_swimmer.empty:
-            fallback = long_df.dropna(subset=["Name", "Year_of_birth"]).head(1)
-            if not fallback.empty:
-                fb_name = str(fallback.iloc[0]["Name"]).strip()
-                try:
-                    fb_yob = int(float(fallback.iloc[0]["Year_of_birth"]))
-                except (TypeError, ValueError):
-                    fb_yob = int(year_of_birth)
-                df_swimmer, resolved_name, resolved_yob = resolve_corridor_swimmer(
-                    long_df, fb_name, fb_yob, fuzzy_min_ratio=1.0
-                )
-        if df_swimmer.empty:
-            return None, {
-                "message": f"Nageur introuvable : {nom_nageur} ({year_of_birth})",
-                "examples": long_df["Name"].dropna().drop_duplicates().head(10).tolist(),
-            }
+        specs = merge_corridor_swimmer_specs_for_plot(
+            swimmer_specs,
+            nom_nageur=nom_nageur,
+            year_of_birth=year_of_birth,
+            overlay_nageur=overlay_nageur,
+            overlay_year_of_birth=overlay_year_of_birth,
+            overlay_label=CORRIDOR_OVERLAY_SWIMMER_LABEL,
+        )
+        gender = resolve_corridor_plot_gender(long_plot, gender_filter, specs)
+        if gender in ("F", "M"):
+            long_ref = filter_corridor_long_df_gender(long_ref, gender)
+            long_plot = filter_corridor_long_df_gender(long_plot, gender)
 
-        gender = df_swimmer["Gender"].mode().iloc[0]
-        long_df = long_df[long_df["Gender"] == gender].copy()
-        df_swimmer = df_swimmer[df_swimmer["Gender"] == gender].copy()
-        swimmer_name = df_swimmer.iloc[0]["Name"]
-        swimmer_yob = df_swimmer.iloc[0]["Year_of_birth"]
+        swimmer_frames: List[pd.DataFrame] = []
+        for spec in specs:
+            df_s, _, _ = resolve_corridor_swimmer_flexible(
+                long_plot, spec.name, spec.year_of_birth
+            )
+            if not df_s.empty:
+                swimmer_frames.append(df_s)
+
+        age_lo, age_hi = corridor_age_limits(
+            long_ref, swimmer_frames, default_min=age_min, default_max=age_max
+        )
 
         percentiles = [10, 25, 50, 75, 90]
         df_percentiles = compute_corridor_percentiles_df(
-            long_df,
+            long_ref,
             percentiles,
-            age_min=age_min,
-            age_max=age_max,
+            age_min=age_lo,
+            age_max=age_hi,
             min_points=min_points,
         )
         if df_percentiles is None or df_percentiles.empty:
@@ -1944,22 +2014,8 @@ class ServiceGraphe:
             label="Zone 25-75%",
             zorder=1,
         )
-        ax.plot(
-            df_swimmer["Age_swim"],
-            df_swimmer["SwimTimeSeconds"],
-            color="red",
-            linewidth=2.5,
-            marker="o",
-            label="Nageur cible",
-            zorder=4,
-        )
-        last = df_swimmer.iloc[-1]
-        ax.scatter(last["Age_swim"], last["SwimTimeSeconds"], color="red")
-        ax.annotate(
-            f"{swimmer_name} ({swimmer_yob})",
-            (last["Age_swim"], last["SwimTimeSeconds"]),
-            xytext=(8, 0),
-            textcoords="offset points",
+        trace_messages = plot_corridor_swimmer_specs(
+            ax, long_plot, specs, source_df=df, nom_event=nom_event
         )
         ax.invert_yaxis()
         ax.set_xlabel("Age")
@@ -1969,18 +2025,17 @@ class ServiceGraphe:
         ax.legend()
         fig.tight_layout()
 
-        return fig, {
+        meta: dict[str, object] = {
             "message": "ok",
             "gender": gender,
-            "swimmer_name": swimmer_name,
-            "year_of_birth": swimmer_yob,
-            "requested_swimmer_name": target_name,
-            "requested_year_of_birth": int(year_of_birth),
-            "resolved_swimmer_name": resolved_name,
-            "resolved_year_of_birth": resolved_yob,
-            "points_swimmer": int(len(df_swimmer)),
             "ages_available": [int(x) for x in df_percentiles.index.tolist()],
+            "age_min_used": age_lo,
+            "age_max_used": age_hi,
+            "swimmer_trace_messages": trace_messages,
         }
+        if specs and trace_messages:
+            meta["overlay_swimmer_message"] = "; ".join(trace_messages)
+        return fig, meta
 
     def plot_performance_corridor_global_plot_time(
         self,
@@ -1991,20 +2046,50 @@ class ServiceGraphe:
         solo_only: bool = True,
         min_points: int = 5,
         figsize: tuple[int, int] = (12, 8),
+        overlay_nageur: Optional[str] = None,
+        overlay_year_of_birth: Optional[int] = None,
+        overlay_df: Optional[pd.DataFrame] = None,
+        gender_filter: Optional[str] = None,
+        swimmer_specs: Optional[List[CorridorSwimmerSpec]] = None,
     ) -> tuple[Optional[plt.Figure], dict[str, object]]:
-        long_df = prepare_corridor_long_df(df, nom_event, solo_only=solo_only)
-        if long_df.empty:
+        long_ref = prepare_corridor_long_df(
+            df, nom_event, solo_only=solo_only, require_name=False
+        )
+        if long_ref.empty:
             return None, {"message": f"Aucune donnee exploitable pour {nom_event}"}
 
-        gender = str(long_df["Gender"].mode().iloc[0])
-        long_df = long_df[long_df["Gender"] == gender].copy()
+        long_plot = prepare_corridor_long_df_combined(
+            df, nom_event, df_extra=overlay_df, solo_only=solo_only
+        )
+        specs = merge_corridor_swimmer_specs_for_plot(
+            swimmer_specs,
+            overlay_nageur=overlay_nageur,
+            overlay_year_of_birth=overlay_year_of_birth,
+            overlay_label=CORRIDOR_OVERLAY_SWIMMER_LABEL,
+        )
+        gender = resolve_corridor_plot_gender(long_plot, gender_filter, specs)
+        if gender in ("F", "M"):
+            long_ref = filter_corridor_long_df_gender(long_ref, gender)
+            long_plot = filter_corridor_long_df_gender(long_plot, gender)
+
+        swimmer_frames: List[pd.DataFrame] = []
+        for spec in specs:
+            df_s, _, _ = resolve_corridor_swimmer_flexible(
+                long_plot, spec.name, spec.year_of_birth
+            )
+            if not df_s.empty:
+                swimmer_frames.append(df_s)
+
+        age_lo, age_hi = corridor_age_limits(
+            long_ref, swimmer_frames, default_min=age_min, default_max=age_max
+        )
 
         percentiles = [10, 25, 50, 75, 90]
         df_percentiles = compute_corridor_percentiles_df(
-            long_df,
+            long_ref,
             percentiles,
-            age_min=age_min,
-            age_max=age_max,
+            age_min=age_lo,
+            age_max=age_hi,
             min_points=min_points,
         )
         if df_percentiles is None or df_percentiles.empty:
@@ -2028,6 +2113,9 @@ class ServiceGraphe:
             alpha=0.2,
             label="Zone 25-75%",
         )
+        trace_messages = plot_corridor_swimmer_specs(
+            ax, long_plot, specs, source_df=df, nom_event=nom_event
+        )
         ax.invert_yaxis()
         ax.set_xlabel("Age")
         ax.set_ylabel("Temps (secondes)")
@@ -2036,13 +2124,19 @@ class ServiceGraphe:
         ax.legend()
         fig.tight_layout()
 
-        return fig, {
+        meta: dict[str, object] = {
             "message": "ok",
             "gender": gender,
             "event": str(nom_event),
             "ages_available": [int(x) for x in df_percentiles.index.tolist()],
-            "points_count": int(len(long_df)),
+            "points_count": int(len(long_ref)),
+            "age_min_used": age_lo,
+            "age_max_used": age_hi,
+            "swimmer_trace_messages": trace_messages,
         }
+        if trace_messages:
+            meta["overlay_swimmer_message"] = "; ".join(trace_messages)
+        return fig, meta
 
     _DEFAULT_AGEGROUP_ORDER: Tuple[str, ...] = (
         "10 & Under",
@@ -2063,6 +2157,9 @@ class ServiceGraphe:
         min_points: int = 5,
         agegroup_order: Optional[List[str]] = None,
         figsize: tuple[int, int] = (12, 8),
+        overlay_nageur: Optional[str] = None,
+        overlay_year_of_birth: Optional[int] = None,
+        overlay_df: Optional[pd.DataFrame] = None,
     ) -> tuple[Optional[plt.Figure], dict[str, object]]:
         """Couloir de performance global : SwimTimeSeconds vs AgeGroup (catégories USA Swimming)."""
         required_cols = ["Event", "SwimTimeSeconds", "AgeGroup"]
@@ -2165,6 +2262,63 @@ class ServiceGraphe:
             else:
                 meta["swimmer_message"] = f"Nageur introuvable : {nom_nageur}"
 
+        if overlay_nageur and overlay_year_of_birth is not None:
+            src = overlay_df if overlay_df is not None else df
+            if "Event" in src.columns:
+                overlay_src = src[
+                    (src["Event"].astype(str).str.strip() == str(nom_event).strip())
+                    & (src["SwimTimeSeconds"].notna())
+                ].copy()
+            else:
+                overlay_src = src
+            if gender is not None and "Gender" in overlay_src.columns:
+                gender_filter = str(gender).strip().upper()
+                overlay_src["Gender"] = (
+                    overlay_src["Gender"].astype(str).str.strip().str.upper()
+                )
+                overlay_src = overlay_src[overlay_src["Gender"] == gender_filter]
+            name_mask = overlay_src["Name"].astype(str).str.strip() == str(
+                overlay_nageur
+            ).strip()
+            if overlay_year_of_birth is not None and "Year_of_birth" in overlay_src.columns:
+                yob_series = pd.to_numeric(overlay_src["Year_of_birth"], errors="coerce")
+                name_mask = name_mask & (yob_series == int(overlay_year_of_birth))
+            elif "Year_of_birth" in overlay_src.columns:
+                yob_series = pd.to_numeric(overlay_src["Year_of_birth"], errors="coerce")
+                if yob_series.notna().any():
+                    best_yob = int(yob_series.loc[name_mask].mode().iloc[0])
+                    name_mask = name_mask & (yob_series == best_yob)
+            swimmer_overlay = overlay_src[name_mask].copy()
+            if not swimmer_overlay.empty:
+                swimmer_curve = swimmer_overlay.groupby("AgeGroup")[
+                    "SwimTimeSeconds"
+                ].mean()
+                swimmer_curve = swimmer_curve.reindex(ordered_index).dropna()
+                if not swimmer_curve.empty:
+                    swimmer_x = [ordered_index.index(ag) for ag in swimmer_curve.index]
+                    ax.plot(
+                        swimmer_x,
+                        swimmer_curve.values,
+                        color=CORRIDOR_OVERLAY_SWIMMER_COLOR,
+                        linewidth=2.5,
+                        marker="s",
+                        label=CORRIDOR_OVERLAY_SWIMMER_LABEL,
+                        zorder=4,
+                    )
+                    meta["overlay_swimmer_name"] = str(
+                        swimmer_overlay.iloc[0]["Name"]
+                    ).strip()
+                    meta["overlay_points_swimmer"] = int(len(swimmer_overlay))
+                else:
+                    meta["overlay_swimmer_message"] = (
+                        f"Nageur marocain trouve ({len(swimmer_overlay)} perf.) "
+                        "mais aucun AgeGroup exploitable pour la courbe."
+                    )
+            else:
+                meta["overlay_swimmer_message"] = (
+                    f"Nageur marocain introuvable : {overlay_nageur}"
+                )
+
         ax.set_xticks(x_positions)
         ax.set_xticklabels(ordered_index, rotation=20, ha="right")
         ax.invert_yaxis()
@@ -2188,30 +2342,52 @@ class ServiceGraphe:
         solo_only: bool = True,
         min_points: int = 5,
         figsize: tuple[int, int] = (12, 8),
+        overlay_nageur: Optional[str] = None,
+        overlay_year_of_birth: Optional[int] = None,
+        overlay_df: Optional[pd.DataFrame] = None,
+        gender_filter: Optional[str] = None,
+        swimmer_specs: Optional[List[CorridorSwimmerSpec]] = None,
     ) -> tuple[Optional[plt.Figure], dict[str, object]]:
-        long_df = prepare_corridor_long_df(df, nom_event, solo_only=solo_only)
-        if long_df.empty:
+        long_ref = prepare_corridor_long_df(
+            df, nom_event, solo_only=solo_only, require_name=False
+        )
+        if long_ref.empty:
             return None, {"message": f"Aucune donnee exploitable pour {nom_event}"}
 
-        gender = str(long_df["Gender"].mode().iloc[0])
-        if nom_nageur and year_of_birth is not None:
-            target_norm = corridor_norm_name(nom_nageur)
-            yob_target = int(year_of_birth)
-            name_norm = long_df["Name"].astype(str).map(corridor_norm_name)
-            yob_series = pd.to_numeric(long_df["Year_of_birth"], errors="coerce")
-            exact = long_df[(name_norm == target_norm) & (yob_series == yob_target)]
-            if not exact.empty:
-                swimmer_gender = exact.iloc[0].get("Gender")
-                if pd.notna(swimmer_gender):
-                    gender = str(swimmer_gender)
+        long_plot = prepare_corridor_long_df_combined(
+            df, nom_event, df_extra=overlay_df, solo_only=solo_only
+        )
+        specs = merge_corridor_swimmer_specs_for_plot(
+            swimmer_specs,
+            nom_nageur=nom_nageur,
+            year_of_birth=year_of_birth,
+            overlay_nageur=overlay_nageur,
+            overlay_year_of_birth=overlay_year_of_birth,
+            overlay_label=CORRIDOR_OVERLAY_SWIMMER_LABEL,
+        )
+        gender = resolve_corridor_plot_gender(long_plot, gender_filter, specs)
+        if gender in ("F", "M"):
+            long_ref = filter_corridor_long_df_gender(long_ref, gender)
+            long_plot = filter_corridor_long_df_gender(long_plot, gender)
 
-        long_df = long_df[long_df["Gender"] == gender].copy()
+        swimmer_frames: List[pd.DataFrame] = []
+        for spec in specs:
+            df_s, _, _ = resolve_corridor_swimmer_flexible(
+                long_plot, spec.name, spec.year_of_birth, fuzzy_min_ratio=0.85
+            )
+            if not df_s.empty:
+                swimmer_frames.append(df_s)
+
+        age_lo, age_hi = corridor_age_limits(
+            long_ref, swimmer_frames, default_min=age_min, default_max=age_max
+        )
+
         percentiles = list(range(10, 100, 10))
         df_percentiles = compute_corridor_percentiles_df(
-            long_df,
+            long_ref,
             percentiles,
-            age_min=age_min,
-            age_max=age_max,
+            age_min=age_lo,
+            age_max=age_hi,
             min_points=min_points,
         )
         if df_percentiles is None or df_percentiles.empty:
@@ -2236,54 +2412,14 @@ class ServiceGraphe:
             label="Zone 20-80%",
         )
 
-        swimmer_points = 0
-        swimmer_name_used: Optional[str] = None
-        swimmer_yob_used: Optional[int] = None
-        swimmer_message: Optional[str] = None
-        if nom_nageur and year_of_birth is not None:
-            target_name = str(nom_nageur).strip()
-            target_norm = corridor_norm_name(target_name)
-            yob_target = int(year_of_birth)
-            df_swimmer, swimmer_name_used, swimmer_yob_used = resolve_corridor_swimmer(
-                long_df,
-                target_name,
-                yob_target,
-                fuzzy_min_ratio=0.85,
-                fuzzy_max_yob_diff=2.0,
-            )
-            if not df_swimmer.empty:
-                swimmer_points = int(len(df_swimmer))
-                ax.plot(
-                    df_swimmer["Age_swim"],
-                    df_swimmer["SwimTimeSeconds"],
-                    color="red",
-                    linewidth=2.5,
-                    marker="o",
-                    label="Nageur cible",
-                )
-                last = df_swimmer.iloc[-1]
-                ax.scatter(last["Age_swim"], last["SwimTimeSeconds"], color="red")
-                ax.annotate(
-                    f"{swimmer_name_used} ({swimmer_yob_used})",
-                    (last["Age_swim"], last["SwimTimeSeconds"]),
-                    xytext=(8, 0),
-                    textcoords="offset points",
-                )
-            else:
-                swimmer_message = (
-                    f"Nageur introuvable pour le trace: {target_name} ({yob_target})"
-                )
-                any_df = prepare_corridor_long_df(
-                    df, nom_event, solo_only=False, require_name=True
-                )
-                if solo_only and not any_df.empty:
-                    n_any = any_df["Name"].astype(str).map(corridor_norm_name)
-                    y_any = pd.to_numeric(any_df["Year_of_birth"], errors="coerce")
-                    if bool(((n_any == target_norm) & (y_any == yob_target)).any()):
-                        swimmer_message = (
-                            f"Nageur trouve sur {nom_event}, mais exclu par le filtre "
-                            f"solo_only=True. Essaie solo_only=False pour le tracer."
-                        )
+        trace_messages = plot_corridor_swimmer_specs(
+            ax,
+            long_plot,
+            specs,
+            fuzzy_min_ratio=0.85,
+            source_df=df,
+            nom_event=nom_event,
+        )
 
         ax.invert_yaxis()
         ax.set_xlabel("Age")
@@ -2298,12 +2434,14 @@ class ServiceGraphe:
             "gender": gender,
             "event": str(nom_event),
             "ages_available": [int(x) for x in df_percentiles.index.tolist()],
-            "points_count": int(len(long_df)),
+            "points_count": int(len(long_ref)),
             "percentiles": percentiles,
-            "swimmer_name": swimmer_name_used,
-            "year_of_birth": swimmer_yob_used,
-            "points_swimmer": swimmer_points,
-            "swimmer_message": swimmer_message,
+            "age_min_used": age_lo,
+            "age_max_used": age_hi,
+            "swimmer_trace_messages": trace_messages,
+            "overlay_swimmer_message": (
+                "; ".join(trace_messages) if trace_messages else None
+            ),
         }
 
     @staticmethod
@@ -2510,11 +2648,36 @@ class ServiceGraphe:
         selected_heatmap_swimmer: Optional[str],
         selected_corridor_swimmer_name: Optional[str],
         selected_corridor_swimmer_yob: Optional[int],
+        moroccan_corridor_swimmer_name: Optional[str] = None,
+        moroccan_corridor_swimmer_yob: Optional[int] = None,
+        moroccan_corridor_df: Optional[pd.DataFrame] = None,
+        corridor_plot_kwargs: Optional[Dict[str, Any]] = None,
+        corridor_gender_filter: Optional[str] = None,
+        corridor_reference_df: Optional[pd.DataFrame] = None,
     ) -> Tuple[Optional[plt.Figure], str]:
         """Construit la figure pour le menu desktop Flet (noms tels que dans ``GRAPH_CATEGORIES``)."""
         fig: Optional[plt.Figure] = None
         chart_title = selected_graph
         svc = self
+        corridor_df = (
+            corridor_reference_df
+            if corridor_reference_df is not None and not corridor_reference_df.empty
+            else df
+        )
+        if corridor_plot_kwargs is not None:
+            overlay_kwargs = dict(corridor_plot_kwargs)
+        else:
+            gender = corridor_gender_filter
+            if gender not in ("F", "M"):
+                gender = None
+            overlay_kwargs = build_corridor_chart_plot_kwargs(
+                gender_filter=gender,
+                french_name=selected_corridor_swimmer_name,
+                french_yob=selected_corridor_swimmer_yob,
+                moroccan_name=moroccan_corridor_swimmer_name,
+                moroccan_yob=moroccan_corridor_swimmer_yob,
+                moroccan_df=moroccan_corridor_df,
+            )
 
         if selected_graph in {
             "Histogramme simple",
@@ -2668,30 +2831,65 @@ class ServiceGraphe:
         elif selected_graph == "Couloir de performance (âge) - nageur cible":
             if distance and stroke and pool:
                 nom_event = f"{distance} {stroke} {pool}"
-                if selected_corridor_swimmer_name:
-                    if selected_corridor_swimmer_yob is None:
-                        chart_title = (
-                            "Couloir : le nageur doit inclure l'année de naissance (format « Nom (AAAA) »). "
-                            "Relance l'app pour régénérer le cache nageurs si besoin."
-                        )
-                    else:
-                        chart_title = f"Couloir de performance - {nom_event}"
-                        fig, meta = svc.plot_performance_corridor_plot_time(
-                            df_scope,
-                            nom_event=nom_event,
-                            nom_nageur=selected_corridor_swimmer_name,
-                            year_of_birth=int(selected_corridor_swimmer_yob),
-                        )
-                        if fig is None and isinstance(meta, dict):
+                fr_name = selected_corridor_swimmer_name
+                fr_yob = selected_corridor_swimmer_yob
+                has_fr = isinstance(fr_name, str) and fr_name.strip()
+                has_ma = (
+                    isinstance(moroccan_corridor_swimmer_name, str)
+                    and moroccan_corridor_swimmer_name.strip()
+                    and moroccan_corridor_df is not None
+                    and not moroccan_corridor_df.empty
+                )
+                has_specs = bool(overlay_kwargs.get("swimmer_specs"))
+                if has_fr or has_ma or has_specs:
+                    chart_title = f"Couloir de performance - {nom_event}"
+                    plot_kwargs = dict(overlay_kwargs)
+                    if plot_kwargs.get("swimmer_specs"):
+                        plot_kwargs.pop("overlay_nageur", None)
+                        plot_kwargs.pop("overlay_year_of_birth", None)
+                    fig, meta = svc.plot_performance_corridor_plot_time(
+                        corridor_df,
+                        nom_event=nom_event,
+                        nom_nageur=None
+                        if plot_kwargs.get("swimmer_specs")
+                        else (fr_name if has_fr else None),
+                        year_of_birth=None
+                        if plot_kwargs.get("swimmer_specs")
+                        else fr_yob,
+                        **plot_kwargs,
+                    )
+                    if isinstance(meta, dict):
+                        warn_parts: List[str] = []
+                        if meta.get("overlay_swimmer_message"):
+                            warn_parts.append(str(meta["overlay_swimmer_message"]))
+                        elif meta.get("swimmer_trace_messages"):
+                            msgs = meta.get("swimmer_trace_messages")
+                            if isinstance(msgs, list) and msgs:
+                                warn_parts.append("; ".join(str(m) for m in msgs))
+                        if fig is None:
                             err = str(meta.get("message", ""))
-                            if err:
-                                chart_title = err
+                            chart_title = err or (warn_parts[0] if warn_parts else chart_title)
+                        elif warn_parts:
+                            chart_title = f"{chart_title} — {warn_parts[0]}"
+                elif overlay_kwargs.get("swimmer_specs") or overlay_kwargs:
+                    chart_title = f"Couloir de performance global - {nom_event}"
+                    fig, meta = svc.plot_performance_corridor_global_plot_time(
+                        corridor_df,
+                        nom_event=nom_event,
+                        **overlay_kwargs,
+                    )
+                    if fig is None and isinstance(meta, dict):
+                        err = str(meta.get("message", ""))
+                        if err:
+                            chart_title = err
+                        elif meta.get("overlay_swimmer_message"):
+                            chart_title = str(meta["overlay_swimmer_message"])
                 else:
                     # Au démarrage du mode "nageur cible", afficher Graphe28 (global)
                     # tant qu'aucun nageur n'a été confirmé.
                     chart_title = f"Couloir de performance global - {nom_event}"
                     fig, meta = svc.plot_performance_corridor_global_plot_time(
-                        df_scope,
+                        corridor_df,
                         nom_event=nom_event,
                     )
                     if fig is None and isinstance(meta, dict):
@@ -2704,29 +2902,30 @@ class ServiceGraphe:
                 nom_event = f"{distance} {stroke} {pool}"
                 chart_title = f"Couloir de performance global - {nom_event}"
                 fig, meta = svc.plot_performance_corridor_global_plot_time(
-                    df_scope,
+                    corridor_df,
                     nom_event=nom_event,
+                    **overlay_kwargs,
                 )
                 if fig is None and isinstance(meta, dict):
                     err = str(meta.get("message", ""))
                     if err:
                         chart_title = err
+                    elif meta.get("overlay_swimmer_message"):
+                        chart_title = str(meta["overlay_swimmer_message"])
 
         elif selected_graph == "Couloir de performance global (déciles 10-90)":
             if distance and stroke and pool:
                 nom_event = f"{distance} {stroke} {pool}"
                 chart_title = f"Couloir global (déciles 10-90) - {nom_event}"
-                deciles_kwargs: Dict[str, Any] = {}
-                if selected_corridor_swimmer_name and selected_corridor_swimmer_yob is not None:
+                deciles_kwargs: Dict[str, Any] = dict(overlay_kwargs)
+                if selected_corridor_swimmer_name:
                     deciles_kwargs["nom_nageur"] = selected_corridor_swimmer_name
-                    deciles_kwargs["year_of_birth"] = int(selected_corridor_swimmer_yob)
-                elif selected_corridor_swimmer_name:
-                    chart_title = (
-                        "Couloir déciles : le nageur doit inclure l'année de naissance "
-                        "(format « Nom (AAAA) »)."
-                    )
+                    if selected_corridor_swimmer_yob is not None:
+                        deciles_kwargs["year_of_birth"] = int(
+                            selected_corridor_swimmer_yob
+                        )
                 fig, meta = svc.plot_performance_corridor_global_deciles_plot_time(
-                    df_scope,
+                    corridor_df,
                     nom_event=nom_event,
                     **deciles_kwargs,
                 )
@@ -2734,6 +2933,8 @@ class ServiceGraphe:
                     err = str(meta.get("message", ""))
                     if err:
                         chart_title = err
+                    elif meta.get("overlay_swimmer_message"):
+                        chart_title = str(meta["overlay_swimmer_message"])
 
         elif selected_graph == "Split Speed vs Distance (Relay Events) with Mean Trend Line":
             if distance and stroke and pool:
