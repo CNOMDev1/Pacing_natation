@@ -1,9 +1,21 @@
 """Scraping Omega Timing : index des compétitions et PDF « Total Ranking ».
 
-Les PDF sont stockés sous ``data/raw/omega/pdfs/{année}/``. L'accès au site requiert
-des cookies Chromium (``cookies_omegatiming.txt``), rafraîchis via Playwright si
-expirés. Les années anciennes (< 2010) et 2000 ont des traitements spécifiques
-(timeouts, variantes d'URL).
+Ce module parcourt le site omegatiming.com année par année, identifie les
+compétitions natation et télécharge les PDF « Total Ranking » associés.
+Les fichiers sont stockés sous ``data/raw/omega/pdfs/{année}/``.
+
+Le flux de données :
+1. **Authentification** — les requêtes HTTP utilisent des cookies Chromium
+   sérialisés dans ``cookies_omegatiming.txt`` à la racine du projet.
+   Ils sont rafraîchis via Playwright si expirés ou en cas de timeouts répétés.
+2. **Index annuel** — pour chaque année, récupération de la page
+   ``/sports-timing-live-results/{year}`` et extraction des liens « Swimming ».
+3. **Page compétition** — parsing HTML pour trouver les liens PDF « Total Ranking »
+   (trois stratégies de sélecteurs CSS selon la structure de la page).
+4. **Téléchargement** — écriture des PDF dans le dossier annuel correspondant.
+
+Les années anciennes (< 2010) et 2000 ont des traitements spécifiques
+(timeouts courts, variantes d'URL, URLs de compétition directes).
 """
 from __future__ import annotations
 
@@ -21,32 +33,50 @@ import requests
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 
+# --- Chemins et configuration locale ---
+
 # Racine du projet (Pacing/) pour le fichier cookies
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _COOKIES_FILE = _PROJECT_ROOT / "cookies_omegatiming.txt"
 
-# Dossier de data Omega
+# Dossier de sortie des PDF Omega (data/raw/omega/pdfs/{année}/)
 _DATA_BASE_OMEGA = Path(__file__).resolve().parent.parent / "data" / "raw" / "omega"
 
+# --- Paramètres de scraping ---
+
 BASE_URL = "https://www.omegatiming.com"
-START_YEAR = 2000
-END_YEAR = 2026
-REVERSE_ORDER = False
-DELAY_BETWEEN_YEARS = 2
-TIMEOUT_OLD_YEARS = 15
+START_YEAR = 2000  # borne inférieure par défaut (CLI et API)
+END_YEAR = 2026  # borne supérieure par défaut
+REVERSE_ORDER = False  # si True, traite les années de la plus récente à la plus ancienne
+DELAY_BETWEEN_YEARS = 2  # pause (s) entre deux compétitions d'une même année
+TIMEOUT_OLD_YEARS = 15  # timeout réduit pour les index < 2010 (souvent absents)
+# URLs de secours quand la page index annuelle n'est pas accessible
 DIRECT_COMPETITION_URLS = {
     2000: [
         "https://www.omegatiming.com/2000/0001000E00-live-results",
     ],
 }
 
-# URL utilisée pour récupérer les cookies 
+# Page récente utilisée par Playwright pour obtenir des cookies valides
 COOKIE_FETCH_URL = "https://www.omegatiming.com/2025/2025-tyr-pro-swim-series-03-live-results"
 
 
 async def _fetch_cookies_async(cookies_file: Path | None = None, url: str = COOKIE_FETCH_URL, headless: bool = False) -> bool:
-    """
-    Met à jour le fichier cookies_omegatiming.txt
+    """Ouvre une page Omega via Playwright et sérialise les cookies Chromium.
+
+    Les cookies du domaine ``omegatiming.com`` sont concaténés en en-tête
+    ``Cookie`` et écrits dans le fichier texte configuré.
+
+    Args:
+        cookies_file (Path | None): Chemin de sortie. Par défaut ``_COOKIES_FILE``.
+        url (str): Page Omega à charger pour déclencher la pose des cookies.
+        headless (bool): Lance Chromium sans interface graphique si True.
+
+    Returns:
+        bool: True si l'écriture du fichier a réussi.
+
+    Raises:
+        Aucune exception propagée ; les erreurs Playwright remontent à l'appelant.
     """
     path = cookies_file or _COOKIES_FILE
     async with async_playwright() as p:
@@ -75,7 +105,14 @@ async def _fetch_cookies_async(cookies_file: Path | None = None, url: str = COOK
 
 
 def load_cookie_header_from_file(path: str | Path) -> str | None:
-    """Lit l'en-tête Cookie sérialisé depuis le fichier texte."""
+    """Lit l'en-tête Cookie sérialisé depuis le fichier texte.
+
+    Args:
+        path (str | Path): Chemin vers ``cookies_omegatiming.txt``.
+
+    Returns:
+        str | None: Contenu du fichier (sans espaces de bord), ou None si absent/vide.
+    """
     try:
         with open(path, "r", encoding="utf-8") as f:
             value = f.read().strip()
@@ -84,6 +121,7 @@ def load_cookie_header_from_file(path: str | Path) -> str | None:
         return None
 
 
+# En-têtes HTTP mimant un navigateur Chrome ; Cookie injecté ci-dessous si disponible
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -105,13 +143,25 @@ cookie_header = load_cookie_header_from_file(_COOKIES_FILE)
 if cookie_header:
     HEADERS["Cookie"] = cookie_header
 
+# Session partagée entre threads ; SESSION_LOCK protège les accès concurrents
 session = requests.Session()
 session.headers.update(HEADERS)
 SESSION_LOCK = threading.Lock()
 
 
 def update_cookies(cookies_file: Path | None = None, url: str = COOKIE_FETCH_URL, headless: bool = False) -> bool:
-    """Met à jour les cookies et recharge la session."""
+    """Rafraîchit les cookies via Playwright et recharge la session HTTP.
+
+    Appelé automatiquement après des timeouts répétés dans ``fetch_with_retries``.
+
+    Args:
+        cookies_file (Path | None): Fichier cookies cible. Par défaut ``_COOKIES_FILE``.
+        url (str): Page utilisée pour la collecte Playwright.
+        headless (bool): Mode headless pour Chromium.
+
+    Returns:
+        bool: True si de nouveaux cookies ont été chargés dans ``session``.
+    """
     print(f"\n{'*'*60}", flush=True)
     print("Mise à jour des cookies...", flush=True)
     print(f"{'*'*60}", flush=True)
@@ -140,13 +190,27 @@ def update_cookies(cookies_file: Path | None = None, url: str = COOKIE_FETCH_URL
         return False
 
 
+# --- Paramètres HTTP (retries, timeouts) ---
+
 MAX_RETRIES = 3
-DELAY_BETWEEN_RETRIES = 5
-TIMEOUT_INDEX = 60
-TIMEOUT_PDF = 40
+DELAY_BETWEEN_RETRIES = 5  # pause (s) entre deux tentatives GET
+TIMEOUT_INDEX = 60  # pages index / compétition (années récentes)
+TIMEOUT_PDF = 40  # téléchargement d'un fichier PDF
+
 
 def check_url_exists(url: str, timeout: int = 5) -> int | None:
-    """Vérifie rapidement si une URL Omega répond (HEAD). Retourne le code HTTP ou None."""
+    """Vérifie rapidement si une URL Omega répond (requête HEAD).
+
+    Utilisé avant le GET complet pour les années < 2010 afin d'éviter
+    d'attendre un timeout long sur des pages inexistantes.
+
+    Args:
+        url (str): URL à tester.
+        timeout (int): Délai maximum en secondes.
+
+    Returns:
+        int | None: Code HTTP (ex. 200, 404) ou None en cas d'erreur réseau.
+    """
     try:
         with SESSION_LOCK:
             resp = session.head(url, timeout=timeout, allow_redirects=True)
@@ -161,7 +225,21 @@ def fetch_with_retries(
     timeout: int,
     skip_quick_check: bool = False,
 ) -> requests.Response | None:
-    """GET avec retries, gestion du rate-limiting 429 et rafraîchissement des cookies."""
+    """Effectue un GET avec retries, gestion du 429 et rafraîchissement des cookies.
+
+    En cas de timeouts répétés, tente une mise à jour des cookies avant le
+    dernier essai. Pour l'année 2000, ajoute un en-tête ``Referer`` spécifique.
+
+    Args:
+        url (str): URL cible.
+        description (str): Libellé affiché dans les logs.
+        timeout (int): Délai maximum par tentative (secondes).
+        skip_quick_check (bool): Si True, ignore le HEAD préalable pour les vieilles années.
+
+    Returns:
+        requests.Response | None: Réponse HTTP 200, ou None si échec définitif.
+    """
+    # Pré-vérification HEAD pour les index annuels anciens (souvent 404 ou timeout)
     if not skip_quick_check and "/sports-timing-live-results/" in url:
         year_match = url.split("/sports-timing-live-results/")[-1].split("/")[0]
         try:
@@ -203,6 +281,7 @@ def fetch_with_retries(
                 print(f"Page non trouvée (404) pour {url}", flush=True)
                 return None
             elif resp.status_code == 429:
+                # Respect du Retry-After serveur, sinon backoff progressif
                 print("Rate limiting détecté (429 Too Many Requests)", flush=True)
                 retry_after = resp.headers.get("Retry-After")
                 if retry_after:
@@ -235,6 +314,7 @@ def fetch_with_retries(
             timeout_count += 1
             print(f"Timeout - Code de statut: N/A (le serveur ne répond pas dans les {timeout}s)", flush=True)
             print(f"  URL: {url}", flush=True)
+            # Au 2e timeout, on tente de rafraîchir les cookies avant le dernier essai
             if attempt == 2 and attempt < MAX_RETRIES:
                 print("  Mise à jour des cookies avant le dernier essai...", flush=True)
                 if update_cookies():
@@ -291,6 +371,7 @@ def try_alternative_urls(base_url: str) -> requests.Response | None:
     """
     if "/2000/" in base_url:
         path = base_url.split("/2000/")[-1]
+        # Plusieurs schémas d'URL coexistent pour les archives 2000
         alternatives = [
             f"https://www.omegatiming.com/2000/{path}",
             f"https://www.omegatiming.com/2000/{path}/",
@@ -321,11 +402,24 @@ def try_alternative_urls(base_url: str) -> requests.Response | None:
 
 
 def download_total_ranking_pdfs_for_meet(meet_url: str, pdf_dir: str) -> None:
-    """Télécharge les PDF « Total Ranking » listés sur la page d'une compétition."""
+    """Télécharge les PDF « Total Ranking » listés sur la page d'une compétition.
+
+    Parse le HTML de la page meet, extrait les liens PDF pertinents puis les
+    enregistre dans ``pdf_dir``. Pour l'année 2000, essaie des URLs alternatives
+    si la page principale échoue.
+
+    Args:
+        meet_url (str): URL absolue de la page compétition Omega.
+        pdf_dir (str): Dossier de destination (ex. ``data/raw/omega/pdfs/2024``).
+
+    Returns:
+        None
+    """
     print(f"\nRécupération de la page de la compétition : {meet_url}", flush=True)
     year = None
     if "/2000/" in meet_url:
         year = 2000
+        # Archives 2000 : serveur lent, timeout allongé et Referer obligatoire
         print(" Année 2000 détectée - utilisation d'un timeout étendu (120s)", flush=True)
         timeout_to_use = 120
         session.headers["Referer"] = "https://www.omegatiming.com/"
@@ -352,9 +446,10 @@ def download_total_ranking_pdfs_for_meet(meet_url: str, pdf_dir: str) -> None:
         return
 
     soup = BeautifulSoup(resp.text, "html.parser")
-    # Trois stratégies : paragraphes p.three, cellules div.cell, puis texte « TOTAL RANKING ».
+    # Trois stratégies de parsing : le markup Omega varie selon l'âge de la page
     total_ranking_links = []
 
+    # 1) Liens dans des paragraphes p.three (structure récente)
     for p in soup.select("p.three"):
         a = p.find("a")
         if a:
@@ -366,6 +461,7 @@ def download_total_ranking_pdfs_for_meet(meet_url: str, pdf_dir: str) -> None:
                     total_ranking_links.append(pdf_url)
                     print(f"  Trouvé PDF 'Total Ranking' (p.three) : {pdf_url}", flush=True)
 
+    # 2) Liens dans des cellules div.cell avec libellé dans un span
     if not total_ranking_links:
         for a in soup.select("div.cell a[href$='.pdf']"):
             span = a.find("span")
@@ -378,6 +474,7 @@ def download_total_ranking_pdfs_for_meet(meet_url: str, pdf_dir: str) -> None:
                         total_ranking_links.append(pdf_url)
                         print(f"   Trouvé PDF 'Total Ranking' (div.cell) : {pdf_url}", flush=True)
 
+    # 3) Recherche générale sur tous les liens <a> (fallback)
     if not total_ranking_links:
         for a in soup.find_all("a", href=True):
             link_text = a.get_text(strip=True).upper()
@@ -417,7 +514,13 @@ def download_total_ranking_pdfs_for_meet(meet_url: str, pdf_dir: str) -> None:
 
 
 def _scan_pdfs_from_disk():
-    """Scan data/raw/omega/pdfs/ et retourne la liste des PDFs (year, name, path)."""
+    """Scanne ``data/raw/omega/pdfs/`` et retourne la liste des PDFs locaux.
+
+    Parcourt chaque sous-dossier annuel et collecte les fichiers ``*.pdf``.
+
+    Returns:
+        list[dict]: Dictionnaires ``{"year", "name", "path"}`` triés par année.
+    """
     base = _DATA_BASE_OMEGA / "pdfs"
     if not base.exists() or not base.is_dir():
         return []
@@ -431,9 +534,13 @@ def _scan_pdfs_from_disk():
 
 
 def get_all_pdfs_response() -> dict:
-    """
-    Scrape le site Omega (omegatiming.com) pour toutes les années 
-    Retourne count, message et liste des PDFs (year, name, path).
+    """Lance le téléchargement complet puis retourne l'inventaire des PDFs locaux.
+
+    Point d'entrée API : télécharge toutes les années ``START_YEAR`` → ``END_YEAR``,
+    puis scanne le disque.
+
+    Returns:
+        dict: ``{"count", "message", "pdfs"}`` avec la liste des fichiers trouvés.
     """
     run_download_between_years(START_YEAR, END_YEAR)
     pdfs = _scan_pdfs_from_disk()
@@ -442,8 +549,16 @@ def get_all_pdfs_response() -> dict:
 
 
 def get_pdf_paths_between_years(start_year: int, end_year: int):
-    """
-    Retourne les PDFs dont le dossier (année) est entre start_year et end_year (inclus).
+    """Liste les PDFs locaux dont le dossier annuel est dans la plage demandée.
+
+    Ne déclenche aucun téléchargement ; lecture disque uniquement.
+
+    Args:
+        start_year (int): Borne inférieure (inclusive).
+        end_year (int): Borne supérieure (inclusive).
+
+    Returns:
+        list[dict]: Dictionnaires ``{"year", "name", "path"}`` pour la plage filtrée.
     """
     base = _DATA_BASE_OMEGA / "pdfs"
     if not base.exists() or not base.is_dir():
@@ -463,9 +578,18 @@ def get_pdf_paths_between_years(start_year: int, end_year: int):
 
 
 def get_pdfs_by_years_response(start_year: int, end_year: int, execute: bool = False) -> dict:
-    """
-    Traite la requête "PDFs par années" : lance le téléchargement, puis retourne
-    la liste des PDFs et le dict de réponse (pour GET /omega/pdfs/by-years).
+    """Traite la requête « PDFs par années » pour l'endpoint API.
+
+    Si ``execute`` est True, lance ``run_download_between_years`` avant de
+    scanner le disque.
+
+    Args:
+        start_year (int): Première année de la plage.
+        end_year (int): Dernière année de la plage.
+        execute (bool): Si True, télécharge les PDFs avant de lister.
+
+    Returns:
+        dict: ``{"start_year", "end_year", "count", "message", "pdfs"}``.
     """
     if execute:
         run_download_between_years(start_year, end_year)
@@ -481,8 +605,18 @@ def get_pdfs_by_years_response(start_year: int, end_year: int, execute: bool = F
 
 
 def _process_year(year: int, base_pdf_dir: str) -> None:
-    """
-    Traite le téléchargement pour une année donnée (utilisé par les threads).
+    """Traite le téléchargement pour une année donnée (exécuté par un thread).
+
+    Récupère la page index annuelle, extrait les liens compétitions natation,
+    puis appelle ``download_total_ranking_pdfs_for_meet`` pour chacun.
+    Pour les années < 2010 sans index, utilise ``DIRECT_COMPETITION_URLS``.
+
+    Args:
+        year (int): Année à traiter.
+        base_pdf_dir (str): Racine ``data/raw/omega/pdfs`` (sous-dossier créé par année).
+
+    Returns:
+        None
     """
     print(f"\n{'*'*60}", flush=True)
     print(f"TRAITEMENT DE L'ANNÉE {year}", flush=True)
@@ -509,6 +643,7 @@ def _process_year(year: int, base_pdf_dir: str) -> None:
             return
     else:
         soup = BeautifulSoup(resp.text, "html.parser")
+        # Chaque div.row représente une compétition ; on ne garde que la natation
         for row in soup.select("div.row"):
             sport_p = row.select_one("p.sport.swimming")
             if not sport_p:
@@ -528,9 +663,17 @@ def _process_year(year: int, base_pdf_dir: str) -> None:
 
 
 def run_download_between_years(start_year: int, end_year: int) -> None:
-    """
-    Lance le téléchargement des PDFs Omega pour les années [start_year, end_year] (inclus),
-    en traitant plusieurs années en parallèle (multi-thread).
+    """Lance le téléchargement des PDFs Omega sur une plage d'années.
+
+    Les années sont traitées en parallèle via ``ThreadPoolExecutor`` (jusqu'à
+    27 workers). L'ordre peut être inversé si ``REVERSE_ORDER`` est True.
+
+    Args:
+        start_year (int): Borne inférieure (inclusive) ; échangée si > end_year.
+        end_year (int): Borne supérieure (inclusive).
+
+    Returns:
+        None
     """
     if start_year > end_year:
         start_year, end_year = end_year, start_year
@@ -542,7 +685,8 @@ def run_download_between_years(start_year: int, end_year: int) -> None:
     if REVERSE_ORDER:
         years = list(reversed(years))
 
-    max_workers = min(27, len(years)) 
+    # Un thread par année, plafonné à 27 pour limiter la charge sur le serveur Omega
+    max_workers = min(27, len(years))
     if max_workers <= 0:
         return
 
@@ -561,8 +705,8 @@ def run_download_between_years(start_year: int, end_year: int) -> None:
 def main():
     """Point d'entrée CLI : télécharge les PDF Total Ranking sur une plage d'années.
 
-    Lit éventuellement ``start_year`` et ``end_year`` depuis ``sys.argv``,
-    sinon utilise ``START_YEAR`` et ``END_YEAR``.
+    Usage : ``python -m services.omega_service [start_year end_year]``.
+    Sans arguments, utilise ``START_YEAR`` et ``END_YEAR``.
 
     Returns:
         None
