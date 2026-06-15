@@ -1,9 +1,27 @@
+"""Prétraitement USA Swimming : nettoyage et regroupement par compétition.
+
+Ce script lit les listes de performances brutes (``data/raw/usaswimming/``),
+nettoie chaque enregistrement et regroupe les résultats au format Extranat
+(compétition → épreuves → performances) sous ``data/processed/usaswimming/``.
+
+Le flux de données :
+1. **Nettoyage ligne** — ``clean_record()`` valide le nom, normalise dates,
+   chronos, genre, pays et calcule ``SwimTimeSeconds`` / ``Speed``.
+2. **Regroupement** — ``clean_file()`` agrège par ``(Event, Session)`` en
+   épreuves avec liste de performances.
+3. **Batch** — ``clean_usaswimming_directory()`` parcourt récursivement
+   tous les JSON bruts en conservant l'arborescence.
+
+Point d'entrée CLI : ``python -m app.scripts.usaswimming_preprocessing``.
+"""
 import json
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from collections import defaultdict
+
+# --- Chemins source / sortie ---
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "raw" / "usaswimming"
 OUTPUT_DIR = Path(__file__).resolve().parents[2] / "data" / "processed" / "usaswimming"
@@ -14,8 +32,18 @@ COURSE_CODES = {"LCM", "SCM", "SCY"}
 _VALID_SWIMMER_NAME_PATTERN = re.compile(r"^[A-Za-zÀ-ÿ\s\-'.]+$")
 
 
+# --- Statut, pays et parsing des noms ---
+
+
 def compute_status_from_swim_time(swim_time: Any) -> str:
-    """Détermine le statut à partir de la valeur de SwimTime."""
+    """Détermine le statut à partir de la valeur de SwimTime.
+
+    Args:
+        swim_time (Any): Temps brut (chaîne, None, code DNS/DSQ/DNF).
+
+    Returns:
+        str: ``"OK"``, ``"DNS"``, ``"DSQ"``, ``"DNF"`` ou ``"NaN"``.
+    """
     if swim_time is None:
         return "NaN"
 
@@ -57,7 +85,14 @@ COUNTRY_MAP: Dict[str, str] = {
 
 
 def normalize_country(raw: str) -> str:
-    """Convertit une fédération/pays en code pays 3 lettres."""
+    """Convertit une fédération ou un pays en code ISO 3 lettres.
+
+    Args:
+        raw (str): Libellé pays ou code existant.
+
+    Returns:
+        str: Code normalisé (ex. ``"USA"``, ``"FRA"``).
+    """
     txt = raw.strip()
     if not txt:
         return txt
@@ -72,9 +107,15 @@ def normalize_country(raw: str) -> str:
 def parse_name_year_nationality(
     raw_name: str,
 ) -> Tuple[str, Optional[int], Optional[str]]:
-    """
-    À partir d'un nom éventuellement enrichi,
-    renvoie (nom_nettoyé, année_naissance, nationalité).
+    """Extrait nom, année de naissance et nationalité d'un libellé enrichi.
+
+    Gère les formats du type ``"Dupont Jean (2008/16 ans)FRA"``.
+
+    Args:
+        raw_name (str): Nom brut tel que fourni par la source.
+
+    Returns:
+        Tuple[str, Optional[int], Optional[str]]: Nom nettoyé, YOB, nationalité.
     """
     txt = raw_name.strip()
     if not txt:
@@ -107,7 +148,14 @@ def parse_name_year_nationality(
 
 
 def is_valid_swimmer_name(name: Optional[str]) -> bool:
-    """True si le nom ne contient ni chiffre ni caractere special (* , #, etc.)."""
+    """Vérifie que le nom ne contient ni chiffre ni caractère spécial.
+
+    Args:
+        name (Optional[str]): Nom du nageur.
+
+    Returns:
+        bool: True si le nom respecte le motif autorisé.
+    """
     if name is None:
         return False
     value = str(name).strip()
@@ -117,9 +165,15 @@ def is_valid_swimmer_name(name: Optional[str]) -> bool:
 
 
 def parse_swim_time_to_seconds(raw: str) -> float:
-    """
-    Convert a time to seconds.
-    Returns float("nan") if format is not recognized.
+    """Convertit un temps affiché en secondes décimales.
+
+    Accepte ``HH:MM:SS``, ``MM:SS.ss``, ``SS.ss`` ou entiers.
+
+    Args:
+        raw (str): Chaîne de temps brute.
+
+    Returns:
+        float: Secondes, ou ``float("nan")`` si format non reconnu.
     """
     raw = raw.strip()
     hh_mm_ss = re.match(r"^(\d+):(\d{1,2}):(\d{1,2}(?:\.\d+)?)$", raw)
@@ -151,9 +205,13 @@ def parse_swim_time_to_seconds(raw: str) -> float:
 
 
 def sanitize_swim_time(raw: Any) -> str:
-    """
-    Keep only digits, ':' and '.' in SwimTime.
-    Also normalize duplicate separators.
+    """Nettoie SwimTime en ne conservant que chiffres, ``:`` et ``.``.
+
+    Args:
+        raw (Any): Valeur brute du temps.
+
+    Returns:
+        str: Temps sanitisé, ou chaîne vide si absent.
     """
     if raw is None:
         return ""
@@ -189,10 +247,17 @@ def normalize_date(raw: str) -> str:
     return raw
 
 
+# --- Parsing épreuve et nettoyage enregistrement ---
+
+
 def parse_event(raw_event: str) -> Tuple[Optional[int], Optional[str], Optional[str]]:
-    """
-    À partir d'un Event comme "1500 FR LCM" ou "100 BK SCM",
-    extrait (distance_en_m, stroke_code, course_code).
+    """Extrait distance, code nage et bassin depuis un libellé Event.
+
+    Args:
+        raw_event (str): Libellé type ``"100 BK LCM"``.
+
+    Returns:
+        Tuple[Optional[int], Optional[str], Optional[str]]: Distance, Stroke, Course.
     """
     if not raw_event:
         return None, None, None
@@ -222,7 +287,17 @@ def parse_event(raw_event: str) -> Tuple[Optional[int], Optional[str], Optional[
 
 
 def clean_record(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Nettoie un enregistrement USA Swimming. Retourne None si le nom est invalide."""
+    """Nettoie un enregistrement USA Swimming (une performance).
+
+    Valide le nom, normalise genre/chrono/pays et dérive Distance, Stroke,
+    Course et Speed. Retourne None si le nom est invalide.
+
+    Args:
+        rec (Dict[str, Any]): Ligne brute du JSON source.
+
+    Returns:
+        Optional[Dict[str, Any]]: Performance nettoyée ou None si rejetée.
+    """
     cleaned: Dict[str, Any] = {}
 
     name = str(rec.get("Name", "")).strip()
@@ -346,6 +421,7 @@ def clean_record(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             original_seconds = float("nan")
 
         chosen_seconds = original_seconds
+        # NaN check : préfère SwimTimeSeconds source, sinon valeur recalculée
         if not (isinstance(original_seconds, float) and not (original_seconds != original_seconds)):
             chosen_seconds = original_seconds
         elif not (isinstance(computed, float) and computed != computed):
@@ -382,7 +458,22 @@ def _age_at_performance(swim_date_iso: Optional[str], year_of_birth: Any) -> Opt
     return swim_year - year_of_birth
 
 
+# --- Regroupement fichier et batch ---
+
+
 def clean_file(input_path: Path, output_path: Path) -> None:
+    """Nettoie un fichier JSON liste et le regroupe au format compétition Extranat.
+
+    Args:
+        input_path (Path): Fichier JSON brut (liste de performances).
+        output_path (Path): Fichier JSON de sortie (objet compétition).
+
+    Returns:
+        None
+
+    Raises:
+        ValueError: Si la racine JSON n'est pas une liste.
+    """
     with input_path.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -479,9 +570,15 @@ def clean_file(input_path: Path, output_path: Path) -> None:
 
 
 def clean_usaswimming_directory() -> None:
-    """
-    Parcourt tous les fichiers JSON sous `data/raw/usaswimming` et écrit les données nettoyées
-    dans `data/processed/usaswimming` en conservant la même arborescence.
+    """Parcourt ``data/raw/usaswimming`` et écrit les JSON normalisés.
+
+    Conserve l'arborescence des sous-dossiers (un fichier par compétition/année).
+
+    Returns:
+        None
+
+    Raises:
+        FileNotFoundError: Si le dossier source est absent.
     """
     if not DATA_DIR.exists():
         raise FileNotFoundError(f"Dossier introuvable: {DATA_DIR}")

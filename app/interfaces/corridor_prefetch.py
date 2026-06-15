@@ -1,3 +1,16 @@
+"""Précalcul des graphiques couloir au démarrage de l'application desktop.
+
+Ce module encapsule la collecte des tâches couloir depuis le cache
+``prefetched_event_swimmers.json``, le rendu matplotlib parallèle et
+l'enregistrement dans ``prefetched_corridor_graphs.json``.
+
+Le flux :
+1. **Collecte** — ``CorridorPrefetchManager.collect_tasks()`` parcourt le cache
+   nageurs/épreuves et produit des ``CorridorTask``.
+2. **Calcul** — ``compute_render()`` génère chaque figure via ``ServiceGraphe``.
+3. **Cache** — ``register_render()`` et ``prefetch_skip_existing()`` évitent
+   de recalculer les entrées déjà OK.
+"""
 import asyncio
 import concurrent.futures
 import datetime as dt
@@ -10,14 +23,38 @@ if TYPE_CHECKING:
     from desktop_flet import PacingDesktopApp
 
 
-CorridorTask = Tuple[str, int, str, str, int] # tâche de calcul couloir (stroke, distance, pool, swimmer_name, swimmer_yob)
-CorridorRender = Tuple[str, str, Dict[str, Any], str, str, int, Optional[str], Optional[str]] # résultat d’un calcul (render_key, chart_id, options, status, chart_title, row_count, image_base64, error)
+# --- Types alias pour tâches et résultats de prefetch ---
+
+CorridorTask = Tuple[str, int, str, str, int]  # stroke, distance, pool, nom, yob
+CorridorRender = Tuple[str, str, Dict[str, Any], str, str, int, Optional[str], Optional[str]]
 
 
 class CorridorPrefetchManager:
-    """Encapsule la collecte, le calcul et l'enregistrement du préfetch couloir."""
+    """Orchestre le précalcul des graphiques couloir pour l'UI desktop.
+
+    Encapsule la collecte des tâches depuis ``_event_swimmers_cache``,
+    le rendu parallèle (``asyncio`` + ``ThreadPoolExecutor``) et l'écriture
+    du registre JSON des couloirs.
+
+    Attributes:
+        app: Instance ``PacingDesktopApp`` parente.
+        corridor_category (str): Catégorie graphique (ex. couloirs de performance).
+        corridor_graph_name (str): Nom du graphique couloir à précalculer.
+        max_renders (int): Plafond de tâches (0 = illimité).
+    """
+
     def __init__(self, app: "PacingDesktopApp", *, corridor_category: str, corridor_graph_name: str, max_renders: Optional[int] = None) -> None:
-        """Intialise le manager avec le contexte nécessaire"""
+        """Initialise le manager avec le contexte application et graphique cible.
+
+        Args:
+            app (PacingDesktopApp): Application desktop Flet.
+            corridor_category (str): Catégorie pour les clés de rendu.
+            corridor_graph_name (str): Libellé du graphique couloir.
+            max_renders (Optional[int]): Nombre max de rendus (None → 0).
+
+        Returns:
+            None
+        """
         self.app = app
         self.corridor_category = corridor_category
         self.corridor_graph_name = corridor_graph_name
@@ -37,10 +74,13 @@ class CorridorPrefetchManager:
         }
 
     def collect_tasks(self) -> List[CorridorTask]:
-        """
-        Transforme le cache des nageurs/événements (prefetched_event_swimmers.json) en une liste de tâches.
-        Liste (stroke, distance, pool, nom_nageur, yob) pour préfetch couloir.
-        Respecte max_renders (0 = pas de plafond).
+        """Transforme le cache nageurs/épreuves en liste de tâches de prefetch.
+
+        Parcourt ``app._event_swimmers_cache`` et extrait les couples
+        (stroke, distance, pool, nom, yob). Respecte ``max_renders``.
+
+        Returns:
+            List[CorridorTask]: Tâches à exécuter.
         """
         tasks: List[CorridorTask] = []
         for stroke, by_d in self.app._event_swimmers_cache.items():
@@ -74,9 +114,14 @@ class CorridorPrefetchManager:
         return tasks
 
     def compute_render(self, task: CorridorTask) -> Optional[CorridorRender]:
-        """
-        Exécute un calcul complet pour une tâche
-        Retourne (render_key, chart_id, options, status, chart_title, row_count, image_base64, error).
+        """Exécute un calcul couloir complet pour une tâche donnée.
+
+        Args:
+            task (CorridorTask): Paramètres stroke/distance/pool/nageur.
+
+        Returns:
+            Optional[CorridorRender]: Résultat avec image base64 si succès, ou
+                statut d'erreur / scope vide.
         """
         stroke, distance, pool, nom, yob = task
         options = self.corridor_prefetch_render_options_dict(stroke, int(distance), pool, nom, int(yob)) # Construire un dictionnaire d’options standardisé pour un rendu couloir
@@ -275,7 +320,14 @@ class CorridorPrefetchManager:
                 self._ingest_prefetch_result(result)
 
     def prefetch_skip_existing(self, tasks: List[CorridorTask]) -> None:
-        """Précalcule les graphes couloir ; ignore les entrées déjà OK dans le JSON."""
+        """Précalcule les graphes couloir en ignorant les entrées déjà en cache.
+
+        Args:
+            tasks (List[CorridorTask]): Tâches candidates.
+
+        Returns:
+            None
+        """
         if not tasks or self.app.df.empty:
             return
 

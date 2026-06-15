@@ -1,8 +1,23 @@
 """Détection du profil machine et recommandation du nombre de workers.
 
-Ce module classe la machine en trois profils (modeste, standard, haute performance)
-selon la RAM et le CPU, puis propose un nombre de threads adapté au type de
-tâche (chargement mémoire lourd, I/O, CPU).
+Ce module inspecte la RAM et le CPU de la machine hôte, la classe en trois
+profils (modeste, standard, haute performance), puis propose un nombre de
+threads adapté au type de tâche parallèle.
+
+Le flux de décision :
+1. **Détection matérielle** — ``detect_machine_info()`` lit la RAM physique
+   (sysctl sur macOS, ``/proc/meminfo`` sur Linux, WinAPI sur Windows) et le
+   nombre de cœurs logiques.
+2. **Classification** — ``classify_machine_profile()`` dérive le profil à partir
+   de la RAM (prioritaire) ou du CPU en secours si la RAM est indétectable.
+3. **Plafonds** — deux budgets distincts selon le type de tâche :
+   ``memory_heavy`` (ex. cache Parquet annuel) et ``io_bound`` (lectures disque
+   ou réseau).
+4. **Recommandation finale** — le minimum entre le plafond profil, le plafond
+   RAM et le nombre de cœurs CPU.
+
+Points d'entrée publics : ``recommended_cache_build_workers()`` et
+``recommended_io_workers()``.
 """
 from __future__ import annotations
 
@@ -14,28 +29,31 @@ from enum import Enum
 from pathlib import Path
 from typing import Literal, Optional
 
-# Seuils de classification (Go de RAM physique).
-_RAM_MODEST_MAX_GB = 12.0
-_RAM_STANDARD_MAX_GB = 28.0
+# --- Seuils de classification (Go de RAM physique) ---
 
-# Réservation mémoire et budget par worker pour les tâches « une grosse année en RAM ».
-_RAM_RESERVE_GB = 4.0
-_RAM_PER_MEMORY_WORKER_GB = 2.0
+_RAM_MODEST_MAX_GB = 12.0  # < 12 Go → profil modeste
+_RAM_STANDARD_MAX_GB = 28.0  # 12–28 Go → standard ; ≥ 28 Go → haute performance
 
-# Plafonds par profil pour les tâches gourmandes en RAM (ex. cache Parquet annuel).
+# --- Budget mémoire pour les tâches « une grosse année en RAM » ---
+
+_RAM_RESERVE_GB = 4.0  # mémoire laissée au système et aux autres processus
+_RAM_PER_MEMORY_WORKER_GB = 2.0  # estimation par worker (JSON annuel en mémoire)
+
+# Plafonds par profil pour les tâches gourmandes en RAM (ex. cache Parquet annuel)
 _PROFILE_MEMORY_WORKER_CAP = {
     "modeste": 2,
     "standard": 4,
     "haute_performance": 8,
 }
 
-# Plafonds par profil pour les tâches I/O (lectures disque / réseau).
+# Plafonds par profil pour les tâches I/O (lectures disque / réseau)
 _PROFILE_IO_WORKER_CAP = {
     "modeste": 4,
     "standard": 8,
     "haute_performance": 16,
 }
 
+# Types de tâches supportés par ``recommended_workers``
 TaskKind = Literal["memory_heavy", "io_bound"]
 
 
@@ -73,13 +91,20 @@ class MachineInfo:
 def system_ram_bytes() -> Optional[int]:
     """Détecte la RAM physique totale sans dépendance externe.
 
+    Utilise ``sysctl`` sur macOS, ``/proc/meminfo`` sur Linux et l'API
+    ``GlobalMemoryStatusEx`` sur Windows.
+
     Returns:
         Optional[int]: Taille en octets, ou ``None`` si la plateforme est inconnue
             ou si la lecture échoue.
+
+    Raises:
+        Aucune exception propagée ; les erreurs sont interceptées et renvoient ``None``.
     """
     system = platform.system()
     try:
         if system == "Darwin":
+            # hw.memsize retourne la RAM physique totale en octets
             result = subprocess.run(
                 ["sysctl", "-n", "hw.memsize"],
                 capture_output=True,
@@ -89,12 +114,14 @@ def system_ram_bytes() -> Optional[int]:
             )
             return int(result.stdout.strip())
         if system == "Linux":
+            # MemTotal est exprimé en kioctets dans /proc/meminfo
             for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
                 if line.startswith("MemTotal:"):
                     return int(line.split()[1]) * 1024
         if system == "Windows":
             import ctypes
 
+            # Structure WinAPI pour GlobalMemoryStatusEx
             class _MEMORYSTATUSEX(ctypes.Structure):
                 _fields_ = [
                     ("dwLength", ctypes.c_ulong),
@@ -123,6 +150,10 @@ def classify_machine_profile(
 ) -> MachineProfile:
     """Classe la machine selon la RAM (prioritaire) ou le CPU en secours.
 
+    La RAM est le critère principal car elle conditionne directement le
+    parallélisme des tâches ``memory_heavy``. Si la RAM est indétectable,
+    on estime le profil à partir du nombre de cœurs.
+
     Args:
         ram_gb (Optional[float]): RAM totale en Go, ou ``None`` si indétectable.
         cpu_count (int): Nombre de cœurs logiques.
@@ -137,7 +168,7 @@ def classify_machine_profile(
             return MachineProfile.STANDARD
         return MachineProfile.HIGH_PERFORMANCE
 
-    # RAM inconnue : repli sur le nombre de cœurs.
+    # RAM inconnue : repli conservateur sur le nombre de cœurs
     if cpu_count <= 4:
         return MachineProfile.MODEST
     if cpu_count <= 8:
@@ -147,6 +178,9 @@ def classify_machine_profile(
 
 def detect_machine_info() -> MachineInfo:
     """Inspecte la machine et retourne RAM, CPU et profil.
+
+    Agrège ``system_ram_bytes()``, ``os.cpu_count()`` et
+    ``classify_machine_profile()`` en un instantané unique.
 
     Returns:
         MachineInfo: Ressources détectées et profil associé.
@@ -180,16 +214,22 @@ def _workers_cap_for_profile(profile: MachineProfile, task: TaskKind) -> int:
 def _workers_cap_from_ram(ram_gb: float, task: TaskKind) -> int:
     """Calcule un plafond RAM pour éviter de charger trop de données en parallèle.
 
+    Pour ``memory_heavy``, soustrait une réserve système puis divise par le
+    budget estimé par worker. Pour ``io_bound``, autorise environ un worker
+    par 2 Go de RAM (moins contraignant car peu de données en mémoire).
+
     Args:
         ram_gb (float): RAM totale en Go.
         task (TaskKind): Type de tâche ; seul ``memory_heavy`` applique un budget strict.
 
     Returns:
-        int: Nombre maximal de workers selon la mémoire disponible.
+        int: Nombre maximal de workers selon la mémoire disponible (≥ 1).
     """
     if task != "memory_heavy":
+        # Tâches I/O : heuristique plus permissive (1 worker / 2 Go)
         return max(1, int(ram_gb // 2))
 
+    # Tâches mémoire : (RAM - réserve) / budget par worker
     return max(
         1,
         int((ram_gb - _RAM_RESERVE_GB) // _RAM_PER_MEMORY_WORKER_GB),
@@ -199,23 +239,28 @@ def _workers_cap_from_ram(ram_gb: float, task: TaskKind) -> int:
 def recommended_workers(task: TaskKind = "io_bound") -> int:
     """Recommande un nombre de workers selon la machine et le type de tâche.
 
+    Combine trois contraintes : plafond du profil machine, plafond RAM et
+    nombre de cœurs CPU. Le résultat est toujours ≥ 1 et ≤ ``cpu_count``.
+
     Args:
         task (TaskKind): ``memory_heavy`` pour des tâches chargeant de gros
             volumes en RAM (ex. conversion JSON annuel → Parquet).
             ``io_bound`` pour lectures disque ou réseau parallèles.
 
     Returns:
-        int: Nombre de threads (au moins 1, jamais supérieur au nombre de cœurs).
+        int: Nombre de threads recommandé.
     """
     info = detect_machine_info()
     profile_cap = _workers_cap_for_profile(info.profile, task)
 
     if info.ram_gb is not None:
         ram_cap = _workers_cap_from_ram(info.ram_gb, task)
+        # Le plafond effectif est le plus restrictif entre profil et RAM
         effective_cap = min(profile_cap, ram_cap)
     else:
         effective_cap = profile_cap
 
+    # Ne jamais dépasser le nombre de cœurs logiques
     return max(1, min(info.cpu_count, effective_cap))
 
 
@@ -223,7 +268,7 @@ def recommended_cache_build_workers() -> int:
     """Workers pour la construction du cache Parquet USA Swimming.
 
     Chaque worker peut charger une année entière de JSON en mémoire ; le plafond
-    reste volontairement bas sur les machines modestes.
+    reste volontairement bas sur les machines modestes pour éviter les OOM.
 
     Returns:
         int: Nombre de threads recommandé pour ``build_parquet_cache``.
@@ -233,6 +278,9 @@ def recommended_cache_build_workers() -> int:
 
 def recommended_io_workers() -> int:
     """Workers pour des tâches parallèles dominées par l'I/O.
+
+    Convient aux lectures disque, téléchargements réseau ou parsing de fichiers
+    où la mémoire par worker reste faible.
 
     Returns:
         int: Nombre de threads recommandé pour lectures disque ou réseau.
@@ -261,7 +309,9 @@ def _format_profile_report(info: MachineInfo) -> str:
 
 
 def main() -> int:
-    """Affiche le profil machine et les recommandations de workers.
+    """Point d'entrée CLI : affiche le profil machine et les recommandations.
+
+    Usage : ``python -m services.machine_workers``.
 
     Returns:
         int: Code de sortie (0).

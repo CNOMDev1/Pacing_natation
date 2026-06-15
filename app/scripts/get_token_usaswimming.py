@@ -1,20 +1,41 @@
-# get_token_usaswimming.py — Récupération du token Bearer pour l'API USA Swimming Data Hub
+"""Récupération du token Bearer pour l'API USA Swimming Data Hub.
+
+Ce script utilise Playwright pour ouvrir le dashboard Data Hub, intercepter
+l'en-tête ``Authorization: Bearer …`` des requêtes XHR et le sauvegarder dans
+``services/bearer_token.txt`` (consommé par ``usaswimming_service.py``).
+
+Le flux :
+1. **Première exécution** — connexion manuelle dans Chromium, sauvegarde de
+   ``services/state.json`` (cookies / session).
+2. **Exécutions suivantes** — rechargement headless avec ``state.json``,
+   écoute réseau et écriture du token.
+3. **Fallback** — si la capture headless échoue, nouvelle tentative en mode
+   visible pour le débogage.
+"""
 from playwright.sync_api import sync_playwright
 import time, os, sys
 
-# Fichiers token/state dans services/ (utilisés par usaswimming_service.py)
+# --- Chemins de sortie (services/) ---
+
 _SCRIPT_DIR = os.path.dirname(__file__)
 _SERVICES_DIR = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", "services"))
 STATE_FILE = os.path.join(_SERVICES_DIR, "state.json")
 TOKEN_OUT = os.path.join(_SERVICES_DIR, "bearer_token.txt")
 
 DATA_HUB_URL = "https://data.usaswimming.org"
-WAIT_FOR = 20  # secondes d'attente pour que le dashboard fasse ses requêtes
+WAIT_FOR = 20  # secondes d'attente pour que le dashboard fasse ses requêtes API
+
 
 def _capture_token_on_page(page, wait_seconds=WAIT_FOR, extra_wait=10):
-    """
-    Attache un listener sur la page pour capturer le Bearer token, recharge la page
-    pour déclencher les requêtes API, attend et retourne le token (ou None).
+    """Attache un listener réseau, recharge la page et capture le Bearer token.
+
+    Args:
+        page: Page Playwright déjà authentifiée.
+        wait_seconds (int): Délai initial après reload.
+        extra_wait (int): Délai supplémentaire si aucun token intercepté.
+
+    Returns:
+        str | None: En-tête complet ``Bearer …`` ou None.
     """
     found = {"token": None}
 
@@ -33,11 +54,18 @@ def _capture_token_on_page(page, wait_seconds=WAIT_FOR, extra_wait=10):
     return found["token"]
 
 
-# Une seule exécution : connexion manuelle, sauvegarde du state puis capture du token
 def run_headed_save_state_and_capture_token(user_data_dir=None):
-    """
-    Ouvre un navigateur pour te connecter manuellement, sauvegarde le state,
-    puis capture le token dans la même session (sans relancer le script).
+    """Ouvre un navigateur visible pour connexion manuelle puis capture le token.
+
+    Mode interactif : l'utilisateur se connecte, appuie sur Entrée, le script
+    sauvegarde ``state.json`` et intercepte le Bearer dans la même session.
+
+    Args:
+        user_data_dir (str | None): Profil Chromium persistant. Par défaut
+            ``playwright_tmp_profile``.
+
+    Returns:
+        None
     """
     print("Mode interactif : ouverture du navigateur pour te connecter...")
     with sync_playwright() as p:
@@ -64,11 +92,20 @@ def run_headed_save_state_and_capture_token(user_data_dir=None):
             print("Aucun token Bearer capturé — le dashboard n'a peut-être pas envoyé de requête API.")
 
 
-# Capture du token en réutilisant un state.json existant
 def capture_token_with_storage_state(headless=True):
-    """
-    Lance un navigateur headless (ou non) en réutilisant STATE_FILE, écoute les requêtes
-    et récupère le header Authorization: Bearer ...
+    """Capture le token en réutilisant un ``state.json`` existant.
+
+    Lance Chromium avec la session sauvegardée, écoute les requêtes réseau et
+    écrit le Bearer dans ``bearer_token.txt``.
+
+    Args:
+        headless (bool): Si True, navigateur invisible.
+
+    Returns:
+        None
+
+    Raises:
+        FileNotFoundError: Si ``state.json`` est absent.
     """
     if not os.path.exists(STATE_FILE):
         raise FileNotFoundError(f"{STATE_FILE} introuvable. Lance d'abord le script en mode interactif pour te connecter.")
@@ -106,7 +143,16 @@ def capture_token_with_storage_state(headless=True):
         else:
             print(f"[OK] Token sauvegardé dans {TOKEN_OUT}")
 
+
 def main():
+    """Point d'entrée CLI : capture ou renouvelle le Bearer token USA Swimming.
+
+    Si ``state.json`` est absent, lance le mode interactif. Sinon, tente la
+    capture headless avec fallback visible en cas d'erreur.
+
+    Returns:
+        None
+    """
     if not os.path.exists(STATE_FILE):
         print(f"{STATE_FILE} non trouvé — une seule exécution : connexion puis sauvegarde state + token.")
         run_headed_save_state_and_capture_token(user_data_dir=None)
@@ -118,6 +164,7 @@ def main():
         print("Erreur lors de la capture headless:", e)
         print("Tentative de fallback en mode non-headless pour debug...")
         capture_token_with_storage_state(headless=False)
+
 
 if __name__ == "__main__":
     main()

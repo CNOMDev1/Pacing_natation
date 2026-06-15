@@ -1,3 +1,17 @@
+"""Interface web Streamlit pour visualiser les performances Extranat.
+
+Ce module charge les JSON traités sous ``data/processed/extranat/``,
+propose une navigation par catégorie/graphique dans la sidebar et délègue
+le tracé à ``ServiceGraphe``.
+
+Le flux utilisateur :
+1. **Chargement** — ``load_data()`` aplatit les JSON en DataFrame (cache Streamlit).
+2. **Filtres** — sélection stroke / distance / bassin selon le scope du graphique.
+3. **Options** — nageurs cibles, plages d'années, heatmap selon le graphique.
+4. **Affichage** — rendu matplotlib plein écran via ``st.pyplot``.
+
+Point d'entrée : ``streamlit run app/interfaces/web_streamlit.py``.
+"""
 import json
 import sys
 import unicodedata
@@ -14,6 +28,8 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from services.graph_service import ServiceGraphe
+
+# --- Chemins et catalogue de graphiques ---
 
 EXTRANAT_OUTPUT_BASE_DIR = (
     BASE_DIR / "data" / "processed" / "extranat" / "competitions_per_type"
@@ -74,6 +90,11 @@ GRAPH_CATEGORIES: dict[str, list[str]] = {
 
 @st.cache_data(show_spinner=True)
 def load_data() -> pd.DataFrame:
+    """Charge et aplatit tous les JSON Extranat traités (cache Streamlit).
+
+    Returns:
+        pd.DataFrame: Performances avec colonne ``Gender`` dénormalisée.
+    """
     rows: list[dict] = []
 
     if not EXTRANAT_OUTPUT_BASE_DIR.exists():
@@ -403,6 +424,11 @@ def _inject_layout_css() -> None:
 
 
 def main() -> None:
+    """Point d'entrée Streamlit : navigation sidebar et affichage des graphiques.
+
+    Returns:
+        None
+    """
     st.set_page_config(
         page_title="Pacing – Visualisations Extranat",
         layout="wide",

@@ -1,7 +1,21 @@
 """Scraping Extranat (ffnatation.fr) : types de compétition, calendrier, résultats détaillés.
 
-Parse les tableaux HTML de résultats (épreuves, splits, MPP) et produit des JSON sous
-``data/raw/extranat/``. Point d'entrée CLI : ``python services/extranat_service.py``.
+Ce module interroge le site Extranat (``ffn.extranat.fr``), parse les tableaux
+HTML de résultats (épreuves, splits, MPP) et produit des structures JSON
+sauvegardées sous ``data/raw/extranat/``.
+
+Le flux de données :
+1. **Types** — ``get_competition_types()`` lit le ``<select id=liste_type>`` et
+   extrait les ``idtyp`` (championnats nationaux, internationaux, etc.).
+2. **Calendrier** — ``get_competitions_for_url()`` parcourt la pagination et
+   collecte les métadonnées de chaque compétition (nom, date, lieu, URL).
+3. **Résultats** — deux stratégies de parsing :
+   ``get_competition_data()`` (table unique) ou
+   ``get_results_for_competitions_url()`` (formulaire par épreuve, plus complet).
+4. **Orchestration** — ``get_all_results_by_type()`` / ``main()`` enchaînent types,
+   compétitions et résultats ; ``generate_resume()`` produit un bilan d'erreurs.
+
+Point d'entrée CLI : ``python services/extranat_service.py``.
 """
 from __future__ import annotations
 
@@ -13,6 +27,9 @@ import requests
 from bs4 import BeautifulSoup
 
 
+# --- Couche HTTP (retries, backoff) ---
+
+
 def http_get_with_retries(
     url: str,
     headers: Optional[dict[str, str]] = None,
@@ -22,7 +39,28 @@ def http_get_with_retries(
     session: Optional[requests.Session] = None,
     retry_forever: bool = False,
 ) -> requests.Response:
-    """GET avec backoff exponentiel sur erreurs réseau, 403, 429 et 5xx."""
+    """Effectue un GET avec backoff exponentiel sur erreurs réseau et HTTP.
+
+    Réessaie automatiquement sur 403, 429 et 5xx. Le délai est plus agressif
+    pour les 403 (protection anti-bot Extranat). Mode ``retry_forever`` pour
+    les pages critiques où l'abandon n'est pas acceptable.
+
+    Args:
+        url (str): URL cible.
+        headers (Optional[dict[str, str]]): En-têtes HTTP ; défaut navigateur Chrome.
+        max_retries (int): Nombre maximal de tentatives si ``retry_forever=False``.
+        base_delay (float): Délai de base (s) pour le backoff exponentiel.
+        debug (bool): Affiche les tentatives et statuts HTTP.
+        session (Optional[requests.Session]): Session réutilisable (cookies, keep-alive).
+        retry_forever (bool): Si True, boucle indéfiniment jusqu'à succès.
+
+    Returns:
+        requests.Response: Réponse HTTP avec statut < 400.
+
+    Raises:
+        requests.HTTPError: Si le statut reste en erreur après épuisement des retries.
+        RuntimeError: Si toutes les tentatives échouent sans réponse HTTP.
+    """
     if headers is None:
         headers = {
             "User-Agent": (
@@ -101,6 +139,7 @@ def http_get_with_retries(
             break
 
         if isinstance(last_exc, requests.HTTPError) and getattr(last_exc, "response", None) is not None:
+            # 403 Extranat : backoff plus long (souvent rate-limit / anti-bot)
             if last_exc.response.status_code == 403:
                 delay = min(5.0 * (3 ** (attempt - 1)), max_delay)
             else:
@@ -117,13 +156,31 @@ def http_get_with_retries(
             f"Echec de la requête GET vers {url} après {max_retries} tentatives"
         )
 
+
+# --- Parsing HTML : page résultats (table unique) ---
+
+
 def get_competition_data(
     url: str,
     debug: bool = False,
     session: Optional[requests.Session] = None,
     retry_forever: bool = True,
 ) -> List[Dict[str, Any]]:
-    """Parse une page de résultats Extranat et renvoie une ligne par performance."""
+    """Parse une page de résultats Extranat et renvoie une ligne par performance.
+
+    Localise le tableau principal (plusieurs sélecteurs CSS en cascade), puis
+    parcourt ``thead`` / ``tbody`` pour extraire épreuve, date, classement,
+    nageur, club, temps, splits et MPP.
+
+    Args:
+        url (str): URL de la page résultats d'une compétition.
+        debug (bool): Active les logs de parsing et sauvegarde ``debug.html`` si échec.
+        session (Optional[requests.Session]): Session HTTP réutilisable.
+        retry_forever (bool): Passe le mode retry infini à ``http_get_with_retries``.
+
+    Returns:
+        List[Dict[str, Any]]: Performances extraites ; liste vide si aucune table trouvée.
+    """
     response = http_get_with_retries(
         url,
         debug=debug,
@@ -134,6 +191,7 @@ def get_competition_data(
 
     soup = BeautifulSoup(response.content, 'html.parser')
 
+    # Recherche en cascade : le markup Extranat varie selon les pages
     table = None
     table_div = soup.find('div', class_='relative overflow-x-auto shadow-md sm:rounded-lg print-not-shadow')
     if table_div:
@@ -143,6 +201,7 @@ def get_competition_data(
         table = soup.find('table', class_='w-full text-sm text-left text-gray-500')
 
     if not table:
+        # Fallback : repérer une table contenant du texte d'épreuve typique
         all_tables = soup.find_all('table')
         for t in all_tables:
             if '100 Nage Libre' in t.get_text() or 'Brasse' in t.get_text():
@@ -192,6 +251,7 @@ def get_competition_data(
 
     for idx, element in enumerate(all_elements):
         if element.name == 'thead':
+            # L'en-tête thead porte le nom de l'épreuve et la date
             header_row = element.find('tr')
             if header_row:
                 header_cell = header_row.find('td')
@@ -280,6 +340,7 @@ def get_competition_data(
 
                     mpp_info = ""
                     if len(cells) >= 7:
+                        # Colonne MPP (meilleure performance personnelle) via tooltip
                         mpp_cell = cells[6]
                         mpp_button = mpp_cell.find('button')
                         if mpp_button and mpp_button.get('data-tippy-content'):
@@ -416,13 +477,23 @@ from typing import Dict, List, Optional
 import requests
 from bs4 import BeautifulSoup
 
+# --- Configuration Extranat (URLs, chemins de sortie) ---
+
 BASE_URL = "https://ffn.extranat.fr/webffn/"
 COMPETITIONS_PATH = "competitions.php?idact=nat"
+# Page des compétitions internationales (idtyp=7)
 INTERNATIONALS_URL = ("https://ffn.extranat.fr/webffn/competitions.php?idact=nat&idsai=&idreg=&idtyp=7")
 
 
 def get_competitions_url_by_idtyp(idtyp: int) -> str:
-    """Construit l'URL Extranat pour un type de compétition (``idtyp``)."""
+    """Construit l'URL Extranat pour un type de compétition (``idtyp``).
+
+    Args:
+        idtyp (int): Identifiant du type (1=interclubs, 7=internationales, etc.).
+
+    Returns:
+        str: URL complète de la page liste des compétitions filtrée.
+    """
     return f"{BASE_URL}competitions.php?idact=nat&idsai=&idreg=&idtyp={idtyp}"
 
 
@@ -431,7 +502,18 @@ def get_competition_types(
     path: str = COMPETITIONS_PATH,
     debug: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Parse le ``<select id=liste_type>`` et renvoie idtyp, label, value, url."""
+    """Parse le ``<select id=liste_type>`` et renvoie les types de compétition.
+
+    Chaque entrée contient ``idtyp``, libellé, valeur brute et URL complète.
+
+    Args:
+        base_url (str): URL de base du site Extranat.
+        path (str): Chemin relatif de la page des types.
+        debug (bool): Active les logs de parsing.
+
+    Returns:
+        List[Dict[str, Any]]: Types trouvés ; liste vide si le select est absent ou 403.
+    """
     url = f"{base_url}{path}"
 
     if debug:
@@ -472,6 +554,7 @@ def get_competition_types(
 
         idtyp: Optional[int] = None
         if "idtyp=" in value:
+            # Extraire l'idtyp depuis la query string de l'option
             try:
                 part = value.split("idtyp=", 1)[1]
                 id_str = part.split("&")[0]
@@ -496,8 +579,9 @@ def get_competition_types(
     return types
 
 
-# Récupère la liste des compétitions pour une URL donnée, avec pagination : suit tous les liens
-# de liste (même filtre), parse chaque bloc compétition (nom, date, lieu, URL, type, bassin, etc.).
+# --- Calendrier : liste paginée des compétitions ---
+
+
 def get_competitions_for_url(
     url: str,
     debug: bool = False,
@@ -664,8 +748,9 @@ def get_competitions_for_url(
     return competitions
 
 
-# Pour chaque type de compétition, récupère les compétitions puis les résultats de chaque
-# compétition (via get_competition_data) ; retourne un dict types → competitions → results.
+# --- Orchestration : collecte multi-types ---
+
+
 def get_all_results_by_type(
     base_url: str = BASE_URL,
     path: str = COMPETITIONS_PATH,
@@ -764,32 +849,22 @@ def get_all_results_grouped_by_event_by_type(
     debug: bool = False,
     only_idtyps: Optional[List[int]] = None,
 ) -> Dict:
-    """
-    Variante de get_all_results_by_type qui, pour chaque compétition,
-    utilise la logique « avancée » basée sur le formulaire (get_results_for_competitions_url)
-    afin de récupérer des résultats groupés par épreuve.
+    """Agrège les résultats groupés par épreuve pour tous les types.
 
-    Structure de retour (similaire à get_all_results_by_type) :
-    {
-      "types": [
-        {
-          "idtyp": ...,
-          "label": ...,
-          "url": "...",
-          "competitions": [
-            {
-              "name": "...",
-              "url": "...",
-              ...
-              "results": { ... },         # dict groupé par épreuves / filtres
-              "results_count": <int>,    # nombre total de performances
-            },
-            ...
-          ]
-        },
-        ...
-      ]
-    }
+    Variante de ``get_all_results_by_type`` qui utilise
+    ``get_results_for_competitions_url`` (formulaire par épreuve) au lieu de
+    ``get_competition_data`` (table unique). Structure de retour identique
+    mais ``results`` est un dict ``{nom_épreuve: [performances]}``.
+
+    Args:
+        base_url (str): URL de base du site Extranat.
+        path (str): Chemin relatif de la page des types.
+        delay_between_comps (float): Délai en secondes entre deux compétitions.
+        debug (bool): Active les logs détaillés.
+        only_idtyps (Optional[List[int]]): Restreint aux idtyp indiqués.
+
+    Returns:
+        Dict: Structure ``{"types": [...]}`` avec compétitions et résultats imbriqués.
     """
     types = get_competition_types(base_url=base_url, path=path, debug=debug)
 
@@ -856,8 +931,9 @@ def get_all_results_grouped_by_event_by_type(
     return data
 
 
-# Parse le HTML (soup) des pages « filtre » : extrait les épreuves et leurs performances
-# (nom épreuve, catégorie, nageurs, temps, splits, etc.) depuis les tables.
+# --- Parsing HTML : pages « filtre » par épreuve ---
+
+
 def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) -> List[Dict]:
     """Parse les tables HTML « filtre » en épreuves et performances.
 
@@ -1210,8 +1286,9 @@ def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) 
     return epreuves
 
 
-# Récupère toutes les compétitions listées sur l'URL (ex. internationales idtyp=7), charge
-# chaque page compétition, récupère les résultats par épreuve et gère les pauses session.
+# --- Collecte avancée : formulaire par épreuve + gestion de session ---
+
+
 def get_results_for_competitions_url(
     url: str,
     delay_between_comps: float = 1.0,
@@ -1219,17 +1296,21 @@ def get_results_for_competitions_url(
     max_competitions_before_pause: int = 50,
     rest_delay: float = 30.0,
 ) -> Dict:
-    """
-    Récupère toutes les compétitions listées sur une URL donnée
-    (par ex. la page des Compétitions internationales idtyp=7)
-    et leurs résultats complets.
+    """Récupère toutes les compétitions d'une URL et leurs résultats par épreuve.
 
-    Comportement :
-      - Parcourt toutes les compétitions sans délai obligatoire entre elles
-        (sauf si delay_between_comps > 0).
-      - Compte le nombre de compétitions traitées (requêtes HTTP) et, dès que
-        max_competitions_before_pause est atteint, ferme la session HTTP actuelle
-        et en crée une nouvelle pour "réinitialiser" la connexion au serveur.
+    Pour chaque compétition, parse le formulaire ``<form name="choix">`` et
+    scrape chaque URL d'épreuve. Recrée la session HTTP périodiquement pour
+    éviter les blocages 403 après un grand nombre de requêtes.
+
+    Args:
+        url (str): URL de la page liste (ex. internationales idtyp=7).
+        delay_between_comps (float): Délai (s) entre deux compétitions.
+        debug (bool): Active les logs détaillés.
+        max_competitions_before_pause (int): Seuil de compétitions avant pause session.
+        rest_delay (float): Pause (s) avant recréation de session.
+
+    Returns:
+        Dict: ``{"url", "competitions"}`` avec résultats groupés par épreuve.
     """
     import time
     import requests
@@ -1843,15 +1924,23 @@ def get_results_for_competitions_url(
     return {"url": url, "competitions": competitions}
 
 
-# Raccourci : récupère les compétitions « Compétitions internationales » (idtyp=7) et leurs résultats.
+# --- Raccourcis : compétitions internationales (idtyp=7) ---
+
+
 def get_international_results(
     delay_between_comps: float = 1.0,
     debug: bool = False,
 ) -> Dict:
-    """
-    Raccourci : récupère uniquement les compétitions
-    de type « Compétitions internationales » (idtyp=7)
-    et leurs résultats complets.
+    """Raccourci : compétitions internationales (idtyp=7) avec résultats complets.
+
+    Délègue à ``get_results_for_competitions_url`` sur ``INTERNATIONALS_URL``.
+
+    Args:
+        delay_between_comps (float): Délai (s) entre deux compétitions.
+        debug (bool): Active les logs détaillés.
+
+    Returns:
+        Dict: Compétitions et résultats groupés par épreuve.
     """
     return get_results_for_competitions_url(
         INTERNATIONALS_URL,
@@ -1860,14 +1949,18 @@ def get_international_results(
     )
 
 
-# Récupère uniquement la liste des compétitions internationales (idtyp=7), sans résultats détaillés.
 def get_international_competitions_list(
     debug: bool = False,
 ) -> Dict:
-    """
-    Ne récupère QUE la liste des compétitions pour
-    l'option "Compétitions internationales" (idtyp=7),
-    sans aller chercher les résultats détaillés.
+    """Liste les compétitions internationales (idtyp=7) sans résultats détaillés.
+
+    Ne charge que la page calendrier ; utile pour un inventaire rapide.
+
+    Args:
+        debug (bool): Active les logs de pagination.
+
+    Returns:
+        Dict: ``{"url", "competitions"}`` avec métadonnées uniquement.
     """
     if debug:
         print(
@@ -1879,27 +1972,29 @@ def get_international_competitions_list(
     return {"url": INTERNATIONALS_URL, "competitions": competitions}
 
 
-# Génère un résumé des erreurs de collecte (par type et global), sauvegarde des JSON de résumé
-# dans output_dir et retourne le dictionnaire résumé.
+# --- Bilan de collecte et résumés JSON ---
+
+
 def generate_resume(
     data: Dict,
     output_dir: str,
     idtyp: Optional[int] = None,
     type_name: Optional[str] = None,
 ) -> Dict:
-    """
-    Génère un résumé des erreurs de collecte pour chaque type de compétition
-    et le pourcentage global d'erreur.
-    
+    """Génère un résumé des erreurs de collecte et sauvegarde les JSON associés.
+
+    Calcule le taux d'erreur par type et globalement, puis écrit un fichier
+    ``resume.json`` global et un ``resume_{type}.json`` par type dans
+    ``output_dir``.
+
     Args:
-        data: Données collectées (soit {"url": ..., "competitions": [...]} pour un type,
-              soit {"types": [...]} pour tous les types)
-        output_dir: Dossier de sortie
-        idtyp: ID du type de compétition (si mode par type)
-        type_name: Nom du type de compétition (si mode par type)
-        
+        data (Dict): Données collectées (mode type unique ou multi-types).
+        output_dir (str): Dossier de sortie des fichiers résumé.
+        idtyp (Optional[int]): ID du type en mode collecte ciblée.
+        type_name (Optional[str]): Libellé du type en mode collecte ciblée.
+
     Returns:
-        Dictionnaire contenant le résumé avec les pourcentages d'erreur
+        Dict: Résumé avec ``resume`` (global) et ``par_type`` (détail par idtyp).
     """
     from datetime import datetime
     
@@ -1908,7 +2003,7 @@ def generate_resume(
         "par_type": []
     }
     
-    # Noms des types de compétitions
+    # Table de correspondance idtyp → libellé affiché dans les résumés
     type_names = {
         1: "Interclubs Avenirs (Rég. & Dép.)",
         2: "Interclubs Jeunes (Rég. & Dép.)",
@@ -2067,7 +2162,8 @@ def generate_resume(
     return resume
     
 
-# Répertoires de base pour stocker les données Extranat sous data/raw/extranat
+# --- Chemins de sortie (data/raw/extranat) ---
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXTRANAT_DATA_DIR = os.path.join(BASE_DIR, "data", "raw", "extranat")
 COMPETITIONS_PER_TYPE_DIR = os.path.join(EXTRANAT_DATA_DIR, "competitions_per_type")
@@ -2075,14 +2171,23 @@ RESUMES_DIR = os.path.join(EXTRANAT_DATA_DIR, "Resumes")
 COMPETITIONS_PER_DATES_DIR = os.path.join(EXTRANAT_DATA_DIR, "competitions_per_dates")
 
 
-# Point d'entrée CLI : scrape types/compétitions selon les arguments (debug, fast, intl, dates),
-# sauvegarde les résultats et résumés dans les dossiers configurés.
+# --- Point d'entrée CLI ---
+
+
 def main():
-    """
-    Petit CLI :
-      python get_data_deeper.py              → scrape tous les types et compétitions
-      python get_data_deeper.py debug        → idem avec logs
-    Sauvegarde dans 'competitions_per_type/results_by_type.json'.
+    """Point d'entrée CLI : scrape types/compétitions selon les arguments.
+
+    Usage typique :
+    - ``python services/extranat_service.py`` → tous les types (mode intl)
+    - ``python services/extranat_service.py debug`` → logs verbeux
+    - ``python services/extranat_service.py intl 7 fast`` → idtyp=7 sans pause
+    - ``python services/extranat_service.py 2025`` → compétitions de l'année 2025
+
+    Sauvegarde les résultats dans ``competitions_per_type/`` et les résumés
+    dans ``Resumes/``.
+
+    Returns:
+        None
     """
     import sys
     from datetime import datetime, date

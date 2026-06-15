@@ -1,3 +1,19 @@
+"""Utilitaires partagés par l'interface desktop Flet (données, filtres, graphiques).
+
+Ce module centralise le chargement du DataFrame Extranat, la résolution des
+filtres par type de graphique (stroke / distance / bassin) et la conversion
+matplotlib → PNG base64 pour l'affichage dans Flet.
+
+Le flux côté UI :
+1. **Chargement** — ``load_data()`` lit les JSON traités via
+   ``ExtranatCompetitionsDataLoader`` (cache LRU).
+2. **Navigation** — ``_event_combinations()`` et ``_resolve_scope_filters()``
+   construisent les combinaisons valides selon ``SCOPE_*`` de ``graph_service``.
+3. **Scope** — ``_materialize_df_scope()`` produit le DataFrame filtré pour
+   un graphique donné.
+4. **Rendu** — ``_figure_to_base64()`` sérialise les figures pour le cache
+   ``prefetched_graphs.json``.
+"""
 import base64
 import io
 import re
@@ -16,6 +32,8 @@ from services.graph_service import (
     SCOPE_POOL_ONLY_GRAPHS,
 )
 
+# --- Chemins et constantes d'affichage ---
+
 EXTRANAT_OUTPUT_BASE_DIR = (
     PROJECT_DIR
     / "data"
@@ -27,7 +45,18 @@ CHART_PNG_DPI = 96
 CORRIDOR_CHART_PNG_DPI = 72
 
 
+# --- Extraction nageur depuis la colonne swimmer ---
+
+
 def _primary_swimmer_name(swimmers: Any) -> Optional[str]:
+    """Retourne le nom du premier nageur si ``swimmer`` est une liste non vide.
+
+    Args:
+        swimmers (Any): Valeur de la colonne ``swimmer``.
+
+    Returns:
+        Optional[str]: Nom du nageur ou None.
+    """
     if not isinstance(swimmers, list) or len(swimmers) == 0:
         return None
     first = swimmers[0]
@@ -39,6 +68,14 @@ def _primary_swimmer_name(swimmers: Any) -> Optional[str]:
 def _primary_swimmer_name_and_yob(
     swimmers: Any,
 ) -> Tuple[Optional[str], Optional[int]]:
+    """Retourne nom et année de naissance du nageur solo (liste à un seul élément).
+
+    Args:
+        swimmers (Any): Valeur de la colonne ``swimmer``.
+
+    Returns:
+        Tuple[Optional[str], Optional[int]]: Nom et YOB, ou (None, None) si relais.
+    """
     if not isinstance(swimmers, list) or len(swimmers) != 1:
         return None, None
     first = swimmers[0]
@@ -56,6 +93,14 @@ def _primary_swimmer_name_and_yob(
 
 
 def _normalize_text(value: Any) -> str:
+    """Normalise un texte pour comparaison (minuscules, sans accents).
+
+    Args:
+        value (Any): Chaîne ou valeur pandas.
+
+    Returns:
+        str: Texte normalisé ASCII.
+    """
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return ""
     text = str(value).strip().lower()
@@ -65,6 +110,14 @@ def _normalize_text(value: Any) -> str:
 
 
 def _slugify(text: str) -> str:
+    """Convertit un libellé en identifiant URL/fichier (kebab-case).
+
+    Args:
+        text (str): Texte source.
+
+    Returns:
+        str: Slug sans caractères spéciaux.
+    """
     value = _normalize_text(text)
     value = re.sub(r"[^a-z0-9]+", "-", value)
     return value.strip("-")
@@ -72,11 +125,24 @@ def _slugify(text: str) -> str:
 
 @lru_cache(maxsize=1)
 def load_data() -> pd.DataFrame:
+    """Charge le DataFrame Extranat traité (mis en cache après le premier appel).
+
+    Returns:
+        pd.DataFrame: Performances aplaties depuis ``competitions_per_type``.
+    """
     return ExtranatCompetitionsDataLoader(EXTRANAT_OUTPUT_BASE_DIR).load()
 
 
 def _figure_to_base64(fig: plt.Figure, *, dpi: Optional[int] = None) -> str:
-    """Convertit une figure matplotlib en chaîne base64 PNG."""
+    """Convertit une figure matplotlib en data-URI PNG base64.
+
+    Args:
+        fig (plt.Figure): Figure à exporter.
+        dpi (Optional[int]): Résolution ; défaut ``CHART_PNG_DPI``.
+
+    Returns:
+        str: URI ``data:image/png;base64,…``.
+    """
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=int(dpi or CHART_PNG_DPI))
     buf.seek(0)
@@ -139,7 +205,22 @@ def _resolve_scope_filters(
     selected_distance: Optional[int],
     selected_pool: Optional[str],
 ) -> Tuple[Optional[str], Optional[int], Optional[str]]:
-    """Vérifie les filtres si valides."""
+    """Résout et valide les filtres stroke / distance / bassin pour un graphique.
+
+    Adapte les valeurs sélectionnées selon le scope du graphique
+    (``SCOPE_NO_FILTER_GRAPHS``, ``SCOPE_POOL_ONLY_GRAPHS``, etc.).
+
+    Args:
+        df_nav (pd.DataFrame): DataFrame de navigation complet.
+        selected_graph (str): Nom du graphique actif.
+        selected_stroke (Optional[str]): Nage sélectionnée.
+        selected_distance (Optional[int]): Distance sélectionnée.
+        selected_pool (Optional[str]): Bassin sélectionné (LCM/SCM).
+
+    Returns:
+        Tuple[Optional[str], Optional[int], Optional[str]]: Filtres effectifs
+            (stroke, distance, pool) ou None si non applicable.
+    """
     if selected_graph in SCOPE_NO_FILTER_GRAPHS:
         return None, None, None
 
@@ -202,7 +283,18 @@ def _materialize_df_scope(
     distance: Optional[int],
     pool: Optional[str],
 ) -> pd.DataFrame:
-    """Construit le DataFrame final filtré (df_scope) depuis les filtres résolus."""
+    """Construit le DataFrame filtré (df_scope) depuis les filtres résolus.
+
+    Args:
+        df_nav (pd.DataFrame): DataFrame de navigation.
+        selected_graph (str): Nom du graphique.
+        stroke (Optional[str]): Filtre nage.
+        distance (Optional[int]): Filtre distance.
+        pool (Optional[str]): Filtre bassin.
+
+    Returns:
+        pd.DataFrame: Sous-ensemble filtré ; vide si filtres incomplets.
+    """
     if selected_graph in SCOPE_NO_FILTER_GRAPHS:
         return df_nav.copy()
 

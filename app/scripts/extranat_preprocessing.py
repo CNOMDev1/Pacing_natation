@@ -1,10 +1,28 @@
+"""Prétraitement Extranat : nettoyage des JSON scrapés vers le format unifié.
+
+Ce script lit les compétitions brutes produites par ``extranat_service.py``
+(``data/raw/extranat/competitions_per_type/``) et écrit des JSON normalisés
+sous ``data/processed/extranat/competitions_per_type/`` (même arborescence).
+
+Le flux de données :
+1. **Métadonnées compétition** — renommage ``name`` → ``Meet``, normalisation
+   des dates, lieux, pays et taille de bassin.
+2. **Épreuves** — conversion des noms français en libellés ``"200 FR LCM"``,
+   nettoyage des tours et suppression des résultats cumulés.
+3. **Performances** — parsing des chronos, splits, MPP, nageurs et calcul
+   de ``SwimTimeSeconds`` / ``Speed``.
+4. **Filtres** — exclusion YOB invalides, splits aberrants et doublons ``1 LCM/SCM``.
+
+Point d'entrée CLI : ``python -m app.scripts.extranat_preprocessing``.
+"""
 import json
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# Dossiers pour Extranat
+# --- Chemins source / sortie ---
+
 EXTRANAT_BASE_DIR = (
     Path(__file__).resolve().parents[2]
     / "data"
@@ -19,6 +37,8 @@ EXTRANAT_OUTPUT_BASE_DIR = (
     / "extranat"
     / "competitions_per_type"
 )
+
+# --- Correspondances nage / bassin et seuils de validation ---
 
 STROKE_MAP: Dict[str, str] = {
     "FR": "Freestyle",
@@ -40,8 +60,18 @@ SPLIT_SECONDS_MIN = 20.0
 SPLIT_SECONDS_MAX = 120.0
 
 
+# --- Statut, pays et parsing commun ---
+
+
 def compute_status_from_swim_time(swim_time: Any) -> str:
-    """Détermine le statut à partir de la valeur de SwimTime."""
+    """Détermine le statut à partir de la valeur de SwimTime.
+
+    Args:
+        swim_time (Any): Temps brut ou code spécial (DNS, DSQ, DNF).
+
+    Returns:
+        str: ``"OK"``, ``"DNS"``, ``"DSQ"``, ``"DNF"`` ou ``"NaN"``.
+    """
     if swim_time is None:
         return "NaN"
 
@@ -55,7 +85,7 @@ def compute_status_from_swim_time(swim_time: Any) -> str:
 
     return "OK"
 
-# Normalisation des pays vers des codes à 3 lettres 
+# Normalisation des pays vers des codes à 3 lettres
 COUNTRY_MAP: Dict[str, str] = {
     "United States": "USA",
     "United States Of America": "USA",
@@ -83,7 +113,14 @@ COUNTRY_MAP: Dict[str, str] = {
 
 
 def normalize_country(raw: str) -> str:
-    """Convertit une fédération/pays en code pays 3 lettres"""
+    """Convertit une fédération ou un pays en code ISO 3 lettres.
+
+    Args:
+        raw (str): Libellé pays ou code existant.
+
+    Returns:
+        str: Code normalisé.
+    """
     txt = raw.strip()
     if not txt:
         return txt
@@ -98,9 +135,15 @@ def normalize_country(raw: str) -> str:
 def parse_name_year_nationality(
     raw_name: str,
 ) -> Tuple[str, Optional[int], Optional[str]]:
-    """
-    À partir d'un nom éventuellement enrichi 
-    renvoie (nom_nettoyé, année_naissance, nationalité).
+    """Extrait nom, année de naissance et nationalité d'un libellé enrichi.
+
+    Gère les formats Extranat du type ``"Dupont Jean (2008/16 ans)FRA"``.
+
+    Args:
+        raw_name (str): Nom brut tel que fourni par le scraping.
+
+    Returns:
+        Tuple[str, Optional[int], Optional[str]]: Nom nettoyé, YOB, nationalité.
     """
     txt = raw_name.strip()
     if not txt:
@@ -133,9 +176,13 @@ def parse_name_year_nationality(
 
 
 def parse_swim_time_to_seconds(raw: str) -> float:
-    """
-    Convert a time to seconds.
-    Returns float("nan") if format is not recognized.
+    """Convertit un temps affiché en secondes décimales.
+
+    Args:
+        raw (str): Chaîne de temps (``MM:SS.ss`` ou ``SS.ss``).
+
+    Returns:
+        float: Secondes, ou ``float("nan")`` si format non reconnu.
     """
     raw = raw.strip()
     mm_ss = re.match(r"^(\d+):(\d{1,2}\.\d+)$", raw)
@@ -177,6 +224,9 @@ def normalize_date(raw: str) -> str:
     return raw
 
 
+# --- Dates et tours spécifiques Extranat ---
+
+
 def swim_year_from_swim_date(swim_date: Any) -> Optional[int]:
     """Année civile extraite de SwimDate (format ISO YYYY-MM-DD après normalisation)."""
     if swim_date is None:
@@ -194,9 +244,13 @@ def swim_year_from_swim_date(swim_date: Any) -> Optional[int]:
 
 
 def extract_competition_year_from_raw(data: Dict[str, Any]) -> Optional[int]:
-    """
-    Année civile de la compétition à partir du champ « date » des données brutes.
-    Utilise la même normalisation que pour SwimDate (indépendant de l’ordre des clés JSON).
+    """Extrait l'année civile de la compétition depuis le champ ``date`` brut.
+
+    Args:
+        data (Dict[str, Any]): Objet JSON compétition non nettoyé.
+
+    Returns:
+        Optional[int]: Année (ex. 2024) ou None.
     """
     for k, v in data.items():
         if k.lower() != "date":
@@ -218,8 +272,16 @@ def extract_competition_year_from_raw(data: Dict[str, Any]) -> Optional[int]:
 
 
 def normalize_extranat_round_date(raw: str) -> str:
-    """Normalise une chaîne de type "SériesDimanche 4 Février 2024"
-    vers une date ISO YYYY-MM-DD en extrayant le jour, le mois et l'année."""
+    """Normalise une date française textuelle vers ISO ``YYYY-MM-DD``.
+
+    Exemple : ``"SériesDimanche 4 Février 2024"`` → ``"2024-02-04"``.
+
+    Args:
+        raw (str): Chaîne contenant jour, mois en lettres et année.
+
+    Returns:
+        str: Date ISO ou chaîne d'origine si parsing impossible.
+    """
     text = raw.strip()
     lowered = (
         text.lower()
@@ -272,7 +334,16 @@ def normalize_extranat_round_date(raw: str) -> str:
 
 
 def strip_extranat_round_date(raw: str) -> str:
-    """Supprime la partie date et les indications d'âge dans une chaîne de tour Extranat."""
+    """Supprime date et tranche d'âge d'un libellé de tour Extranat.
+
+    Conserve uniquement le nom canonique du tour (Séries, Finale A, etc.).
+
+    Args:
+        raw (str): Libellé brut du champ ``tour``.
+
+    Returns:
+        str: Tour nettoyé.
+    """
     text = raw.strip()
     if not text:
         return text
@@ -335,9 +406,15 @@ def strip_extranat_round_date(raw: str) -> str:
 
 
 def clean_extranat_split_time(raw: str) -> str:
-    """
-    Corrige certaines anomalies connues sur les temps de split Extranat.
-    Exemple : "00:0-35.02" -> "00:35.02".
+    """Corrige les anomalies connues sur les temps de split Extranat.
+
+    Exemple : ``"00:0-35.02"`` → ``"00:35.02"``.
+
+    Args:
+        raw (str): Temps de passage brut.
+
+    Returns:
+        str: Temps corrigé.
     """
     txt = str(raw).strip()
     if not txt:
@@ -353,7 +430,14 @@ def clean_extranat_split_time(raw: str) -> str:
 
 
 def split_extranat_mpp(raw: str) -> Tuple[str, Optional[str]]:
-    """Nettoie un champ 'mpp'."""
+    """Sépare un champ MPP en temps et date.
+
+    Args:
+        raw (str): Valeur brute MPP (temps + date éventuelle).
+
+    Returns:
+        Tuple[str, Optional[str]]: Temps MPP et date ISO normalisée (ou None).
+    """
     txt = str(raw).strip()
     if not txt:
         return txt, None
@@ -376,10 +460,13 @@ def split_extranat_mpp(raw: str) -> Tuple[str, Optional[str]]:
 
 
 def format_seconds_to_extranat_time(seconds: Optional[float]) -> Optional[str]:
-    """
-    Formate un temps en secondes au format utilisé par Extranat :
-      - 35.02 -> "35.02"
-      - 107.97 -> "1:47.97"
+    """Formate des secondes au format d'affichage Extranat.
+
+    Args:
+        seconds (Optional[float]): Durée en secondes.
+
+    Returns:
+        Optional[str]: ``"35.02"`` ou ``"1:47.97"``, ou None si invalide.
     """
     if seconds is None:
         return None
@@ -435,11 +522,18 @@ def parse_event(raw_event: str) -> Tuple[Optional[int], Optional[str], Optional[
     return distance, stroke_code, course
 
 
-#  Nettoyage EXTRANAT
+# --- Nettoyage Extranat (épreuves, performances, splits) ---
+
 
 def parse_extranat_time_to_seconds(raw: str) -> Optional[float]:
-    """Convertir des temps Extranat en secondes.
-    Retourne None si le format n'est pas reconnu."""
+    """Convertit un temps Extranat en secondes (None si non reconnu).
+
+    Args:
+        raw (str): Chaîne de temps brute.
+
+    Returns:
+        Optional[float]: Secondes ou None (produit ``null`` en JSON).
+    """
     seconds = parse_swim_time_to_seconds(str(raw))
     # parse_swim_time_to_seconds renvoie float("nan") si non reconnu.
     # On convertit ces NaN en None pour produire `null` dans le JSON.
@@ -449,9 +543,14 @@ def parse_extranat_time_to_seconds(raw: str) -> Optional[float]:
 
 
 def format_extranat_event_name(raw_name: str, pool_length: Optional[int]) -> str:
-    """
-    Convertit un nom d'épreuve Extranat en format type "200 FR LCM".
-    Exemple : "25 Nage Libre" -> "25 FR SCM" (bassin 25m).
+    """Convertit un nom d'épreuve français en format ``"200 FR LCM"``.
+
+    Args:
+        raw_name (str): Libellé Extranat (ex. ``"100 Nage Libre"``).
+        pool_length (Optional[int]): 25 ou 50 mètres pour déduire SCM/LCM.
+
+    Returns:
+        str: Libellé normalisé ou nom d'origine si conversion impossible.
     """
     name = raw_name.strip()
     if not name:
@@ -520,9 +619,13 @@ def format_extranat_event_name(raw_name: str, pool_length: Optional[int]) -> str
 
 
 def performance_splits_seconds_in_range(perf_clean: Dict[str, Any]) -> bool:
-    """
-    True si aucun split n'a de split_seconds numérique hors [SPLIT_SECONDS_MIN, SPLIT_SECONDS_MAX].
-    Les splits sans split_seconds (None) ou non numériques sont ignorés pour ce filtre.
+    """Vérifie que tous les splits numériques sont dans l'intervalle acceptable.
+
+    Args:
+        perf_clean (Dict[str, Any]): Performance nettoyée avec liste ``splits``.
+
+    Returns:
+        bool: False si un ``split_seconds`` est hors ``[SPLIT_SECONDS_MIN, SPLIT_SECONDS_MAX]``.
     """
     splits = perf_clean.get("splits")
     if not isinstance(splits, list):
@@ -545,11 +648,15 @@ def performance_splits_seconds_in_range(perf_clean: Dict[str, Any]) -> bool:
 
 
 def infer_extranat_gender_from_filename(path: Path) -> Optional[str]:
-    """
-    Déduit un genre par défaut à partir du nom de fichier Extranat.
-    Règle demandée :
-      - si le nom de fichier (sans extension) se termine par "-Dames" -> "F"
-      - sinon -> "M"
+    """Déduit le genre par défaut depuis le nom de fichier Extranat.
+
+    Règle : suffixe ``-Dames`` → ``"F"``, sinon ``"M"``.
+
+    Args:
+        path (Path): Chemin du fichier JSON source.
+
+    Returns:
+        Optional[str]: ``"F"`` ou ``"M"``.
     """
     stem_lower = path.stem.lower()
     if stem_lower.endswith("-dames"):
@@ -561,12 +668,17 @@ def clean_extranat_competition(
     data: Dict[str, Any],
     default_gender: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Nettoie la structure d'un fichier compétition Extranat.
-    - Trim des chaînes
-    - Ajout de pool_length_m dérivé de pool_size ("25m" -> 25, "50m" -> 50)
-    - Pour chaque performance, ajout de temps en secondes (temps_seconds)
-      et conversion des splits en secondes.
+    """Nettoie la structure complète d'un fichier compétition Extranat.
+
+    Transforme les champs source (français, imbriqués) vers le schéma unifié
+    Pacing (Meet, Event, SwimTimeSeconds, swimmer, splits, etc.).
+
+    Args:
+        data (Dict[str, Any]): JSON brut d'une compétition.
+        default_gender (Optional[str]): Genre par défaut si absent (depuis le nom de fichier).
+
+    Returns:
+        Dict[str, Any]: Compétition nettoyée prête pour ``data/processed/``.
     """
     cleaned: Dict[str, Any] = {}
     pool_length: Optional[int] = None
@@ -1023,13 +1135,18 @@ def clean_extranat_competition(
     return cleaned
 
 
+# --- Batch : parcours récursif raw → processed ---
+
+
 def clean_extranat_directory() -> None:
-    """
-    Parcourt tous les fichiers JSON sous
-    data/raw/extranat/competitions_per_type
-    et écrit des versions nettoyées sous
-    data/processed/extranat/competitions_per_type
-    en conservant la même arborescence.
+    """Parcourt tous les JSON Extranat bruts et écrit les versions nettoyées.
+
+    Lit ``data/raw/extranat/competitions_per_type`` et écrit sous
+    ``data/processed/extranat/competitions_per_type`` en conservant
+    l'arborescence relative.
+
+    Returns:
+        None
     """
     base_dir = EXTRANAT_BASE_DIR
     out_base = EXTRANAT_OUTPUT_BASE_DIR

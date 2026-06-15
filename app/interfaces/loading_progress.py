@@ -1,4 +1,14 @@
-"""Barres de progression au démarrage (chargement prefetch) pour l’UI Flet."""
+"""Barres de progression au démarrage (chargement prefetch) pour l'UI Flet.
+
+Ce module fournit des widgets de progression affichés pendant le bootstrap
+de ``PacingDesktopApp`` : précalcul des graphiques, cache nageurs et Parquet
+USA Swimming.
+
+Composants :
+- ``LoadingBar`` — barre unique plein écran
+- ``DualPrefetchProgress`` — deux barres (graphes + couloirs)
+- ``TriplePrefetchProgress`` — trois barres (graphes + event swimmers + parquet)
+"""
 
 from __future__ import annotations
 
@@ -9,6 +19,14 @@ import flet as ft
 
 
 class LoadingBar:
+    """Barre de progression plein écran pour une phase de chargement unique.
+
+    Attributes:
+        page (ft.Page): Page Flet cible.
+        total_units (int): Nombre total d'unités de progression.
+        completed (int): Unités déjà consommées.
+    """
+
     def __init__(
         self,
         page: ft.Page,
@@ -106,7 +124,11 @@ class LoadingBar:
 
 
 class DualPrefetchProgress:
-    """Deux barres de progression en parallèle (gauche : graphes généraux, droite : couloirs)."""
+    """Deux barres de progression en parallèle (graphes généraux et couloirs).
+
+    Utilisé lorsque le prefetch couloir et le prefetch notebook tournent
+    simultanément au démarrage.
+    """
 
     def __init__(
         self,
@@ -263,7 +285,10 @@ class DualPrefetchProgress:
 
 
 class TriplePrefetchProgress:
-    """Trois barres de progression en parallèle pour le démarrage."""
+    """Trois barres de progression pour le bootstrap complet de l'app desktop.
+
+    Colonnes typiques : graphes notebook, cache event swimmers, build Parquet USA.
+    """
 
     def __init__(
         self,
