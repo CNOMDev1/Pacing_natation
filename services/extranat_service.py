@@ -1,14 +1,28 @@
+"""Scraping Extranat (ffnatation.fr) : types de compétition, calendrier, résultats détaillés.
+
+Parse les tableaux HTML de résultats (épreuves, splits, MPP) et produit des JSON sous
+``data/raw/extranat/``. Point d'entrée CLI : ``python services/extranat_service.py``.
+"""
+from __future__ import annotations
+
+import re
+import time
+from typing import Any, Dict, List, Optional
+
 import requests
 from bs4 import BeautifulSoup
-from typing import List, Dict, Optional
-import time
-import re
 
 
-# Effectue une requête GET HTTP avec relances automatiques : en cas d'échec (erreur réseau,
-# 403, 429, 5xx), attend un délai croissant (backoff exponentiel) puis réessaie jusqu'à
-# max_retries fois (ou indéfiniment si retry_forever=True). Retourne la réponse ou lève une exception.
-def http_get_with_retries(url: str, headers: Optional[dict] = None, max_retries: int = 3, base_delay: float = 1.0, debug: bool = False, session: Optional[requests.Session] = None, retry_forever: bool = False):
+def http_get_with_retries(
+    url: str,
+    headers: Optional[dict[str, str]] = None,
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    debug: bool = False,
+    session: Optional[requests.Session] = None,
+    retry_forever: bool = False,
+) -> requests.Response:
+    """GET avec backoff exponentiel sur erreurs réseau, 403, 429 et 5xx."""
     if headers is None:
         headers = {
             "User-Agent": (
@@ -103,10 +117,13 @@ def http_get_with_retries(url: str, headers: Optional[dict] = None, max_retries:
             f"Echec de la requête GET vers {url} après {max_retries} tentatives"
         )
 
-# Récupère les données de compétition (résultats de natation) depuis l'URL fournie : charge la page,
-# trouve la table des résultats (épreuves type 100 Nage Libre, Brasse, etc.), parse les lignes
-# (rang, nageur, club, temps, splits, MPP) et retourne une liste de dictionnaires par résultat.
-def get_competition_data(url: str, debug: bool = False, session: Optional[requests.Session] = None, retry_forever: bool = True) -> List[Dict]:
+def get_competition_data(
+    url: str,
+    debug: bool = False,
+    session: Optional[requests.Session] = None,
+    retry_forever: bool = True,
+) -> List[Dict[str, Any]]:
+    """Parse une page de résultats Extranat et renvoie une ligne par performance."""
     response = http_get_with_retries(
         url,
         debug=debug,
@@ -404,18 +421,17 @@ COMPETITIONS_PATH = "competitions.php?idact=nat"
 INTERNATIONALS_URL = ("https://ffn.extranat.fr/webffn/competitions.php?idact=nat&idsai=&idreg=&idtyp=7")
 
 
-# Construit l'URL de la page des compétitions FFN pour un type donné (idtyp).
 def get_competitions_url_by_idtyp(idtyp: int) -> str:
+    """Construit l'URL Extranat pour un type de compétition (``idtyp``)."""
     return f"{BASE_URL}competitions.php?idact=nat&idsai=&idreg=&idtyp={idtyp}"
 
 
-# Récupère la liste des types de compétition depuis la page FFN : parse le <select> liste_type
-# et retourne pour chaque option idtyp, label, value et url complète.
 def get_competition_types(
     base_url: str = BASE_URL,
     path: str = COMPETITIONS_PATH,
     debug: bool = False,
-) -> List[Dict]:
+) -> List[Dict[str, Any]]:
+    """Parse le ``<select id=liste_type>`` et renvoie idtyp, label, value, url."""
     url = f"{base_url}{path}"
 
     if debug:
@@ -486,6 +502,18 @@ def get_competitions_for_url(
     url: str,
     debug: bool = False,
 ) -> List[Dict]:
+    """Récupère la liste paginée des compétitions pour une URL Extranat.
+
+    Suit les liens de pagination partageant le même filtre (idtyp, idsai, idreg)
+    et parse chaque bloc compétition (nom, date, lieu, URL, bassin, etc.).
+
+    Args:
+        url (str): URL de la page liste des compétitions.
+        debug (bool): Active les logs détaillés de pagination et parsing.
+
+    Returns:
+        List[Dict]: Métadonnées de chaque compétition trouvée.
+    """
     competitions: List[Dict] = []
 
     if debug:
@@ -498,6 +526,14 @@ def get_competitions_for_url(
     start_qs = parse_qs(parsed_start.query)
 
     def _same_filter(list_url: str) -> bool:
+        """Vérifie qu'une URL de liste partage le même filtre que l'URL de départ.
+
+        Args:
+            list_url (str): URL candidate de pagination.
+
+        Returns:
+            bool: True si idtyp (et idsai/idreg le cas échéant) correspondent.
+        """
         p = urlparse(list_url)
         if "competitions.php" not in p.path:
             return False
@@ -637,6 +673,21 @@ def get_all_results_by_type(
     debug: bool = False,
     only_idtyps: Optional[List[int]] = None,
 ) -> Dict:
+    """Agrège les résultats de toutes les compétitions, groupés par type.
+
+    Pour chaque type, récupère la liste des compétitions puis appelle
+    ``get_competition_data`` sur chacune.
+
+    Args:
+        base_url (str): URL de base du site Extranat.
+        path (str): Chemin relatif de la page des types de compétition.
+        delay_between_comps (float): Délai en secondes entre deux compétitions.
+        debug (bool): Active les logs détaillés.
+        only_idtyps (Optional[List[int]]): Restreint aux idtyp indiqués.
+
+    Returns:
+        Dict: Structure ``{"types": [...]}`` avec compétitions et résultats imbriqués.
+    """
     types = get_competition_types(base_url=base_url, path=path, debug=debug)
 
     data: Dict = {"types": []}
@@ -808,6 +859,18 @@ def get_all_results_grouped_by_event_by_type(
 # Parse le HTML (soup) des pages « filtre » : extrait les épreuves et leurs performances
 # (nom épreuve, catégorie, nageurs, temps, splits, etc.) depuis les tables.
 def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) -> List[Dict]:
+    """Parse les tables HTML « filtre » en épreuves et performances.
+
+    Extrait nom d'épreuve, catégorie, tour, classement, nageur, club, temps,
+    splits et points MPP depuis le HTML BeautifulSoup fourni.
+
+    Args:
+        soup (BeautifulSoup): Document HTML de la page résultats filtrée.
+        debug (bool): Active les logs de parsing détaillés.
+
+    Returns:
+        List[Dict]: Liste d'épreuves, chacune contenant une liste ``performances``.
+    """
     epreuves: List[Dict] = []
     current_epreuve: Optional[Dict] = None
     last_performance: Optional[Dict] = None  
@@ -816,6 +879,14 @@ def extract_results_from_filter_table(soup: BeautifulSoup, debug: bool = False) 
     import re as re_module
 
     def parse_event_header(header_text: str) -> Dict:
+        """Découpe l'en-tête d'une épreuve en nom, catégorie et tour.
+
+        Args:
+            header_text (str): Texte brut de l'en-tête de table.
+
+        Returns:
+            Dict: Clés ``nom``, ``categorie`` (Dames/Messieurs) et ``tour``.
+        """
         text = " ".join(header_text.split())
         nom = text
         categorie = ""
@@ -1215,6 +1286,15 @@ def get_results_for_competitions_url(
         def _scrape_events_from_selects(
             select_elements, gender_label: str
         ) -> List[Dict]:
+            """Parcourt les ``<select>`` d'épreuves et récupère chaque page résultats.
+
+            Args:
+                select_elements: Éléments BeautifulSoup ``<select>`` à parcourir.
+                gender_label (str): Libellé de genre pour les logs (ex. « Dames »).
+
+            Returns:
+                List[Dict]: Épreuves extraites via ``extract_results_from_filter_table``.
+            """
             all_epreuves: List[Dict] = []
             nonlocal requests_since_session
             from urllib.parse import urljoin as _urljoin_local
@@ -1617,6 +1697,14 @@ def get_results_for_competitions_url(
                 comp["results"] = grouped
                 # Compter le nombre total de lignes de résultats
                 def _count_grouped_results(grouped_dict: Dict) -> int:
+                    """Compte le nombre total de performances dans un dict groupé par épreuve.
+
+                    Args:
+                        grouped_dict (Dict): Résultats groupés (listes plates ou épreuves).
+
+                    Returns:
+                        int: Nombre total de lignes de performance.
+                    """
                     total = 0
                     for key, value in grouped_dict.items():
                         # Ignorer les clés spéciales éventuelles (_info, _error, etc.)
@@ -2031,6 +2119,14 @@ def main():
     # Mode "année seule" : python get_data_deeper.py 2025
     # → on extrait toutes les compétitions dont la date est dans l'année 2025
     def _is_year_token(s: str) -> bool:
+        """Indique si une chaîne représente une année valide (1970–2030).
+
+        Args:
+            s (str): Jeton à tester.
+
+        Returns:
+            bool: True si ``s`` est un entier à quatre chiffres dans la plage autorisée.
+        """
         if not s.isdigit() or len(s) != 4:
             return False
         y = int(s)
@@ -2038,6 +2134,14 @@ def main():
 
     # Mode "deux dates" : python get_data_deeper.py 02/02/2025 10/10/2025
     def _parse_date_token(s: str) -> Optional[date]:
+        """Parse une date au format ``DD/MM/YYYY``.
+
+        Args:
+            s (str): Chaîne de date à convertir.
+
+        Returns:
+            Optional[date]: Objet ``date`` ou None si le format est invalide.
+        """
         if "/" not in s or len(s) != 10:
             return None
         try:
@@ -2334,7 +2438,15 @@ def main():
                             # Sauvegarder le chemin du fichier de résultats
                             competitions_files.append(comp_path)
                     else:
-                        def _normalize_event_fields(results_dict: Dict):
+                        def _normalize_event_fields(results_dict: Dict) -> None:
+                            """Complète les champs ``event`` et ``date`` manquants sur chaque performance.
+
+                            Args:
+                                results_dict (Dict): Résultats indexés par nom d'épreuve.
+
+                            Returns:
+                                None
+                            """
                             for event_name, perfs in results_dict.items():
                                 if not isinstance(perfs, list):
                                     continue
@@ -2349,9 +2461,27 @@ def main():
                         def _results_to_epreuves(
                             results_dict: Dict, default_categorie: Optional[str] = None
                         ) -> List[Dict]:
+                            """Convertit un dict plat de résultats en liste d'épreuves structurées.
+
+                            Args:
+                                results_dict (Dict): Performances groupées par nom d'épreuve.
+                                default_categorie (Optional[str]): Catégorie par défaut (Dames/Messieurs).
+
+                            Returns:
+                                List[Dict]: Épreuves avec performances séparées par genre.
+                            """
                             epreuves: List[Dict] = []
             
                             def _base_event_name(perfs_list: List[Dict], fallback: str) -> str:
+                                """Extrait le nom d'épreuve sans suffixe genre ni tour.
+
+                                Args:
+                                    perfs_list (List[Dict]): Performances d'une même épreuve.
+                                    fallback (str): Nom de repli si aucun libellé exploitable.
+
+                                Returns:
+                                    str: Nom d'épreuve normalisé.
+                                """
                                 for p in perfs_list:
                                     if not isinstance(p, dict):
                                         continue
@@ -2537,6 +2667,15 @@ def main():
                         def _write_gender_file(
                             gender_label: str, epreuves_list: List[Dict]
                         ) -> None:
+                            """Écrit un fichier JSON de compétition filtré par genre.
+
+                            Args:
+                                gender_label (str): Libellé de filtre (ex. « Dames », « Messieurs »).
+                                epreuves_list (List[Dict]): Épreuves à inclure dans le fichier.
+
+                            Returns:
+                                None
+                            """
                             if not epreuves_list:
                                 return
             
@@ -2578,6 +2717,14 @@ def main():
                 
                 # Générer le nom de fichier de résumé basé sur le type
                 def _type_name_to_filename(tn: str) -> str:
+                    """Convertit un nom de type de compétition en nom de fichier sûr.
+
+                    Args:
+                        tn (str): Nom du type de compétition Extranat.
+
+                    Returns:
+                        str: Identifiant de fichier normalisé (minuscules, underscores).
+                    """
                     import re
                     if not tn:
                         return "resume_type_inconnu"

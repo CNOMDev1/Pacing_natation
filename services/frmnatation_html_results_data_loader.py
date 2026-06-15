@@ -1,3 +1,9 @@
+"""Charge les résultats FRM Natation (Maroc) extraits depuis des pages HTML.
+
+Les JSON sous ``data/processed/frmnatation/html_results/`` alimentent les
+couloirs de performance avec une surcouche « nageur marocain » et la
+recherche de nageurs dans l'interface desktop.
+"""
 from __future__ import annotations
 
 import json
@@ -14,6 +20,7 @@ DEFAULT_FRMNATATION_HTML_RESULTS_DIR = (
 
 
 def _normalize_gender(value: Any) -> str:
+    """Unifie les libellés de genre (F/M) issus des pages HTML marocaines."""
     if value is None:
         return "all"
     s = str(value).strip().upper()
@@ -25,6 +32,15 @@ def _normalize_gender(value: Any) -> str:
 
 
 def _swimmer_label(name: str, yob: Any) -> str:
+    """Formate un libellé d'affichage « Nom (année) » pour un nageur.
+
+    Args:
+        name (str): Nom du nageur.
+        yob (Any): Année de naissance (optionnelle).
+
+    Returns:
+        str: Libellé formaté, ou chaîne vide si le nom est absent.
+    """
     nm = str(name).strip()
     if not nm:
         return ""
@@ -40,17 +56,35 @@ class FrmnatationHtmlResultsDataLoader:
     """Charge les JSON FRM Natation (html_results) en DataFrame."""
 
     def __init__(self, base_dir: Optional[Path] = None) -> None:
+        """Configure le répertoire source et initialise le cache mémoire."""
         self.base_dir = (
             base_dir if base_dir is not None else DEFAULT_FRMNATATION_HTML_RESULTS_DIR
         )
+        # Cache en mémoire : les JSON marocains sont peu nombreux mais relus souvent.
         self._df_cache: Optional[pd.DataFrame] = None
 
     @staticmethod
     def _normalize_swimmer(swimmer: Any) -> Dict[str, Any]:
+        """Uniformise le champ nageur en dictionnaire.
+
+        Args:
+            swimmer (Any): Valeur brute du champ ``swimmer``.
+
+        Returns:
+            Dict[str, Any]: Dictionnaire nageur ou dict vide si le type est invalide.
+        """
         return swimmer if isinstance(swimmer, dict) else {}
 
     @classmethod
     def _build_rows_from_comp(cls, comp: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Aplatit une compétition JSON FRM Natation en lignes de performance.
+
+        Args:
+            comp (Dict[str, Any]): Structure compétition (épreuves → performances).
+
+        Returns:
+            List[Dict[str, Any]]: Une ligne par performance avec métadonnées nageur.
+        """
         rows: List[Dict[str, Any]] = []
         for epreuve in comp.get("epreuves") or []:
             if not isinstance(epreuve, dict):
@@ -90,6 +124,14 @@ class FrmnatationHtmlResultsDataLoader:
         return rows
 
     def _load_single_file(self, file: Path) -> List[Dict[str, Any]]:
+        """Charge un fichier JSON et retourne les lignes de performance extraites.
+
+        Args:
+            file (Path): Chemin vers le fichier JSON à lire.
+
+        Returns:
+            List[Dict[str, Any]]: Lignes aplaties, ou liste vide en cas d'erreur.
+        """
         try:
             with file.open("r", encoding="utf-8") as f:
                 comp = json.load(f)
@@ -100,6 +142,7 @@ class FrmnatationHtmlResultsDataLoader:
         return self._build_rows_from_comp(comp)
 
     def load(self) -> pd.DataFrame:
+        """Charge tous les JSON (avec cache) et renvoie une copie du DataFrame."""
         if self._df_cache is not None:
             return self._df_cache.copy()
         if not self.base_dir.exists():
@@ -126,6 +169,19 @@ class FrmnatationHtmlResultsDataLoader:
         event: Optional[str] = None,
         gender: str = "all",
     ) -> pd.DataFrame:
+        """Filtre le DataFrame par épreuve, bassin et genre avec chronos valides.
+
+        Args:
+            df (pd.DataFrame): Données chargées depuis les JSON marocains.
+            stroke (Optional[str]): Type de nage (ex. « NL »).
+            distance (Optional[int]): Distance en mètres.
+            pool (Optional[str]): Type de bassin (ex. « LCM »).
+            event (Optional[str]): Libellé complet de l'épreuve.
+            gender (str): Filtre genre (« F », « M » ou « all »).
+
+        Returns:
+            pd.DataFrame: Sous-ensemble filtré avec ``SwimTimeSeconds`` non nul.
+        """
         if df.empty:
             return df
         scoped = df
@@ -159,6 +215,7 @@ class FrmnatationHtmlResultsDataLoader:
         event: Optional[str] = None,
         gender: str = "all",
     ) -> List[str]:
+        """Liste les nageurs au format « Nom (année) » pour une épreuve donnée."""
         df = self.load()
         scoped = self._filter_df(
             df,
@@ -184,6 +241,7 @@ class FrmnatationHtmlResultsDataLoader:
         nom_nageur: str,
         year_of_birth: Optional[int],
     ) -> pd.DataFrame:
+        """Retourne les performances d'un nageur au format Extranat (pour fusion UI)."""
         df = self.load()
         if df.empty:
             return pd.DataFrame()
@@ -250,6 +308,7 @@ class FrmnatationHtmlResultsDataLoader:
         nom_nageur: str,
         year_of_birth: Optional[int],
     ) -> pd.DataFrame:
+        """Colonnes minimales pour superposer un nageur marocain sur un couloir USA Swimming."""
         df = self.load()
         if df.empty:
             return pd.DataFrame()

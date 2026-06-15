@@ -24,11 +24,13 @@ class CorridorSwimmerSpec:
     color: str = CORRIDOR_FR_SWIMMER_COLOR
     label: str = "Nageur cible"
 
+# LRU en mémoire : prepare_corridor_long_df est coûteux sur de gros DataFrames Extranat.
 _PREP_CACHE: "OrderedDict[tuple, pd.DataFrame]" = OrderedDict()
 _PREP_CACHE_MAX = 96
 
 
 def corridor_norm_name(value: object) -> str:
+    """Normalise un nom pour la recherche (minuscules, sans accents, espaces unifiés)."""
     txt = "" if value is None else str(value).strip().lower()
     txt = unicodedata.normalize("NFKD", txt).encode("ascii", "ignore").decode("ascii")
     return re.sub(r"\s+", " ", txt)
@@ -41,6 +43,17 @@ def _prep_cache_key(
     solo_only: bool,
     require_name: bool,
 ) -> tuple:
+    """Construit une clé de cache LRU pour ``prepare_corridor_long_df``.
+
+    Args:
+        df (pd.DataFrame): DataFrame source des performances.
+        nom_event (str): Libellé de l'épreuve filtrée.
+        solo_only (bool): Indique si seules les nages solo sont conservées.
+        require_name (bool): Indique si nom et année de naissance sont requis.
+
+    Returns:
+        tuple: Clé hashable (événement, flags, taille, somme des chronos).
+    """
     swim_sum = 0.0
     if len(df) and "SwimTimeSeconds" in df.columns:
         swim_sum = float(pd.to_numeric(df["SwimTimeSeconds"], errors="coerce").sum())
@@ -81,6 +94,7 @@ def prepare_corridor_long_df(
         is_solo[i] = ok
         first_swimmer[i] = sw[0] if ok else None
 
+    # Le couloir de référence Extranat ne retient que les nages individuelles (pas les relais).
     if solo_only:
         keep = is_solo
         if not keep.any():
@@ -206,6 +220,7 @@ def resolve_corridor_swimmer(
     resolved_name = target_name
     resolved_yob = yob_target
 
+    # Résolution en cascade : exact → même nom / YOB proche → tokens → fuzzy (difflib).
     exact = unique[(unique["__norm"] == target_norm) & (unique["__yob"] == yob_target)]
     if exact.empty:
         by_name = unique[unique["__norm"] == target_norm]
@@ -325,6 +340,7 @@ def resolve_corridor_swimmer_flexible(
 def filter_corridor_long_df_gender(
     long_df: pd.DataFrame, gender: Optional[str]
 ) -> pd.DataFrame:
+    """Filtre le DataFrame long sur F ou M ; retourne l'entrée inchangée si filtre absent."""
     if long_df.empty or gender not in ("F", "M") or "Gender" not in long_df.columns:
         return long_df
     g = long_df["Gender"].astype(str).str.strip().str.upper()
@@ -334,6 +350,14 @@ def filter_corridor_long_df_gender(
 def dedupe_corridor_swimmer_specs(
     specs: Sequence[CorridorSwimmerSpec],
 ) -> List[CorridorSwimmerSpec]:
+    """Supprime les doublons de specs nageur (nom, année, libellé normalisés).
+
+    Args:
+        specs (Sequence[CorridorSwimmerSpec]): Spécifications à dédupliquer.
+
+    Returns:
+        List[CorridorSwimmerSpec]: Liste sans doublons, ordre de première occurrence conservé.
+    """
     seen: set[tuple] = set()
     out: List[CorridorSwimmerSpec] = []
     for spec in specs:
@@ -365,6 +389,14 @@ def merge_corridor_swimmer_specs_for_plot(
     specs: List[CorridorSwimmerSpec] = list(swimmer_specs or [])
 
     def _has_name(name: str) -> bool:
+        """Indique si un nageur normalisé est déjà présent dans ``specs``.
+
+        Args:
+            name (str): Nom du nageur à rechercher.
+
+        Returns:
+            bool: True si une spec existante porte le même nom normalisé.
+        """
         target = corridor_norm_name(name)
         return any(corridor_norm_name(s.name) == target for s in specs)
 

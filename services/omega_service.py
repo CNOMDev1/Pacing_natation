@@ -1,14 +1,25 @@
+"""Scraping Omega Timing : index des compétitions et PDF « Total Ranking ».
+
+Les PDF sont stockés sous ``data/raw/omega/pdfs/{année}/``. L'accès au site requiert
+des cookies Chromium (``cookies_omegatiming.txt``), rafraîchis via Playwright si
+expirés. Les années anciennes (< 2010) et 2000 ont des traitements spécifiques
+(timeouts, variantes d'URL).
 """
-Service Omega: logique de récupération des données et PDFs depuis omegatiming.com.
-Inclut la mise à jour des cookies .
-"""
-import asyncio, os, sys, time, threading
-import requests
-from pathlib import Path
-from playwright.async_api import async_playwright
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Any
+from urllib.parse import urljoin
+
+import requests
+from bs4 import BeautifulSoup
+from playwright.async_api import async_playwright
 
 # Racine du projet (Pacing/) pour le fichier cookies
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -64,6 +75,7 @@ async def _fetch_cookies_async(cookies_file: Path | None = None, url: str = COOK
 
 
 def load_cookie_header_from_file(path: str | Path) -> str | None:
+    """Lit l'en-tête Cookie sérialisé depuis le fichier texte."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             value = f.read().strip()
@@ -133,7 +145,8 @@ DELAY_BETWEEN_RETRIES = 5
 TIMEOUT_INDEX = 60
 TIMEOUT_PDF = 40
 
-def check_url_exists(url, timeout=5):
+def check_url_exists(url: str, timeout: int = 5) -> int | None:
+    """Vérifie rapidement si une URL Omega répond (HEAD). Retourne le code HTTP ou None."""
     try:
         with SESSION_LOCK:
             resp = session.head(url, timeout=timeout, allow_redirects=True)
@@ -142,7 +155,13 @@ def check_url_exists(url, timeout=5):
         return None
 
 
-def fetch_with_retries(url, description, timeout, skip_quick_check=False):
+def fetch_with_retries(
+    url: str,
+    description: str,
+    timeout: int,
+    skip_quick_check: bool = False,
+) -> requests.Response | None:
+    """GET avec retries, gestion du rate-limiting 429 et rafraîchissement des cookies."""
     if not skip_quick_check and "/sports-timing-live-results/" in url:
         year_match = url.split("/sports-timing-live-results/")[-1].split("/")[0]
         try:
@@ -262,6 +281,14 @@ def fetch_with_retries(url, description, timeout, skip_quick_check=False):
 
 
 def try_alternative_urls(base_url: str) -> requests.Response | None:
+    """Essaie des variantes d'URL pour les archives Omega de l'année 2000.
+
+    Args:
+        base_url (str): URL de départ de la page compétition.
+
+    Returns:
+        requests.Response | None: Réponse HTTP 200 si une variante fonctionne, sinon None.
+    """
     if "/2000/" in base_url:
         path = base_url.split("/2000/")[-1]
         alternatives = [
@@ -294,6 +321,7 @@ def try_alternative_urls(base_url: str) -> requests.Response | None:
 
 
 def download_total_ranking_pdfs_for_meet(meet_url: str, pdf_dir: str) -> None:
+    """Télécharge les PDF « Total Ranking » listés sur la page d'une compétition."""
     print(f"\nRécupération de la page de la compétition : {meet_url}", flush=True)
     year = None
     if "/2000/" in meet_url:
@@ -324,6 +352,7 @@ def download_total_ranking_pdfs_for_meet(meet_url: str, pdf_dir: str) -> None:
         return
 
     soup = BeautifulSoup(resp.text, "html.parser")
+    # Trois stratégies : paragraphes p.three, cellules div.cell, puis texte « TOTAL RANKING ».
     total_ranking_links = []
 
     for p in soup.select("p.three"):
@@ -530,6 +559,14 @@ def run_download_between_years(start_year: int, end_year: int) -> None:
 
 
 def main():
+    """Point d'entrée CLI : télécharge les PDF Total Ranking sur une plage d'années.
+
+    Lit éventuellement ``start_year`` et ``end_year`` depuis ``sys.argv``,
+    sinon utilise ``START_YEAR`` et ``END_YEAR``.
+
+    Returns:
+        None
+    """
     base_pdf_dir = _DATA_BASE_OMEGA / "pdfs"
     base_pdf_dir.mkdir(parents=True, exist_ok=True)
     base_pdf_dir = str(base_pdf_dir)

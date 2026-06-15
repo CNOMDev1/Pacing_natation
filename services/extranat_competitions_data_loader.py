@@ -1,3 +1,7 @@
+"""Charge les JSON Extranat prétraités en un DataFrame pandas.
+Lit récursivement ``data/processed/extranat/competitions_per_type/**/*.json``
+et aplatit la structure compétition → épreuves → performances.
+"""
 from __future__ import annotations
 import json
 from pathlib import Path
@@ -6,16 +10,14 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 _PROJECT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_EXTRANAT_COMPETITIONS_DIR = (
-    _PROJECT_DIR / "data" / "processed" / "extranat" / "competitions_per_type"
-)
+DEFAULT_EXTRANAT_COMPETITIONS_DIR = ( _PROJECT_DIR / "data" / "processed" / "extranat" / "competitions_per_type")
 
 
 class ExtranatCompetitionsDataLoader:
     """Lit tous les *.json sous le répertoire de base et renvoie un DataFrame."""
 
     def __init__(self, base_dir: Optional[Path] = None) -> None:
-        """Stocke le chemin"""
+        """Initialise le répertoire racine des JSON Extranat traités."""
         self.base_dir = base_dir if base_dir is not None else DEFAULT_EXTRANAT_COMPETITIONS_DIR
 
     @staticmethod
@@ -55,6 +57,14 @@ class ExtranatCompetitionsDataLoader:
         return rows
 
     def _load_single_file(self, file: Path) -> List[Dict[str, Any]]:
+        """Charge un fichier JSON de compétition et retourne les lignes aplaties.
+
+        Args:
+            file (Path): Chemin vers le fichier JSON à lire.
+
+        Returns:
+            List[Dict[str, Any]]: Lignes de performance extraites, ou liste vide en cas d'erreur.
+        """
         try:
             with file.open("r", encoding="utf-8") as f:
                 comp = json.load(f)
@@ -63,7 +73,7 @@ class ExtranatCompetitionsDataLoader:
         return self._build_rows_from_comp(comp)
 
     def load(self) -> pd.DataFrame:
-        """Lance le chargement en parallèle thread avec ThreadPoolExecutor"""
+        """Charge tous les JSON en parallèle (ThreadPoolExecutor) et renvoie un DataFrame."""
         if not self.base_dir.exists():
             return pd.DataFrame()
 
