@@ -206,8 +206,8 @@ class PacingDesktopApp:
 
     def _run_usaswimming_parquet_cache_worker(self) -> None:
         startup = self._startup_prefetch_ui
-        # 2 années max en parallèle : chaque conversion charge tout le JSON en RAM (évite OOM / killed).
-        loader = UsaswimmingCompetitionsDataLoader(cache_build_max_workers=5)
+        # Workers adaptés à la machine (voir services.machine_workers).
+        loader = UsaswimmingCompetitionsDataLoader()
         available_years = loader.available_years()
 
         try:

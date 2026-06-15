@@ -1,18 +1,38 @@
-import requests
+"""Scraping de l'API Sisense USA Swimming (chronos historiques).
+
+Ce module interroge l'API JAQL Sisense (``USA Swimming Times Elasticube``),
+paginate par fenêtres de dates et persiste les réponses brutes sous
+``data/raw/usaswimming/{year}/{meet}.json``.
+
+Le flux de données :
+1. **Authentification** — ``load_bearer_token()`` lit ``bearer_token.txt`` ou
+   exécute ``get_token_usaswimming.py`` si le fichier est absent.
+2. **Téléchargement** — ``run_one_shot_full_download()`` (ou variantes mensuelles)
+   récupère les performances par plages annuelles, avec fallback semestriel /
+   mensuel en cas de ``SafeModeException``.
+3. **Persistance** — ``save_data_by_competition()`` regroupe par année et par
+   compétition (``Meet``), avec déduplication optionnelle à l'ajout.
+4. **Polling** — ``run_polling_loop()`` surveille les nouvelles nages et met à
+   jour les JSON existants via ``_latest_swimdate.txt``.
+"""
+from __future__ import annotations
+
 import json
-import pandas as pd
-import time
 import os
-import sys
 import re
 import subprocess
+import sys
+import time
+from typing import Any, Optional
 
-# Répertoire de stockage des données brutes
+import pandas as pd
+import requests
+
 USASWIMMING_DATA_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "data", "raw", "usaswimming")
 )
 
-# URL de l'API (même datasource que dans usaswimming_2024_olympic_trials_service.py)
+# Endpoint JAQL Sisense — même datasource que usaswimming_2024_olympic_trials_service.py.
 url = "https://usaswimming.sisense.com/api/datasources/USA%20Swimming%20Times%20Elasticube/jaql?trc=sdk-ui-1.11.0"
 
 TOKEN_FILE = os.path.join(os.path.dirname(__file__), "bearer_token.txt")
@@ -21,16 +41,33 @@ REQUEST_TIMEOUT_S = float(os.getenv("USASWIMMING_REQUEST_TIMEOUT", "120"))
 
 
 def debug_log(message: str) -> None:
-    """Affiche des logs de debug quand USASWIMMING_DEBUG est activé."""
+    """Affiche un message de debug si ``USASWIMMING_DEBUG`` est activé.
+
+    Args:
+        message (str): Texte à journaliser.
+
+    Returns:
+        None
+    """
     if DEBUG:
         print(f"[DEBUG] {message}")
 
-def load_bearer_token() -> str:
-    """Charge le token Bearer ; génère via get_token_usaswimming.py si le fichier est absent.
 
-    - Cherche le fichier TOKEN_FILE dans le même dossier que ce script
-    - Si absent, exécute get_token_usaswimming.py avec l'interpréteur courant
-    - Relit le fichier et retourne le token (préfixé par 'Bearer ' si nécessaire)
+def load_bearer_token() -> str:
+    """Charge le token Bearer depuis ``bearer_token.txt``.
+
+    Si le fichier est absent, exécute ``get_token_usaswimming.py`` avec
+    l'interpréteur courant puis relit le token généré.
+
+    Args:
+        None
+
+    Returns:
+        str: Token préfixé par ``Bearer `` si nécessaire.
+
+    Raises:
+        FileNotFoundError: Si le fichier token et le script de génération sont absents.
+        RuntimeError: Si l'exécution de ``get_token_usaswimming.py`` échoue.
     """
     if not os.path.exists(TOKEN_FILE):
         script_path = os.path.abspath(
@@ -40,7 +77,7 @@ def load_bearer_token() -> str:
             raise FileNotFoundError(
                 f"{TOKEN_FILE} introuvable et {script_path} également manquant."
             )
-        # Tente de générer le token
+        # Génération automatique : le script d'auth écrit bearer_token.txt à côté de ce module.
         try:
             subprocess.run([sys.executable, script_path], check=True)
         except subprocess.CalledProcessError as exc:
@@ -57,7 +94,7 @@ def load_bearer_token() -> str:
         raw = f.read().strip()
     return raw if raw.lower().startswith("bearer ") else f"Bearer {raw}"
 
-# Header avec ton token Bearer
+# En-têtes HTTP Sisense : le token est rechargé au démarrage du module.
 headers = {
     "accept": "application/json, text/plain, */*",
     "accept-language": "fr,fr-FR;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
@@ -68,23 +105,37 @@ headers = {
                   "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0",
 }
 
-# Taille de page et délais pour limiter la charge côté API (éviter SafeModeException)
-PAGE_SIZE = int(os.getenv("USASWIMMING_PAGE_SIZE", "2000"))  # 2000 par défaut pour réduire la charge serveur
+# Pagination et temporisation : valeurs conservatrices pour limiter les SafeModeException.
+PAGE_SIZE = int(os.getenv("USASWIMMING_PAGE_SIZE", "2000"))
 DELAY_BETWEEN_REQUESTS_S = float(os.getenv("USASWIMMING_DELAY_REQUESTS", "0.5"))
 DELAY_BETWEEN_PERIODS_S = float(os.getenv("USASWIMMING_DELAY_PERIODS", "2.0"))
-# En cas de SafeMode, attendre avant de réessayer (le serveur annule ~30 s)
+# SafeMode : le serveur Sisense coupe la requête après ~30 s — on attend avant de réessayer.
 SAFEMODE_RETRY_DELAY_S = float(os.getenv("USASWIMMING_SAFEMODE_RETRY_DELAY", "35"))
 SAFEMODE_MAX_RETRIES = int(os.getenv("USASWIMMING_SAFEMODE_MAX_RETRIES", "2"))
 
-# Construit le payload JSON pour les requêtes API avec pagination et filtres de dates
-def make_payload(offset, from_iso: str | None = None, to_iso: str | None = None, count: int | None = None):
+def make_payload(
+    offset: int,
+    from_iso: str | None = None,
+    to_iso: str | None = None,
+    count: int | None = None,
+) -> dict[str, Any]:
+    """Construit le payload JAQL Sisense avec pagination et filtre de dates.
+
+    Args:
+        offset (int): Décalage de pagination (lignes déjà récupérées).
+        from_iso (str | None): Borne basse du filtre ``SwimDate`` (ISO 8601).
+        to_iso (str | None): Borne haute du filtre ``SwimDate`` (ISO 8601).
+        count (int | None): Taille de page ; ``PAGE_SIZE`` si ``None``.
+
+    Returns:
+        dict[str, Any]: Corps JSON prêt pour ``requests.post``.
+    """
     from_value = from_iso or "1900-01-01T00:00:00"
     to_value = to_iso or "2025-12-31T23:59:59"
     page_size = count if count is not None else PAGE_SIZE
     return {
         "metadata": [
-            # Rang officiel (place) tel qu'utilisé par le site USA Swimming,
-            # d'après le payload Network : [UsasSwimTime.FinishPosition]
+            # Place officielle — dimension [UsasSwimTime.FinishPosition] du cube Sisense.
             {
                 "jaql": {
                     "title": "Place",
@@ -93,10 +144,8 @@ def make_payload(offset, from_iso: str | None = None, to_iso: str | None = None,
                     "sort": "asc",
                 }
             },
-            # Même dimension de nom que dans le service 2024 Trials
             {"jaql": {"title": "Name", "dim": "[UsasSwimTime.FullName]", "datatype": "text"}},
-            # La dimension OrgUnit.TeamName n'existe pas dans le cube USA Swimming Times Elasticube,
-            # on supprime donc temporairement la colonne Federation pour éviter les erreurs API.
+            # Federation absente : OrgUnit.TeamName n'existe pas dans ce cube Elasticube.
             {"jaql": {"title": "Event", "dim": "[SwimEvent.EventCode]", "datatype": "text"}},
             {"jaql": {"title": "Gender", "dim": "[EventCompetitionCategory.TypeName]", "datatype": "text"}},
             {"jaql": {"title": "Session", "dim": "[Session.SessionName]", "datatype": "text"}},
@@ -117,12 +166,9 @@ def make_payload(offset, from_iso: str | None = None, to_iso: str | None = None,
                 },
                 "format": {"mask": {"days": "M/d/yyyy"}}
             },
-            # Dimensions de temps alignées sur le cube USA Swimming Times Elasticube
             {"jaql": {"title": "SwimTime", "dim": "[UsasSwimTime.SwimTimeFormatted]", "datatype": "text"}},
             {"jaql": {"title": "SwimTimeSeconds", "dim": "[UsasSwimTime.SwimTimeSeconds]", "datatype": "numeric"}}
         ],
-        # Utilise le même cube "USA Swimming Times Elasticube" que pour les Trials 2024,
-        # mais avec les dimensions BestTimes / SeasonCalendar pour couvrir tout l'historique.
         "datasource": "USA Swimming Times Elasticube",
         "by": "ComposeSDK",
         "queryGuid": f"page-{offset}",
@@ -132,9 +178,15 @@ def make_payload(offset, from_iso: str | None = None, to_iso: str | None = None,
 
 
 def fetch_min_swim_date_from_api() -> int | None:
-    """
-    Interroge l'API pour obtenir la date de nage la plus ancienne (une ligne triée par date croissante).
-    Retourne l'année (int) ou None si l'API ne répond pas ou ne renvoie pas de donnée.
+    """Interroge l'API pour obtenir l'année de la nage la plus ancienne.
+
+    Envoie une requête d'une seule ligne triée par ``SwimDate`` croissant.
+
+    Args:
+        None
+
+    Returns:
+        int | None: Année de la première nage, ou ``None`` si l'API ne répond pas.
     """
     from_iso = "1900-01-01T00:00:00"
     to_iso = "2030-12-31T23:59:59"
@@ -153,7 +205,6 @@ def fetch_min_swim_date_from_api() -> int | None:
                 "format": {"mask": {"days": "M/d/yyyy"}},
             },
         ],
-        # Même datasource que le scraping Trials, pour homogénéiser toutes les requêtes.
         "datasource": "USA Swimming Times Elasticube",
         "by": "ComposeSDK",
         "queryGuid": "min-date",
@@ -183,12 +234,19 @@ def fetch_min_swim_date_from_api() -> int | None:
         return None
 
 
-# Fichier state pour le polling (dernière date vue), dans data/raw/usaswimming
+# Pointeur de reprise pour le polling : dernière SwimDate traitée.
 LATEST_SWIMDATE_FILE = os.path.join(USASWIMMING_DATA_DIR, "_latest_swimdate.txt")
 
 
 def _read_latest_swimdate() -> pd.Timestamp | None:
-    """Lit la dernière date de nage enregistrée (pour le polling)."""
+    """Lit la dernière date de nage enregistrée pour le polling.
+
+    Args:
+        None
+
+    Returns:
+        pd.Timestamp | None: Timestamp lu depuis ``_latest_swimdate.txt``, ou ``None``.
+    """
     if not os.path.exists(LATEST_SWIMDATE_FILE):
         return None
     try:
@@ -200,7 +258,14 @@ def _read_latest_swimdate() -> pd.Timestamp | None:
 
 
 def _write_latest_swimdate(ts: pd.Timestamp) -> None:
-    """Enregistre la dernière date de nage (pour le polling)."""
+    """Persiste la dernière date de nage traitée par le polling.
+
+    Args:
+        ts (pd.Timestamp): Date maximale à enregistrer.
+
+    Returns:
+        None
+    """
     os.makedirs(USASWIMMING_DATA_DIR, exist_ok=True)
     with open(LATEST_SWIMDATE_FILE, "w", encoding="utf-8") as f:
         f.write(ts.isoformat())
@@ -223,11 +288,16 @@ KEY_COLUMNS = [
 
 
 def _parse_sisense_values(data: dict) -> list[dict]:
-    """
-    Convertit une réponse Sisense JAQL {headers, values} en liste de dicts.
+    """Convertit une réponse Sisense JAQL ``{headers, values}`` en lignes dict.
 
-    La réponse renvoie des lignes sous forme de listes de cellules `{data, text}`.
-    On mappe chaque cellule sur son header, puis on normalise quelques champs usuels.
+    Chaque cellule est un objet ``{data, text}`` ; on mappe sur le header
+    correspondant et on dérive ``Rank`` depuis ``Place`` si absent.
+
+    Args:
+        data (dict): Réponse JSON brute de l'API Sisense.
+
+    Returns:
+        list[dict]: Enregistrements aplatis prêts pour un DataFrame.
     """
     headers_list = data.get("headers") or []
     values = data.get("values") or []
@@ -246,7 +316,7 @@ def _parse_sisense_values(data: dict) -> list[dict]:
             else:
                 rec[header] = cell
 
-        # Normalisation: rang (Place) et session (Final / Prelim)
+        # Rank dérivé de Place pour homogénéiser avec les autres modules du projet.
         if "Place" in rec and "Rank" not in rec:
             try:
                 rec["Rank"] = int(rec["Place"])
@@ -259,7 +329,15 @@ def _parse_sisense_values(data: dict) -> list[dict]:
 
 
 def _sanitize_meet_filename(meet_name: str, max_length: int = 120) -> str:
-    """Retourne un nom de fichier sûr à partir du nom de compétition."""
+    """Retourne un nom de fichier sûr à partir du nom de compétition.
+
+    Args:
+        meet_name (str): Libellé ``Meet`` tel que renvoyé par l'API.
+        max_length (int): Longueur maximale du nom de fichier (hors extension).
+
+    Returns:
+        str: Identifiant fichier sans caractères interdits.
+    """
     if pd.isna(meet_name) or meet_name == "":
         return "_unknown"
     s = re.sub(r'[<>:"/\\|?*]', "", str(meet_name).strip())
@@ -269,14 +347,18 @@ def _sanitize_meet_filename(meet_name: str, max_length: int = 120) -> str:
 
 
 def save_data_by_competition(df: pd.DataFrame, append: bool = False) -> None:
-    """Enregistre le DataFrame dans data/raw/usaswimming, groupé par date (année) puis par compétition.
+    """Enregistre les performances groupées par année puis par compétition.
 
-    Structure : data/raw/usaswimming/<année>/<compétition>.json
-    - Chaque sous-dossier est une année (ex. 2020, 2021).
-    - Chaque fichier JSON correspond à une compétition (Meet) pour cette année.
+    Structure cible : ``data/raw/usaswimming/{year}/{meet}.json``.
+    En mode ``append=True``, fusionne avec le fichier existant et déduplique
+    sur ``KEY_COLUMNS``.
 
-    - append=False : écrase les fichiers existants pour chaque (année, Meet).
-    - append=True  : charge le fichier existant si présent, fusionne, déduplique selon KEY_COLUMNS, ré-enregistre.
+    Args:
+        df (pd.DataFrame): Performances à persister.
+        append (bool): Si ``True``, fusionne et déduplique ; sinon écrase.
+
+    Returns:
+        None
     """
     if df.empty:
         return
@@ -285,7 +367,7 @@ def save_data_by_competition(df: pd.DataFrame, append: bool = False) -> None:
         df["SwimDate"] = pd.to_datetime(df["SwimDate"], errors="coerce")
         df["_year"] = df["SwimDate"].dt.year
     else:
-        # fallback: si pas de SwimDate dans le dataset, on groupe tout dans une pseudo-année
+        # Sans SwimDate : regroupement dans un dossier d'année indéterminée.
         df["_year"] = pd.NA
 
     for (year, meet_name), group in df.groupby(["_year", "Meet"], dropna=False):
@@ -310,8 +392,18 @@ def save_data_by_competition(df: pd.DataFrame, append: bool = False) -> None:
     print(f"Données enregistrées par année et compétition dans {USASWIMMING_DATA_DIR}")
 
 
-# Récupère les données depuis une date donnée jusqu'à maintenant
 def fetch_since(from_ts: pd.Timestamp) -> pd.DataFrame:
+    """Récupère toutes les nages depuis une date jusqu'à maintenant.
+
+    Paginate l'API Sisense jusqu'à épuisement des résultats pour la plage
+    ``[from_ts, maintenant]``.
+
+    Args:
+        from_ts (pd.Timestamp): Date/heure de début inclusive pour ``SwimDate``.
+
+    Returns:
+        pd.DataFrame: Performances paginées, vide si aucune donnée.
+    """
     all_records: list[dict] = []
     columns: list[str] | None = None
     offset = 0
@@ -347,12 +439,18 @@ def fetch_since(from_ts: pd.Timestamp) -> pd.DataFrame:
     return df
 
 def _is_safemode_error(data: dict) -> bool:
-    """Détecte si la réponse API indique une SafeModeException (serveur en surcharge)."""
+    """Détecte une réponse SafeMode (serveur Sisense en surcharge).
+
+    Args:
+        data (dict): Corps JSON de la réponse API.
+
+    Returns:
+        bool: ``True`` si une SafeModeException est signalée.
+    """
     err = data.get("error")
     details = data.get("details", "")
 
-    # Certains champs peuvent être booléens ou d'autres types non itérables :
-    # on les convertit explicitement en chaîne avant la recherche.
+    # error/details peuvent être non-str : conversion explicite avant la recherche.
     err_str = str(err) if err is not None else ""
     details_str = str(details) if details is not None else ""
 
@@ -364,16 +462,25 @@ def _is_safemode_error(data: dict) -> bool:
 
 
 def _fetch_date_range(from_iso: str, to_iso: str, columns_ref: list | None) -> tuple[list, list | None]:
-    """
-    Récupère toutes les pages pour une plage de dates.
-    Retourne (all_rows, columns).
-    En cas d'erreur API (ex. SafeMode), réessaie après SAFEMODE_RETRY_DELAY_S.
+    """Récupère toutes les pages pour une plage de dates.
+
+    En cas de SafeMode, attend ``SAFEMODE_RETRY_DELAY_S`` puis réessaie jusqu'à
+    ``SAFEMODE_MAX_RETRIES``. Sur les plages larges (≥ 180 jours), abandonne
+    rapidement pour laisser l'appelant subdiviser la fenêtre.
+
+    Args:
+        from_iso (str): Borne basse ISO 8601 du filtre ``SwimDate``.
+        to_iso (str): Borne haute ISO 8601 du filtre ``SwimDate``.
+        columns_ref (list | None): En-têtes déjà connus d'une page précédente.
+
+    Returns:
+        tuple[list, list | None]: ``(lignes, colonnes)`` ; liste vide si échec.
     """
     all_records: list[dict] = []
     columns = columns_ref
     offset = 0
     retries_left = SAFEMODE_MAX_RETRIES
-    # Durée de la plage en jours (pour adapter la stratégie SafeMode sur les très grandes fenêtres)
+    # Durée de la plage : sert à court-circuiter les retries sur les fenêtres annuelles.
     try:
         range_days = (pd.to_datetime(to_iso) - pd.to_datetime(from_iso)).days
     except Exception:
@@ -391,9 +498,7 @@ def _fetch_date_range(from_iso: str, to_iso: str, columns_ref: list | None) -> t
         data = response.json()
         if "values" not in data:
             if _is_safemode_error(data) and retries_left > 0:
-                # Pour les très grandes plages (typiquement une année complète),
-                # on ne s'acharne pas : on laisse le code appelant retenter
-                # avec des plages plus petites (semestres / mois) sans attendre longtemps.
+                # Plage large : on force le fallback semestriel/mensuel sans attendre 35 s.
                 if range_days is not None and range_days >= 180:
                     print(
                         f"  SafeMode détecté sur une plage large ({from_iso} → {to_iso}), "
@@ -414,7 +519,7 @@ def _fetch_date_range(from_iso: str, to_iso: str, columns_ref: list | None) -> t
                     f"{str(data.get('details', data))[:200]}..."
                 )
             return ([], columns)
-        retries_left = SAFEMODE_MAX_RETRIES  # reset après succès
+        retries_left = SAFEMODE_MAX_RETRIES
         if columns is None:
             columns = data["headers"]
         records = _parse_sisense_values(data)
@@ -426,22 +531,20 @@ def _fetch_date_range(from_iso: str, to_iso: str, columns_ref: list | None) -> t
     return (all_records, columns)
 
 
-# Télécharge les données pour une ou plusieurs années par tranches annuelles (puis semestrielles en secours) pour éviter SafeMode
 def run_one_shot_full_download(from_year: int | None = None, to_year: int | None = None) -> dict:
-    """
-    Récupère toutes les données : année min détectée via l'API (ou 1900 par défaut) → année en cours.
+    """Télécharge l'historique complet par tranches annuelles (fallback semestriel / mensuel).
 
-    Retourne un dict de statut pour usage HTTP :
-    {
-        "success": bool,
-        "http_status": int,
-        "message": str,
-        "count_results": int,
-    }
+    Détecte l'année minimale via l'API si non fournie, puis parcourt chaque année
+    avec subdivision progressive en cas de SafeMode.
+
+    Args:
+        from_year (int | None): Première année incluse. Défaut : env ou détection API.
+        to_year (int | None): Dernière année incluse. Défaut : année courante.
+
+    Returns:
+        dict: Statut HTTP ``{success, http_status, message, count_results}``.
     """
     try:
-        # Si les années ne sont pas fournies en arguments, on retombe sur
-        # les variables d'environnement / détection automatique comme avant.
         if to_year is None:
             to_year = int(os.getenv("USASWIMMING_TO_YEAR", str(pd.Timestamp.utcnow().year)))
 
@@ -473,14 +576,14 @@ def run_one_shot_full_download(from_year: int | None = None, to_year: int | None
             to_iso = f"{year}-12-31T23:59:59"
             print(f"  Année {year}...", end=" ", flush=True)
 
-            # 1) tentative sur l'année entière
+            # Stratégie 1 : année entière (moins de requêtes si le serveur tient la charge).
             rows, columns = _fetch_date_range(from_iso, to_iso, columns)
             if rows:
                 all_records.extend(rows)
                 print(f"{len(rows)} lignes (année complète)")
             else:
                 print("0 lignes sur l'année, tentative par semestre...")
-                # 2) fallback par semestre
+                # Stratégie 2 : deux semestres si l'année complète déclenche SafeMode.
                 for start_month, end_month in [(1, 6), (7, 12)]:
                     from_iso = f"{year}-{start_month:02d}-01T00:00:00"
                     last_day = pd.Timestamp(year, end_month, 1).days_in_month
@@ -490,7 +593,7 @@ def run_one_shot_full_download(from_year: int | None = None, to_year: int | None
                         all_records.extend(rows_sem)
                         print(f"    S{start_month}-S{end_month}: {len(rows_sem)} lignes")
 
-            # 3) si toujours rien, fallback par mois (requêtes plus légères pour éviter SafeMode)
+            # Stratégie 3 : mois par mois — fenêtres minimales pour contourner SafeMode.
             if len(all_records) == year_rows_before:
                 print("    Tentative par mois...")
                 for month in range(1, 13):
@@ -547,7 +650,18 @@ def run_one_shot_full_download(from_year: int | None = None, to_year: int | None
 def _fetch_single_calendar_month(
     year: int, month: int, columns: list | None
 ) -> tuple[list[dict], list | None]:
-    """Récupère toutes les lignes pour un mois calendaire (avec fallback demi-mois si besoin)."""
+    """Récupère toutes les lignes d'un mois calendaire.
+
+    Si le mois entier échoue, subdivise en deux demi-mois.
+
+    Args:
+        year (int): Année cible.
+        month (int): Mois calendaire (1–12).
+        columns (list | None): En-têtes déjà connus d'une page précédente.
+
+    Returns:
+        tuple[list[dict], list | None]: ``(lignes, colonnes)``.
+    """
     last_day = pd.Timestamp(year, month, 1).days_in_month
     from_iso = f"{year}-{month:02d}-01T00:00:00"
     to_iso = f"{year}-{month:02d}-{last_day:02d}T23:59:59"
@@ -578,10 +692,16 @@ def _fetch_single_calendar_month(
 
 
 def run_one_shot_month_download(year: int, month: int) -> dict:
-    """
-    Télécharge uniquement un mois (année + mois) et enregistre dans data/raw/usaswimming/<year>/.
+    """Télécharge et enregistre les performances d'un seul mois.
 
-    Sert à éviter SafeMode quand on veut un intervalle plus petit qu'une année.
+    Utile pour des plages courtes sans déclencher SafeMode sur une année entière.
+
+    Args:
+        year (int): Année cible.
+        month (int): Mois calendaire (1–12).
+
+    Returns:
+        dict: Statut HTTP ``{success, http_status, message, count_results}``.
     """
     try:
         if month < 1 or month > 12:
@@ -614,7 +734,6 @@ def run_one_shot_month_download(year: int, month: int) -> dict:
             df["SwimDate"] = pd.to_datetime(df["SwimDate"], errors="coerce")
             df = df.sort_values(by="SwimDate", ascending=False)
 
-        # Enregistre groupé par Meet (et par année via SwimDate)
         save_data_by_competition(df, append=False)
 
         return {
@@ -637,9 +756,18 @@ def run_one_shot_month_download(year: int, month: int) -> dict:
 def run_one_shot_month_range_download(
     from_year: int, from_month: int, to_year: int, to_month: int
 ) -> dict:
-    """
-    Télécharge de (from_year, from_month) à (to_year, to_month) inclus,
-    mois par mois (même stratégie SafeMode que le téléchargement mensuel).
+    """Télécharge une plage de mois consécutifs, mois par mois.
+
+    Applique la même stratégie SafeMode que ``run_one_shot_month_download``.
+
+    Args:
+        from_year (int): Année de début.
+        from_month (int): Mois de début (1–12).
+        to_year (int): Année de fin.
+        to_month (int): Mois de fin (1–12).
+
+    Returns:
+        dict: Statut HTTP ``{success, http_status, message, count_results}``.
     """
     try:
         for m in (from_month, to_month):
@@ -714,8 +842,18 @@ def run_one_shot_month_range_download(
         }
 
 
-# Boucle de surveillance continue pour récupérer les nouvelles données (stockage JSON uniquement)
-def run_polling_loop():
+def run_polling_loop() -> None:
+    """Surveille en continu les nouvelles nages et les ajoute aux JSON existants.
+
+    Reprend après ``_latest_swimdate.txt`` (ou ``POLL_SINCE_DAYS`` si absent).
+    L'intervalle entre deux passages est contrôlé par ``POLL_INTERVAL_SECONDS``.
+
+    Args:
+        None
+
+    Returns:
+        None
+    """
     latest = _read_latest_swimdate()
     if latest is None:
         days = int(os.getenv("POLL_SINCE_DAYS", "30"))
@@ -743,23 +881,14 @@ def run_polling_loop():
 
 
 def get_all_results() -> dict:
-    """
-    Agrège tous les résultats stockés dans USASWIMMING_DATA_DIR.
+    """Agrège les métadonnées de tous les JSON stockés sous ``USASWIMMING_DATA_DIR``.
 
-    Retourne un dict de la forme :
-    {
-        "count_competitions": <nombre de fichiers JSON de compétitions>,
-        "count_results": <nombre total de lignes>,
-        "competitions": [
-            {
-                "year": "<année>",
-                "file": "<chemin relatif du fichier>",
-                "meet": "<nom de la compétition ou None>",
-                "count_results": <nombre de lignes dans ce fichier>,
-            },
-            ...
-        ],
-    }
+    Args:
+        None
+
+    Returns:
+        dict: ``{count_competitions, count_results, competitions}`` où chaque
+            entrée de ``competitions`` décrit un fichier ``{year, file, meet, count_results}``.
     """
     if not os.path.isdir(USASWIMMING_DATA_DIR):
         return {
@@ -775,7 +904,7 @@ def get_all_results() -> dict:
         for fname in files:
             if not fname.endswith(".json"):
                 continue
-            # Fichiers techniques exclus (commençant par "_")
+            # Fichiers d'état (_latest_swimdate.txt, etc.) : préfixe "_" ignoré.
             if fname.startswith("_"):
                 continue
 
@@ -784,7 +913,6 @@ def get_all_results() -> dict:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
             except Exception:
-                # Fichier illisible ou JSON invalide : on l'ignore
                 continue
 
             if isinstance(data, dict):
@@ -822,19 +950,14 @@ def get_all_results() -> dict:
 
 
 def get_all_results_grouped_by_event() -> dict:
-    """
-    Agrège tous les résultats stockés dans USASWIMMING_DATA_DIR,
-    groupés par `Event`.
+    """Agrège toutes les performances groupées par épreuve (``Event``).
 
-    Structure retournée :
-    {
-        "count_events": <nombre d'events distincts>,
-        "count_results": <nombre total de lignes>,
-        "events": {
-            "<Event>": [ { ... ligne brute ... }, ... ],
-            ...
-        }
-    }
+    Args:
+        None
+
+    Returns:
+        dict: ``{count_events, count_results, events}`` où ``events`` mappe
+            chaque libellé d'épreuve vers la liste des lignes brutes.
     """
     if not os.path.isdir(USASWIMMING_DATA_DIR):
         return {
@@ -850,7 +973,7 @@ def get_all_results_grouped_by_event() -> dict:
         for fname in files:
             if not fname.endswith(".json"):
                 continue
-            # Fichiers techniques exclus (commençant par "_")
+            # Fichiers d'état (_latest_swimdate.txt, etc.) : préfixe "_" ignoré.
             if fname.startswith("_"):
                 continue
 
@@ -859,7 +982,6 @@ def get_all_results_grouped_by_event() -> dict:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
             except Exception:
-                # Fichier illisible ou JSON invalide : on l'ignore
                 continue
 
             if isinstance(data, dict):
@@ -887,28 +1009,15 @@ def get_all_results_grouped_by_event() -> dict:
 
 
 def get_all_results_grouped_by_event_as_list() -> list[dict]:
-    """
-    Variante de `get_all_results_grouped_by_event` qui retourne une liste
-    de blocs de la forme :
+    """Retourne les performances groupées par épreuve sous forme de liste.
 
-    [
-      {
-        "Event": "50 BR LCM",
-        "results": [
-          { "Name": "...", "Federation": "...", ... },
-          ...
-        ]
-      },
-      ...
-    ]
+    Chaque élément est un bloc ``{"Event": "<libellé>", "results": [...]}``.
 
-    C'est cette structure qui correspond à ta demande :
+    Args:
+        None
 
-        "Event": "50 BR LCM",
-        {
-          "Name": "...",
-          ...
-        }
+    Returns:
+        list[dict]: Liste de blocs épreuve / performances.
     """
     grouped = get_all_results_grouped_by_event()
     events_dict: dict[str, list[dict]] = grouped.get("events", {})
@@ -931,12 +1040,12 @@ if __name__ == "__main__":
     if polling_on:
         run_polling_loop()
     else:
-        # Utilisation possible :
-        #   python3 usaswimming_service.py          -> toutes les années (comportement historique)
-        #   python3 usaswimming_service.py 2002     -> uniquement l'année 2002
-        #   python3 usaswimming_service.py 2000 2005 -> de 2000 à 2005 inclus
-        #   python3 usaswimming_service.py 2024 01 -> uniquement janvier 2024
-        #   python3 usaswimming_service.py 2024 01 2024 05 -> janv. à mai 2024 inclus
+        # CLI : python3 usaswimming_service.py [année_début] [année_fin|mois]
+        #   sans args          -> téléchargement complet
+        #   2002               -> année 2002 seule
+        #   2000 2005          -> plage annuelle inclusive
+        #   2024 01            -> janvier 2024
+        #   2024 01 2024 05    -> janvier à mai 2024
         if len(sys.argv) == 5:
             try:
                 y_start = int(sys.argv[1])
@@ -970,7 +1079,7 @@ if __name__ == "__main__":
                 to_arg = from_arg
 
             if from_arg is not None and to_arg is not None:
-                # Cas "AAAA MM" : on interprète le 2e argument comme un mois si 1..12
+                # Deux arguments avec 2e valeur 1–12 : interprétation année + mois.
                 if 1 <= to_arg <= 12 and len(sys.argv) == 3:
                     month_result = run_one_shot_month_download(from_arg, to_arg)
                     print(month_result)

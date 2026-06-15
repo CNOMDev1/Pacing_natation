@@ -37,6 +37,14 @@ CORRIDOR_OVERLAY_SWIMMER_LABEL = "Nageur marocain (MAR)"
 def _corridor_swimmer_specs_from_kwargs(
     kwargs: Dict[str, Any],
 ) -> List[CorridorSwimmerSpec]:
+    """Extrait ou construit la liste de specs nageur depuis les kwargs du couloir.
+    
+    Args:
+        kwargs (Dict[str, Any]): Arguments de tracé (swimmer_specs ou overlay_nageur).
+    
+    Returns:
+        List[CorridorSwimmerSpec]: Spécifications prêtes pour le tracé matplotlib.
+    """
     raw = kwargs.get("swimmer_specs")
     if isinstance(raw, list):
         return [s for s in raw if isinstance(s, CorridorSwimmerSpec)]
@@ -196,6 +204,15 @@ SCOPE_NO_STROKE_GRAPHS = frozenset({"Distribution des temps par type de nage (bo
 class ServiceGraphe:
     """Service central pour construire les graphes."""
     def plot_histogramme_simple(self, df: pd.DataFrame, swim_col: str = "SwimTimeSeconds") -> plt.Figure:
+        """Histogramme des temps de nage avec lignes de moyenne et médiane.
+
+        Args:
+            df (pd.DataFrame): Données de performances.
+            swim_col (str): Colonne des temps en secondes.
+
+        Returns:
+            plt.Figure: Figure matplotlib de l'histogramme simple.
+        """
         values = pd.to_numeric(df.get(swim_col), errors="coerce").dropna()
         fig, ax = plt.subplots(figsize=(12, 8))
         ax.hist(values, bins=50, color="#004080", edgecolor="#004080", alpha=0.7)
@@ -211,6 +228,15 @@ class ServiceGraphe:
         return fig
 
     def plot_camembert_sexe_global(self, df: pd.DataFrame, gender_col: str = "Gender") -> plt.Figure:
+        """Trace un camembert de la répartition globale F/M.
+        
+        Args:
+            df (pd.DataFrame): Performances avec colonne Gender ou swimmer imbriqué.
+            gender_col (str): Nom de la colonne genre (défaut ``Gender``).
+        
+        Returns:
+            plt.Figure: Figure matplotlib du camembert.
+        """
         local_df = df.copy()
         if gender_col not in local_df.columns:
             local_df[gender_col] = local_df.get("swimmer", pd.Series(dtype=object)).apply(
@@ -238,6 +264,15 @@ class ServiceGraphe:
         return fig
 
     def plot_histogramme_densite(self, df: pd.DataFrame, swim_col: str = "SwimTimeSeconds") -> plt.Figure:
+        """Histogramme des temps de nage avec courbe de densité KDE.
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            swim_col (str): Colonne des temps en secondes.
+        
+        Returns:
+            plt.Figure: Figure matplotlib de l'histogramme densité.
+        """
         values = pd.to_numeric(df.get(swim_col), errors="coerce")
         values = values[(values.notna()) & (values < 500)]
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -260,6 +295,15 @@ class ServiceGraphe:
         return fig
 
     def plot_histogramme_cumulatif(self, df: pd.DataFrame, swim_col: str = "SwimTimeSeconds") -> plt.Figure:
+        """Histogramme cumulatif des temps de nage (< 500 s).
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            swim_col (str): Colonne des temps en secondes.
+        
+        Returns:
+            plt.Figure: Figure matplotlib de l'histogramme cumulatif.
+        """
         values = pd.to_numeric(df.get(swim_col), errors="coerce")
         values = values[(values.notna()) & (values < 500)]
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -286,6 +330,16 @@ class ServiceGraphe:
         stroke_col: str = "Stroke",
         swim_col: str = "SwimTimeSeconds",
     ) -> plt.Figure:
+        """Boxplot des temps (minutes) par type de nage.
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            stroke_col (str): Colonne du type de nage.
+            swim_col (str): Colonne des temps en secondes.
+        
+        Returns:
+            plt.Figure: Figure matplotlib du boxplot.
+        """
         local_df = df.copy()
         local_df[swim_col] = pd.to_numeric(local_df.get(swim_col), errors="coerce")
         local_df = local_df.dropna(subset=[stroke_col, swim_col])
@@ -299,6 +353,15 @@ class ServiceGraphe:
         return fig
 
     def plot_top10_clubs(self, df: pd.DataFrame, club_col: str = "Club") -> plt.Figure:
+        """Barres des 10 clubs les plus représentés.
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            club_col (str): Colonne du nom de club.
+        
+        Returns:
+            plt.Figure: Figure matplotlib du top 10 clubs.
+        """
         counts = df.get(club_col, pd.Series(dtype=str)).dropna().value_counts().nlargest(10)
         fig, ax = plt.subplots(figsize=(12, 6))
         sns.barplot(x=counts.index, y=counts.values, color="#8C5CE4", ax=ax)
@@ -316,6 +379,17 @@ class ServiceGraphe:
         stroke_col: str = "Stroke",
         speed_col: str = "Speed",
     ) -> plt.Figure:
+        """Heatmap de la vitesse moyenne par distance et nage.
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            distance_col (str): Colonne distance.
+            stroke_col (str): Colonne type de nage.
+            speed_col (str): Colonne vitesse.
+        
+        Returns:
+            plt.Figure: Figure matplotlib de la heatmap.
+        """
         local_df = df.copy()
         local_df[distance_col] = pd.to_numeric(local_df.get(distance_col), errors="coerce")
         local_df[speed_col] = pd.to_numeric(local_df.get(speed_col), errors="coerce")
@@ -368,12 +442,28 @@ class ServiceGraphe:
         self,
         df: pd.DataFrame,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame]:
+        """Nuage de points des vitesses max par split, nage et nageur.
+        
+        Args:
+            df (pd.DataFrame): Performances avec splits et vitesse.
+        
+        Returns:
+            tuple[Optional[plt.Figure], pd.DataFrame]: Figure et max par split.
+        """
         local_df = df.loc[
             df["Speed"].notna(),
             ["Stroke", "Distance", "Speed", "swimmer", "splits"],
         ].copy()
 
         def clean_swimmer(value: object) -> Optional[str]:
+            """Extrait le nom du nageur depuis une cellule swimmer hétérogène.
+            
+            Args:
+                value (object): Dict, liste de dicts ou autre valeur brute.
+            
+            Returns:
+                Optional[str]: Nom du nageur ou None.
+            """
             if isinstance(value, dict):
                 return value.get("Name")
             if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
@@ -444,6 +534,14 @@ class ServiceGraphe:
         self,
         df: pd.DataFrame,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame]:
+        """Courbes de vitesse moyenne et médiane par split et nage.
+        
+        Args:
+            df (pd.DataFrame): Performances avec splits.
+        
+        Returns:
+            tuple[Optional[plt.Figure], pd.DataFrame]: Figure et statistiques par split.
+        """
         local_df = df.loc[
             df["Speed"].notna(),
             ["Stroke", "Distance", "Speed", "swimmer", "splits"],
@@ -527,17 +625,50 @@ class ServiceGraphe:
         df: pd.DataFrame,
         nom_event: str,
     ) -> tuple[Optional[int], pd.DataFrame]:
+        """Filtre les perfs solo d'une épreuve avec splits complets.
+        
+        Args:
+            df (pd.DataFrame): Données source.
+            nom_event (str): Libellé de l'épreuve.
+        
+        Returns:
+            tuple[Optional[int], pd.DataFrame]: Distance d'épreuve et DataFrame filtré.
+        """
         def parse_event_distance(event_name: object) -> Optional[int]:
+            """Extrait la distance numérique depuis le libellé d'épreuve.
+            
+            Args:
+                event_name (object): Nom d'épreuve (ex. « 100 NL LCM »).
+            
+            Returns:
+                Optional[int]: Distance en mètres ou None.
+            """
             match = re.search(r"(\d+)", str(event_name))
             return int(match.group(1)) if match else None
 
         def parse_split_distance(value: object) -> Optional[int]:
+            """Convertit une distance de split en entier (mètres).
+            
+            Args:
+                value (object): Distance brute (ex. « 50 m »).
+            
+            Returns:
+                Optional[int]: Distance en mètres ou None.
+            """
             try:
                 return int(float(str(value).lower().replace("m", "").strip()))
             except (TypeError, ValueError):
                 return None
 
         def get_last_split_distance(splits: object) -> Optional[int]:
+            """Retourne la distance du dernier split valide d'une liste.
+            
+            Args:
+                splits (object): Liste de dicts de splits.
+            
+            Returns:
+                Optional[int]: Distance du dernier split ou None.
+            """
             if not isinstance(splits, list) or len(splits) == 0:
                 return None
             for split in reversed(splits):
@@ -549,6 +680,14 @@ class ServiceGraphe:
             return None
 
         def has_valid_splits(splits: object) -> bool:
+            """Indique si au moins un split possède un chrono en secondes.
+            
+            Args:
+                splits (object): Liste de dicts de splits.
+            
+            Returns:
+                bool: True si un split_seconds exploitable est présent.
+            """
             if not isinstance(splits, list) or len(splits) == 0:
                 return False
             return any(isinstance(split, dict) and split.get("split_seconds") is not None for split in splits)
@@ -566,6 +705,15 @@ class ServiceGraphe:
         df: pd.DataFrame,
         course_type: str = "LCM",
     ) -> plt.Figure:
+        """Barres empilées F/M du nombre de performances par épreuve.
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            course_type (str): Filtre bassin (« LCM » ou « SCM »).
+        
+        Returns:
+            plt.Figure: Figure matplotlib des effectifs par épreuve.
+        """
         local_df = df.copy()
         local_df["Gender"] = local_df["swimmer"].apply(
             lambda x: x[0].get("Gender") if isinstance(x, list) and len(x) > 0 else None
@@ -616,6 +764,14 @@ class ServiceGraphe:
         return fig
 
     def plot_nombre_performances_par_epreuve_lcm_scm(self, df: pd.DataFrame) -> plt.Figure:
+        """Barres empilées F/M par épreuve, LCM et SCM fusionnés.
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+        
+        Returns:
+            plt.Figure: Figure matplotlib des effectifs combinés.
+        """
         local_df = df.copy()
         local_df["Gender"] = local_df["swimmer"].apply(
             lambda x: x[0]["Gender"] if isinstance(x, list) and len(x) > 0 else None
@@ -676,6 +832,14 @@ class ServiceGraphe:
         return fig
 
     def plot_nombre_performances_par_sexe(self, df: pd.DataFrame) -> plt.Figure:
+        """Diagramme en barres du nombre de performances par sexe.
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+        
+        Returns:
+            plt.Figure: Figure matplotlib du décompte par sexe.
+        """
         local_df = df.copy()
         local_df["Gender"] = local_df["swimmer"].apply(
             lambda x: x[0]["Gender"] if isinstance(x, list) and len(x) > 0 else None
@@ -692,6 +856,15 @@ class ServiceGraphe:
         return fig
 
     def plot_camembert_sexe_par_event(self, df: pd.DataFrame, nom_event: str) -> Optional[plt.Figure]:
+        """Camembert de la répartition F/M pour une épreuve donnée.
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            nom_event (str): Libellé de l'épreuve.
+        
+        Returns:
+            Optional[plt.Figure]: Figure ou None si aucune donnée de sexe.
+        """
         df_event = df.loc[df["Event"] == nom_event].copy()
         df_event["Gender"] = df_event["swimmer"].apply(
             lambda x: x[0]["Gender"] if isinstance(x, list) and len(x) > 0 else None
@@ -718,6 +891,15 @@ class ServiceGraphe:
         df: pd.DataFrame,
         nom_event: str,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame]:
+        """Courbe des temps médians des 10 meilleurs clubs sur une épreuve.
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            nom_event (str): Libellé de l'épreuve.
+        
+        Returns:
+            tuple[Optional[plt.Figure], pd.DataFrame]: Figure et stats médianes par club.
+        """
         df_time = df[(df["Event"] == nom_event) & (df["SwimTimeSeconds"].notna())].copy()
         if df_time.empty:
             return None, pd.DataFrame()
@@ -754,6 +936,16 @@ class ServiceGraphe:
         start_year: int = 2000,
         sample_size: int = 5000,
     ) -> Optional[plt.Figure]:
+        """Évolution des temps de nage dans le temps, échantillonnée par nage.
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            start_year (int): Année minimale incluse.
+            sample_size (int): Taille d'échantillon aléatoire.
+        
+        Returns:
+            Optional[plt.Figure]: Figure ou None si données insuffisantes.
+        """
         local_df = df.copy()
         local_df["SwimDate"] = pd.to_datetime(local_df["SwimDate"], errors="coerce")
 
@@ -790,6 +982,15 @@ class ServiceGraphe:
         df: pd.DataFrame,
         nom_event: str,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame]:
+        """Barres horizontales du top 10 des meilleurs temps sur une épreuve.
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            nom_event (str): Libellé de l'épreuve.
+        
+        Returns:
+            tuple[Optional[plt.Figure], pd.DataFrame]: Figure et DataFrame du top 10.
+        """
         subset = df[
             (df["Event"] == nom_event)
             & (df["SwimTimeSeconds"].notna())
@@ -807,6 +1008,14 @@ class ServiceGraphe:
         top10 = best_times.nsmallest(10, "SwimTimeSeconds")
 
         def format_time(sec: float) -> str:
+            """Formate un temps en secondes en chaîne « M:SS.mm min ».
+            
+            Args:
+                sec (float): Durée en secondes.
+            
+            Returns:
+                str: Libellé formaté pour annotation graphique.
+            """
             minutes = int(sec // 60)
             seconds = sec % 60
             return f"{minutes}:{seconds:05.2f} min"
@@ -841,6 +1050,17 @@ class ServiceGraphe:
         swimmer_targets: list[str],
         target_colors: Optional[dict[str, str]] = None,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame, pd.DataFrame, dict[str, object]]:
+        """Analyse des vitesses de split F vs M avec surcouches de nageurs cibles.
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            nom_event (str): Libellé de l'épreuve.
+            swimmer_targets (list[str]): Noms de nageurs à superposer.
+            target_colors (Optional[dict[str, str]]): Couleurs par nageur cible.
+        
+        Returns:
+            tuple: Figure, stats globales, stats cibles et métadonnées.
+        """
         target_colors = target_colors or {}
         style_by_gender = {
             "F": {"fill": "#F9D9D7", "median": "#F5D7F9", "mean": "#F5D7F9"},
@@ -852,29 +1072,69 @@ class ServiceGraphe:
         marker_size = 7
 
         def parse_dist(value: object) -> Optional[int]:
+            """Parse une distance de split en entier (mètres).
+            
+            Args:
+                value (object): Valeur brute de distance.
+            
+            Returns:
+                Optional[int]: Distance en mètres ou None.
+            """
             try:
                 return int(float(str(value).lower().replace("m", "").strip()))
             except (TypeError, ValueError):
                 return None
 
         def parse_event_distance(event_name: str) -> Optional[int]:
+            """Extrait la distance numérique depuis le libellé d'épreuve.
+            
+            Args:
+                event_name (object): Nom d'épreuve (ex. « 100 NL LCM »).
+            
+            Returns:
+                Optional[int]: Distance en mètres ou None.
+            """
             try:
                 return int(str(event_name).strip().split()[0])
             except (TypeError, ValueError, IndexError):
                 return None
 
         def normalize_name(value: object) -> str:
+            """Normalise un nom de nageur en minuscules sans espaces superflus.
+            
+            Args:
+                value (object): Nom brut.
+            
+            Returns:
+                str: Nom normalisé ou chaîne vide.
+            """
             if pd.notna(value):
                 return str(value).strip().lower()
             return ""
 
         def to_float(value: object) -> Optional[float]:
+            """Convertit une valeur en float de façon tolérante.
+            
+            Args:
+                value (object): Valeur à convertir.
+            
+            Returns:
+                Optional[float]: Flottant ou None en cas d'échec.
+            """
             try:
                 return float(value)
             except (TypeError, ValueError):
                 return None
 
         def has_valid_split_speed(splits: object) -> bool:
+            """Indique si une liste de splits contient au moins une vitesse valide.
+            
+            Args:
+                splits (object): Liste de dicts de splits.
+            
+            Returns:
+                bool: True si distance et vitesse de split sont présentes.
+            """
             if not isinstance(splits, list) or len(splits) == 0:
                 return False
             for split in splits:
@@ -887,6 +1147,14 @@ class ServiceGraphe:
             return False
 
         def get_last_split_distance(splits: object) -> Optional[int]:
+            """Retourne la distance du dernier split valide d'une liste.
+            
+            Args:
+                splits (object): Liste de dicts de splits.
+            
+            Returns:
+                Optional[int]: Distance du dernier split ou None.
+            """
             if not isinstance(splits, list) or len(splits) == 0:
                 return None
             for split in reversed(splits):
@@ -1081,6 +1349,16 @@ class ServiceGraphe:
         nom_nageur: str,
         nom_event: str,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame, Optional[str]]:
+        """Courbe de vitesse par split pour un nageur sur une épreuve.
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            nom_nageur (str): Nom du nageur cible.
+            nom_event (str): Libellé de l'épreuve.
+        
+        Returns:
+            tuple[Optional[plt.Figure], pd.DataFrame, Optional[str]]: Figure, splits et genre.
+        """
         split_data: list[dict[str, object]] = []
         gender_nageur: Optional[str] = None
 
@@ -1141,6 +1419,17 @@ class ServiceGraphe:
         annee_debut: int,
         annee_fin: int,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame, dict[str, object]]:
+        """Vitesse par split du meilleur nageur sur une épreuve et période.
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            nom_event (str): Libellé de l'épreuve.
+            annee_debut (int): Première année incluse.
+            annee_fin (int): Dernière année incluse.
+        
+        Returns:
+            tuple[Optional[plt.Figure], pd.DataFrame, dict[str, object]]: Figure, splits et métadonnées.
+        """
         df_work = df.copy()
         df_work.columns = df_work.columns.map(lambda x: str(x).strip())
 
@@ -1269,6 +1558,18 @@ class ServiceGraphe:
         annee_fin: int,
         top_n: int = 1,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame, dict[str, object]]:
+        """Vitesses par split des meilleurs nageurs H et F sur une période.
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            nom_event (str): Libellé de l'épreuve.
+            annee_debut (int): Première année incluse.
+            annee_fin (int): Dernière année incluse.
+            top_n (int): Nombre de nageurs par genre.
+        
+        Returns:
+            tuple[Optional[plt.Figure], pd.DataFrame, dict[str, object]]: Figure, splits et métadonnées.
+        """
         df_work = df.copy()
         df_work.columns = df_work.columns.map(lambda x: str(x).strip())
 
@@ -1406,6 +1707,18 @@ class ServiceGraphe:
         annee_fin: int,
         top_n: int = 10,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame, pd.DataFrame, dict[str, object]]:
+        """Vitesses par split des top N nageurs uniques (meilleure perf chacun).
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            nom_event (str): Libellé de l'épreuve.
+            annee_debut (int): Première année incluse.
+            annee_fin (int): Dernière année incluse.
+            top_n (int): Nombre de nageurs à tracer.
+        
+        Returns:
+            tuple: Figure, splits, top performers et métadonnées.
+        """
         df_work = df.copy()
         df_work.columns = df_work.columns.map(lambda x: str(x).strip())
 
@@ -1523,7 +1836,24 @@ class ServiceGraphe:
         df: pd.DataFrame,
         nageur_cible: str,
     ) -> tuple[Optional[plt.Figure], dict[str, object]]:
+        """Heatmaps côte à côte : nageur cible vs peloton (vitesse moyenne).
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            nageur_cible (str): Nom du nageur de référence.
+        
+        Returns:
+            tuple[Optional[plt.Figure], pd.DataFrame]: Figure et table pivot.
+        """
         def norm_txt(value: object) -> str:
+            """Normalise un texte (minuscules, sans accents) pour comparaison.
+            
+            Args:
+                value (object): Chaîne à normaliser.
+            
+            Returns:
+                str: Texte normalisé ASCII.
+            """
             if pd.isna(value):
                 return ""
             text = str(value).strip().lower()
@@ -1576,6 +1906,17 @@ class ServiceGraphe:
         vmax = max(pivot_target.max().max(skipna=True), pivot_others.max().max(skipna=True))
 
         def draw_heatmap(ax: plt.Axes, pivot: pd.DataFrame, title: str, cbar: bool = False) -> None:
+            """Dessine une heatmap de vitesses moyennes sur un axe matplotlib.
+            
+            Args:
+                ax: Axe matplotlib cible.
+                pivot (pd.DataFrame): Table pivot distance × nage.
+                title (str): Titre du sous-graphique.
+                cmap (str): Colormap seaborn/matplotlib.
+            
+            Returns:
+                None
+            """
             empty = pivot.empty or pivot.dropna(how="all").dropna(axis=1, how="all").empty
             if empty:
                 ax.text(0.5, 0.5, "Pas de donnees disponibles", ha="center", va="center", fontsize=12)
@@ -1610,6 +1951,15 @@ class ServiceGraphe:
         df: pd.DataFrame,
         nom_event: str,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame, pd.DataFrame, dict[str, object]]:
+        """Compare temps médians de split du peloton vs meilleur nageur.
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            nom_event (str): Libellé de l'épreuve.
+        
+        Returns:
+            tuple[Optional[plt.Figure], pd.DataFrame]: Figure et données de comparaison.
+        """
         df_event = df[
             (df["Event"] == nom_event)
             & (df["SwimTimeSeconds"].notna())
@@ -1693,6 +2043,15 @@ class ServiceGraphe:
         df: pd.DataFrame,
         nom_event: str,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame, pd.DataFrame, dict[str, object]]:
+        """Compare temps médians de split du peloton vs médiane du top 10.
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            nom_event (str): Libellé de l'épreuve.
+        
+        Returns:
+            tuple[Optional[plt.Figure], pd.DataFrame]: Figure et données de comparaison.
+        """
         df_event = df[
             (df["Event"] == nom_event)
             & (df["SwimTimeSeconds"].notna())
@@ -1771,6 +2130,16 @@ class ServiceGraphe:
         nom_event: str,
         top_n: int = 10,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame, dict[str, object]]:
+        """Vitesses médianes de split par genre pour le top N M/F.
+        
+        Args:
+            df (pd.DataFrame): Données de performances.
+            nom_event (str): Libellé de l'épreuve.
+            top_n (int): Nombre de nageurs par genre.
+        
+        Returns:
+            tuple[Optional[plt.Figure], pd.DataFrame]: Figure et statistiques par split.
+        """
         df_event = df[
             (df["Event"] == nom_event)
             & (df["SwimTimeSeconds"].notna())
@@ -1839,13 +2208,37 @@ class ServiceGraphe:
         df: pd.DataFrame,
         nom_event: str,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, object]]:
+        """Analyse des vitesses de split en relais (scatter + tendances).
+        
+        Args:
+            df (pd.DataFrame): Données de performances (relais uniquement).
+        
+        Returns:
+            tuple[Optional[plt.Figure], pd.DataFrame]: Figure et points de split agrégés.
+        """
         def parse_dist(value: object) -> Optional[int]:
+            """Parse une distance de split en entier (mètres).
+            
+            Args:
+                value (object): Valeur brute de distance.
+            
+            Returns:
+                Optional[int]: Distance en mètres ou None.
+            """
             try:
                 return int(str(value).replace(" m", "").strip())
             except (TypeError, ValueError):
                 return None
 
         def is_relay_swimmers(swimmers: object) -> bool:
+            """Indique si la cellule swimmer représente un relais (plusieurs nageurs).
+            
+            Args:
+                swimmers (object): Valeur brute de la colonne swimmer.
+            
+            Returns:
+                bool: True si la liste contient plus d'un nageur.
+            """
             return isinstance(swimmers, list) and len(swimmers) > 1 and all(isinstance(s, dict) for s in swimmers)
 
         df_relay = df[
@@ -1949,6 +2342,27 @@ class ServiceGraphe:
         gender_filter: Optional[str] = None,
         swimmer_specs: Optional[List[CorridorSwimmerSpec]] = None,
     ) -> tuple[Optional[plt.Figure], dict[str, object]]:
+        """Couloir de performance âge × temps pour une épreuve avec nageur(s) cible(s).
+
+        Args:
+            df (pd.DataFrame): Données de référence Extranat/USA.
+            nom_event (str): Libellé de l'épreuve.
+            nom_nageur (Optional[str]): Nageur cible à superposer (legacy).
+            year_of_birth (Optional[int]): Année de naissance du nageur cible.
+            age_min (int): Âge minimum du couloir.
+            age_max (int): Âge maximum du couloir.
+            solo_only (bool): Ne garder que les nages individuelles.
+            min_points (int): Minimum de points par âge pour les percentiles.
+            figsize (tuple[int, int]): Taille de la figure.
+            overlay_nageur (Optional[str]): Nageur de surcouche (ex. marocain).
+            overlay_year_of_birth (Optional[int]): Année de naissance de surcouche.
+            overlay_df (Optional[pd.DataFrame]): Performances supplémentaires.
+            gender_filter (Optional[str]): Filtre F/M ou None.
+            swimmer_specs (Optional[List[CorridorSwimmerSpec]]): Nageurs à tracer.
+
+        Returns:
+            tuple[Optional[plt.Figure], dict[str, object]]: Figure et métadonnées du couloir.
+        """
         long_ref = prepare_corridor_long_df(
             df, nom_event, solo_only=solo_only, require_name=False
         )
@@ -2052,6 +2466,25 @@ class ServiceGraphe:
         gender_filter: Optional[str] = None,
         swimmer_specs: Optional[List[CorridorSwimmerSpec]] = None,
     ) -> tuple[Optional[plt.Figure], dict[str, object]]:
+        """Couloir global âge × temps (percentiles 10–90) avec overlays nageurs.
+        
+        Args:
+            df (pd.DataFrame): Données de référence.
+            nom_event (str): Libellé de l'épreuve.
+            age_min (int): Âge minimum du couloir.
+            age_max (int): Âge maximum du couloir.
+            solo_only (bool): Ne garder que les nages individuelles.
+            min_points (int): Minimum de points par âge pour les percentiles.
+            figsize (tuple[int, int]): Taille de la figure.
+            overlay_nageur (Optional[str]): Nageur de surcouche (legacy).
+            overlay_year_of_birth (Optional[int]): Année de naissance de surcouche.
+            overlay_df (Optional[pd.DataFrame]): Performances supplémentaires.
+            gender_filter (Optional[str]): Filtre F/M ou None.
+            swimmer_specs (Optional[List[CorridorSwimmerSpec]]): Nageurs à tracer.
+        
+        Returns:
+            tuple[Optional[plt.Figure], dict[str, object]]: Figure et métadonnées.
+        """
         long_ref = prepare_corridor_long_df(
             df, nom_event, solo_only=solo_only, require_name=False
         )
@@ -2348,6 +2781,27 @@ class ServiceGraphe:
         gender_filter: Optional[str] = None,
         swimmer_specs: Optional[List[CorridorSwimmerSpec]] = None,
     ) -> tuple[Optional[plt.Figure], dict[str, object]]:
+        """Couloir global avec déciles 10–90 et bande 20–80 %.
+        
+        Args:
+            df (pd.DataFrame): Données de référence.
+            nom_event (str): Libellé de l'épreuve.
+            nom_nageur (Optional[str]): Nageur cible (legacy).
+            year_of_birth (Optional[int]): Année de naissance du nageur cible.
+            age_min (int): Âge minimum du couloir.
+            age_max (int): Âge maximum du couloir.
+            solo_only (bool): Ne garder que les nages individuelles.
+            min_points (int): Minimum de points par âge.
+            figsize (tuple[int, int]): Taille de la figure.
+            overlay_nageur (Optional[str]): Nageur de surcouche.
+            overlay_year_of_birth (Optional[int]): Année de naissance de surcouche.
+            overlay_df (Optional[pd.DataFrame]): Performances supplémentaires.
+            gender_filter (Optional[str]): Filtre F/M ou None.
+            swimmer_specs (Optional[List[CorridorSwimmerSpec]]): Nageurs à tracer.
+        
+        Returns:
+            tuple[Optional[plt.Figure], dict[str, object]]: Figure et métadonnées.
+        """
         long_ref = prepare_corridor_long_df(
             df, nom_event, solo_only=solo_only, require_name=False
         )
@@ -2446,6 +2900,14 @@ class ServiceGraphe:
 
     @staticmethod
     def _nb_first_event_label(df_nav: pd.DataFrame) -> Optional[str]:
+        """Premier libellé d'épreuve « Distance Nage Bassin » depuis df_nav.
+        
+        Args:
+            df_nav (pd.DataFrame): Données de navigation notebook/desktop.
+        
+        Returns:
+            Optional[str]: Libellé d'épreuve ou None.
+        """
         need = ("Stroke", "Distance", "PoolLabel")
         if df_nav.empty or not all(c in df_nav.columns for c in need):
             return None
@@ -2465,6 +2927,14 @@ class ServiceGraphe:
 
     @staticmethod
     def _nb_first_pool_label(df_nav: pd.DataFrame) -> Optional[str]:
+        """Premier libellé de bassin non nul depuis un DataFrame de navigation.
+        
+        Args:
+            df_nav (pd.DataFrame): Données de navigation.
+        
+        Returns:
+            Optional[str]: LCM/SCM ou None.
+        """
         if "PoolLabel" not in df_nav.columns or df_nav.empty:
             return None
         pools = df_nav["PoolLabel"].dropna().astype(str).str.strip()
@@ -2474,6 +2944,14 @@ class ServiceGraphe:
 
     @staticmethod
     def _nb_first_swimmer_name(df_nav: pd.DataFrame) -> Optional[str]:
+        """Premier nom de nageur trouvé dans la colonne swimmer.
+        
+        Args:
+            df_nav (pd.DataFrame): Données de navigation.
+        
+        Returns:
+            Optional[str]: Nom du nageur ou None.
+        """
         if "swimmer" not in df_nav.columns:
             return None
         for swimmers in df_nav["swimmer"].tolist():
@@ -2485,6 +2963,14 @@ class ServiceGraphe:
 
     @staticmethod
     def _nb_year_bounds(df_nav: pd.DataFrame) -> Tuple[int, int]:
+        """Bornes min/max des années de nage dans un DataFrame de navigation.
+        
+        Args:
+            df_nav (pd.DataFrame): Données avec colonne SwimDate.
+        
+        Returns:
+            Tuple[int, int]: Année début et année fin (défaut 2000–2024).
+        """
         if "SwimDate" not in df_nav.columns or df_nav.empty:
             return 2000, 2024
         years = pd.to_datetime(df_nav["SwimDate"], errors="coerce").dt.year.dropna()
@@ -2499,6 +2985,15 @@ class ServiceGraphe:
     def _nb_first_solo_name_yob_for_event(
         df_nav: pd.DataFrame, nom_event: str
     ) -> Tuple[Optional[str], Optional[int]]:
+        """Premier nageur solo (nom + année) pour une épreuve dans df_nav.
+        
+        Args:
+            df_nav (pd.DataFrame): Données de navigation.
+            nom_event (str): Libellé de l'épreuve.
+        
+        Returns:
+            Tuple[Optional[str], Optional[int]]: Nom et année de naissance.
+        """
         if df_nav.empty or "Event" not in df_nav.columns:
             return None, None
         df_e = df_nav[df_nav["Event"].astype(str).str.strip() == str(nom_event).strip()]
@@ -2527,6 +3022,16 @@ class ServiceGraphe:
     def _prefetch_kwargs_for_notebook_spec(
         spec: GraphSpec, df: pd.DataFrame, df_nav: pd.DataFrame
     ) -> Optional[Dict[str, Any]]:
+        """Déduit les kwargs par défaut d'un GraphSpec depuis les données de navigation.
+        
+        Args:
+            spec (GraphSpec): Spécification du graphe notebook.
+            df (pd.DataFrame): DataFrame principal.
+            df_nav (pd.DataFrame): DataFrame de navigation.
+        
+        Returns:
+            Optional[Dict[str, Any]]: Kwargs pour la méthode plot, ou None.
+        """
         nom = ServiceGraphe._nb_first_event_label(df_nav)
         swimmer = ServiceGraphe._nb_first_swimmer_name(df_nav)
         y0, y1 = ServiceGraphe._nb_year_bounds(df_nav)
@@ -2629,6 +3134,16 @@ class ServiceGraphe:
         return self.build_figure(spec, df, **kwargs)
 
     def build_figure(self, spec: GraphSpec, df: pd.DataFrame, **kwargs: Any) -> Any:
+        """Dispatch vers la méthode ``plot_*`` indiquée par ``spec.method_name``.
+        
+        Args:
+            spec (GraphSpec): Spécification du graphe à construire.
+            df (pd.DataFrame): Données source.
+            **kwargs: Arguments transmis à la méthode de tracé.
+        
+        Returns:
+            Any: Résultat de la méthode (souvent plt.Figure ou tuple).
+        """
         method: Callable[..., Any] = getattr(self, spec.method_name)
         return method(df, **kwargs)
 
@@ -3144,6 +3659,14 @@ GRAPHES_NOTEBOOK: List[GraphSpec] = [
 GRAPHES_PAR_KEY: Dict[str, GraphSpec] = {g.key: g for g in GRAPHES_NOTEBOOK}
 
 def unwrap_matplotlib_figure(result: Any) -> Optional[plt.Figure]:
+    """Extrait une figure matplotlib depuis un résultat de méthode plot hétérogène.
+
+    Args:
+        result (Any): Figure directe, tuple (figure, ...) ou None.
+
+    Returns:
+        Optional[plt.Figure]: Figure extraite ou None si non trouvée.
+    """
     if result is None:
         return None
     if isinstance(result, plt.Figure):
