@@ -1,3 +1,15 @@
+"""Onglet Flet d'exploration du cache Parquet USA Swimming.
+
+Ce module fournit une interface pour parcourir les fichiers
+``_parquet_cache/{year}.parquet``, prévisualiser les lignes, filtrer par
+nageur et déclencher la construction du cache si absent.
+
+Le flux :
+1. **Découverte** — liste les ``*.parquet`` dans le dossier configuré.
+2. **Aperçu** — lecture partielle (``PREVIEW_MAX_ROWS``) pour éviter l'OOM.
+3. **Recherche** — filtre via ``SwimmerSearch`` sur les colonnes nom.
+4. **Build** — bouton pour lancer ``UsaswimmingCompetitionsDataLoader.build_parquet_cache``.
+"""
 from __future__ import annotations
 import json
 import unicodedata
@@ -14,6 +26,8 @@ from services.usaswimming_competitions_data_loader import (
     UsaswimmingCompetitionsDataLoader,
 )
 from swimmer_search import SwimmerSearch
+
+# --- Constantes UI et limites de lecture ---
 
 DEFAULT_PREVIEW_LIMIT = 25
 MAX_CELL_LENGTH = 120
@@ -76,7 +90,15 @@ def _read_parquet_for_preview(
     parquet_file: Path,
     max_rows: int = PREVIEW_MAX_ROWS,
 ) -> tuple[pd.DataFrame, int, int, bool]:
-    """Lit un apercu limite pour eviter de charger des millions de lignes en memoire."""
+    """Lit un aperçu limité d'un fichier Parquet pour éviter l'OOM.
+
+    Args:
+        parquet_file (Path): Fichier ``.parquet`` à lire.
+        max_rows (int): Nombre maximal de lignes chargées en mémoire.
+
+    Returns:
+        tuple: ``(aperçu DataFrame, total lignes, nb colonnes, tronqué?)``.
+    """
     row_count, column_count = _parquet_overview(parquet_file)
     if row_count <= max_rows:
         return pd.read_parquet(parquet_file), row_count, column_count, False
@@ -117,7 +139,26 @@ def _normalize_search_text(value: Any) -> str:
 
 
 class UsaswimmingParquetTab:
+    """Onglet desktop pour explorer et construire le cache Parquet USA Swimming.
+
+    Gère la sélection de fichier, l'aperçu tabulaire, le filtre nageur et
+    le déclenchement asynchrone de ``build_parquet_cache``.
+
+    Attributes:
+        page (ft.Page): Page Flet parente.
+        parquet_dir (Path): Dossier ``_parquet_cache``.
+        current_df (pd.DataFrame): Aperçu du fichier sélectionné.
+    """
+
     def __init__(self, page: ft.Page) -> None:
+        """Initialise les contrôles Flet et l'état de l'onglet.
+
+        Args:
+            page (ft.Page): Page Flet de l'application.
+
+        Returns:
+            None
+        """
         self.page = page
         self.parquet_dir: Path = DEFAULT_USASWIMMING_PARQUET_DIR
         self.parquet_files: list[Path] = []
@@ -888,4 +929,12 @@ class UsaswimmingParquetTab:
 
 
 def build_usaswimming_parquet_tab(page: ft.Page) -> ft.Control:
+    """Fabrique la vue Flet de l'onglet Parquet USA Swimming.
+
+    Args:
+        page (ft.Page): Page Flet parente.
+
+    Returns:
+        ft.Control: Racine de l'onglet à insérer dans la navigation.
+    """
     return UsaswimmingParquetTab(page).build_view()

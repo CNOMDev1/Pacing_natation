@@ -1,3 +1,17 @@
+"""Application desktop Pacing (Flet) : navigation, graphiques et prefetch.
+
+Ce module est le point d'entrée principal de l'interface desktop. Il charge
+les données Extranat, précalcule les graphiques et caches au démarrage,
+gère la sidebar (filtres, recherche nageur) et affiche les figures matplotlib.
+
+Le flux au démarrage :
+1. **Bootstrap** — ``_bootstrap_startup`` affiche ``TriplePrefetchProgress``.
+2. **Prefetch** — graphes notebook, cache event swimmers, Parquet USA, couloirs.
+3. **UI** — construction sidebar + zone graphique ; lecture du cache JSON.
+4. **Interaction** — changement de filtres → rendu ou hit cache ``graph_render_registry``.
+
+Point d'entrée : ``flet run app/interfaces/desktop_flet.py``.
+"""
 import asyncio
 import concurrent.futures
 from collections import OrderedDict
@@ -51,6 +65,8 @@ from services.graph_service import (
     ServiceGraphe,
     unwrap_matplotlib_figure,
 )
+
+# --- Chemins d'export et flags de prefetch au démarrage ---
 
 GRAPH_EXPORT_PATH = PROJECT_DIR / "data" / "exports" / "prefetched_graphs.json"
 EVENT_SWIMMERS_EXPORT_PATH = (
@@ -107,7 +123,27 @@ MA_CORRIDOR_SWIMMER_SEARCH_TOOLTIP = "Nom ou annee de naissance"
 
 
 class PacingDesktopApp:
+    """Application desktop Flet : état global, prefetch et rendu des graphiques.
+
+    Centralise le DataFrame Extranat, les caches de rendu (images base64,
+    event swimmers, scope performances), la navigation par catégorie/graphique
+    et les widgets de recherche nageur (France, USA, Maroc).
+
+    Attributes:
+        page (ft.Page): Page Flet principale.
+        df (pd.DataFrame): Performances Extranat chargées.
+        graph_render_registry (dict): Cache des graphiques précalculés.
+    """
+
     def __init__(self, page: ft.Page) -> None:
+        """Initialise la page Flet et lance le bootstrap en arrière-plan.
+
+        Args:
+            page (ft.Page): Page fournie par Flet au démarrage.
+
+        Returns:
+            None
+        """
         self.page = page
         self.page.title = "Pacing – Desktop"
         self.page.theme_mode = ft.ThemeMode.DARK
@@ -5121,6 +5157,14 @@ class PacingDesktopApp:
 
 
 def main(page: ft.Page) -> None:
+    """Point d'entrée Flet : instancie ``PacingDesktopApp`` sur la page fournie.
+
+    Args:
+        page (ft.Page): Page créée par ``ft.run``.
+
+    Returns:
+        None
+    """
     PacingDesktopApp(page)
 
 

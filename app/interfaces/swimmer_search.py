@@ -1,12 +1,38 @@
+"""Composant Flet de recherche de nageur avec autocomplétion et liste de résultats.
+
+Ce widget réutilisable encapsule ``ft.AutoComplete``, un panneau de résultats
+cliquables et les boutons chargement/confirmation. Il est branché sur
+``PacingDesktopApp`` via des noms de callbacks configurables (couloirs FR,
+USA Swimming, Maroc).
+
+Le flux :
+1. **Saisie** — ``on_change`` met à jour la query app et déclenche le debounce.
+2. **Suggestions** — ``maybe_sync_suggestions`` limite les mises à jour Flet.
+3. **Sélection** — clic sur une ligne ou autocomplétion → ``_pick_label``.
+"""
 from __future__ import annotations
 from typing import Any, Callable, List, Optional, Tuple
 import flet as ft
+
+# --- Constantes d'affichage du panneau résultats ---
 
 SEARCH_RESULTS_ROW_HEIGHT = 36
 SEARCH_RESULTS_PANEL_MAX_HEIGHT = 320
 
 
 class SwimmerSearch:
+    """Barre de recherche nageur avec autocomplétion pour l'UI desktop.
+
+    Encapsule le champ de saisie, les suggestions, le panneau de résultats
+    et la synchronisation avec ``app.{query_attr}``. Les callbacks sont
+    résolus dynamiquement sur l'instance ``app`` parente.
+
+    Attributes:
+        app: Instance ``PacingDesktopApp`` (ou onglet Parquet).
+        container (ft.Column): Racine du widget à insérer dans la sidebar.
+        input (ft.AutoComplete): Champ de recherche principal.
+    """
+
     def __init__(
         self,
         app: Any,
@@ -22,6 +48,24 @@ class SwimmerSearch:
         pick_callback_name: str = "_on_corridor_swimmer_search_pick",
         show_confirm_button: bool = False,
     ) -> None:
+        """Construit le widget recherche et branche les callbacks sur ``app``.
+
+        Args:
+            app (Any): Application parente (``PacingDesktopApp`` ou onglet).
+            width (int): Largeur totale du composant.
+            label_text (str): Libellé au-dessus du champ.
+            tooltip (str): Info-bulle du champ de saisie.
+            query_attr (str): Nom de l'attribut query sur ``app``.
+            refresh_method_name (str): Méthode appelée après changement de filtre.
+            confirm_callback_name (str): Callback du bouton confirmer.
+            keystroke_callback_name (str): Callback debounce par frappe.
+            schedule_ui_refresh_callback_name (str): Planifie le rafraîchissement UI.
+            pick_callback_name (str): Callback quand un nageur est sélectionné.
+            show_confirm_button (bool): Affiche bouton confirmer + spinner.
+
+        Returns:
+            None
+        """
         self.app = app
         self._autocomplete_event_key: Optional[Tuple[Any, ...]] = None
         self._last_suggestion_keys: Optional[Tuple[str, ...]] = None

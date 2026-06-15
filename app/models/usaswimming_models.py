@@ -1,4 +1,17 @@
-"""Modèles Pydantic pour les données générées par l'API USA Swimming"""
+"""Modèles Pydantic pour les données générées par l'API USA Swimming Data Hub.
+
+Ce module décrit la structure d'un enregistrement « best time » tel que
+renvoyé par l'API USA Swimming avant normalisation par
+``usaswimming_preprocessing``.
+
+Le flux de données :
+1. **Réponse API** — liste d'objets JSON mappés sur ``NageurRecord``.
+2. **Validation** — Pydantic coerce les dates et supprime les espaces de bord.
+3. **Persistance** — les enregistrements validés sont écrits en JSON brut
+   sous ``data/raw/usaswimming/`` puis retraités vers le format Extranat unifié.
+
+Point d'entrée type : ``NageursList`` (``RootModel[list[NageurRecord]]``).
+"""
 from datetime import datetime
 from typing import Any, Optional
 
@@ -6,7 +19,31 @@ from pydantic import BaseModel, Field, RootModel
 
 
 class NageurRecord(BaseModel):
-    """Un enregistrement de temps de nage (best time)."""
+    """Un enregistrement de temps de nage (best time) USA Swimming.
+
+    Correspond à une ligne de résultat de l'API Data Hub. Les champs
+    ``Place`` / ``Rank`` restent typés largement car la source peut fournir
+    des entiers ou des chaînes (« N/A », etc.).
+
+    Attributes:
+        Name: Nom du nageur.
+        Federation: Fédération / pays du nageur.
+        Team: Club ou équipe.
+        DateOfBirth: Date de naissance si disponible.
+        Event: Code épreuve (ex. ``800 FR SCM``).
+        Gender: Catégorie (Male / Female).
+        Session: Session (Prelim, Final, etc.).
+        LSC: Local Swimming Committee.
+        AgeGroup: Catégorie d'âge.
+        Meet: Nom de la compétition.
+        Place: Place brute telle que fournie par l'API.
+        Rank: Rang normalisé (souvent dérivé de Place).
+        SwimDate: Date de la nage.
+        SwimTime: Temps formaté (ex. ``9:41.49``).
+        SwimTimeSeconds: Temps en secondes (≥ 0).
+        Points: Points marqués pour la performance.
+        TimeStandard: Standard atteint (AAA, JR NATS, etc.).
+    """
 
     Name: Optional[str] = Field(None, description="Nom du nageur")
     Federation: Optional[str] = Field(None, description="Fédération / pays du nageur")
@@ -30,4 +67,12 @@ class NageurRecord(BaseModel):
         "str_strip_whitespace": True,
     }
 
-NageursList = RootModel[list[NageurRecord]]
+
+class NageursList(RootModel[list[NageurRecord]]):
+    """Liste racine de performances USA Swimming (réponse API typique).
+
+    Utilisé pour valider un fichier JSON contenant un tableau d'enregistrements
+    ``NageurRecord`` en une seule passe Pydantic.
+    """
+
+    root: list[NageurRecord]

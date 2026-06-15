@@ -1,4 +1,18 @@
-"""Prétraitement FRM Natation : filtre les performances et normalise les noms."""
+"""Prétraitement FRM Natation : filtre les performances et normalise les noms.
+
+Ce script lit les JSON bruts scrapés depuis les pages HTML marocaines
+(``data/raw/frmnatation/html_results/``) et produit des fichiers normalisés
+sous ``data/processed/frmnatation/html_results/``.
+
+Le flux de données :
+1. **Filtrage** — suppression des performances sans ``SwimTimeSeconds`` valide.
+2. **Noms** — normalisation ``NOM MAJUSCULE + Prénom`` (particules EL, AIT, …).
+3. **Épreuves** — conversion des codes nage FRM (DOS, PAP, 4N) vers l'anglais
+   (BK, FL, IM) et reconstruction du libellé ``Event``.
+4. **Catégories** — ajout de ``AgeGroup`` USA Swimming à partir de l'âge.
+
+Point d'entrée CLI : ``python -m app.scripts.frmnatation_preprocessing``.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +21,8 @@ import math
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+# --- Chemins source / sortie ---
 
 FRMNATATION_HTML_RESULTS_DIR = (
     Path(__file__).resolve().parents[2]
@@ -22,6 +38,8 @@ FRMNATATION_OUTPUT_DIR = (
     / "frmnatation"
     / "html_results"
 )
+
+# --- Tables de correspondance (noms, nages, catégories d'âge) ---
 
 # Particules du nom de famille (en majuscules dans la source FRM)
 FAMILY_CONNECTORS = frozenset(
@@ -62,8 +80,18 @@ AGE_GROUP_LABELS: Tuple[str, ...] = (
 )
 
 
+# --- Utilitaires de validation et normalisation ---
+
+
 def swim_time_seconds_is_null(value: Any) -> bool:
-    """True si SwimTimeSeconds est absent, null ou NaN."""
+    """Indique si SwimTimeSeconds est absent, null ou NaN.
+
+    Args:
+        value (Any): Valeur brute du champ chrono.
+
+    Returns:
+        bool: True si la performance doit être exclue.
+    """
     if value is None:
         return True
     if isinstance(value, float) and math.isnan(value):
@@ -142,7 +170,14 @@ def normalize_frm_name(name: Any) -> Optional[str]:
 
 
 def age_to_age_group(age: Any) -> Optional[str]:
-    """Catégorie d'âge USA Swimming à partir de l'âge (années entières)."""
+    """Convertit un âge entier en catégorie USA Swimming.
+
+    Args:
+        age (Any): Âge en années (entier ou chaîne numérique).
+
+    Returns:
+        Optional[str]: Libellé (ex. ``"13-14"``, ``"19 & Over"``) ou None.
+    """
     if age is None:
         return None
     if isinstance(age, str) and not age.strip():
@@ -175,7 +210,14 @@ def normalize_stroke_code(stroke: Any) -> Any:
 
 
 def build_event_label(epreuve: Dict[str, Any]) -> Optional[str]:
-    """Reconstruit Event à partir de Distance, Stroke et Course."""
+    """Reconstruit le libellé Event à partir de Distance, Stroke et Course.
+
+    Args:
+        epreuve (Dict[str, Any]): Dictionnaire épreuve partiellement normalisé.
+
+    Returns:
+        Optional[str]: Libellé type ``"100 BK LCM"`` ou None si champs manquants.
+    """
     distance = epreuve.get("Distance")
     stroke = epreuve.get("Stroke")
     course = epreuve.get("Course")
@@ -233,15 +275,23 @@ def _normalize_swimmer(swimmer: Any) -> Tuple[Any, bool]:
     return out, changed
 
 
+# --- Prétraitement compétition et batch ---
+
+
 def preprocess_competition(
     data: Dict[str, Any],
 ) -> Tuple[Dict[str, Any], int, int, int]:
-    """
-    - Supprime les performances sans SwimTimeSeconds
-    - Normalise swimmer.Name et ajoute swimmer.AgeGroup depuis Age
-    - Convertit Stroke en anglais (BK, BR, FL, FR, IM) et met à jour Event
+    """Nettoie une compétition FRM Natation (filtrage + normalisation).
 
-    Retourne (données, perf avant, perf après, nb noms modifiés).
+    Supprime les performances sans chrono, normalise les noms, convertit les
+    codes nage et met à jour ``Event``.
+
+    Args:
+        data (Dict[str, Any]): JSON brut d'une compétition.
+
+    Returns:
+        Tuple[Dict[str, Any], int, int, int]: Données nettoyées, nombre de
+            performances avant filtrage, après filtrage, et noms modifiés.
     """
     epreuves = data.get("epreuves")
     if not isinstance(epreuves, list):
@@ -294,10 +344,17 @@ def preprocess_html_results_directory(
     input_dir: Path = FRMNATATION_HTML_RESULTS_DIR,
     output_dir: Path = FRMNATATION_OUTPUT_DIR,
 ) -> None:
-    """
-    Lit tous les *.json sous html_results/, supprime les performances
-    sans SwimTimeSeconds, normalise les noms et écrit sous
-    data/processed/frmnatation/html_results/.
+    """Parcourt ``html_results/`` et écrit les JSON normalisés.
+
+    Lit chaque ``*.json`` du dossier source, appelle ``preprocess_competition``
+    et conserve le même nom de fichier dans ``data/processed/``.
+
+    Args:
+        input_dir (Path): Dossier des JSON bruts.
+        output_dir (Path): Dossier de sortie.
+
+    Returns:
+        None
     """
     if not input_dir.is_dir():
         print(f"Dossier introuvable : {input_dir}")
