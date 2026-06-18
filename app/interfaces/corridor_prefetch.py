@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 import matplotlib.pyplot as plt
 from desktop_helpers import _figure_to_base64, _materialize_df_scope, _slugify
 from services.graph_service import ServiceGraphe
+from services.stroke_labels import format_event_label
 if TYPE_CHECKING:
     from desktop_flet import PacingDesktopApp
 
@@ -352,7 +353,7 @@ class CorridorPrefetchManager:
                 with self.app._registry_json_lock:
                     self.app.chart_image_cache[render_key] = img
                 self.app._advance_startup_corridor(
-                    f"{stroke} {distance} {pool} — {nom}",
+                    f"{format_event_label(distance, stroke, pool)} — {nom}",
                     units=1,
                     show_graph_progress=True,
                 )
