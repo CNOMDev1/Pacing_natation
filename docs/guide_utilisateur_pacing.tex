@@ -1,0 +1,329 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{parskip}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{hyperref}
+
+\geometry{margin=2.2cm}
+\setlist[itemize]{noitemsep, topsep=3pt, parsep=0pt, partopsep=0pt}
+\setlist[enumerate]{noitemsep, topsep=3pt, parsep=0pt, partopsep=0pt}
+\setlength{\parskip}{0.45em}
+
+\newcommand{\checkmark}{\textbf{✓}}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=blue!60!black
+}
+
+\title{Guide utilisateur --- Application Pacing}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+\vspace{-1.2em}
+
+\noindent\textbf{Public visé\,:} entraîneurs, analystes et staff technique \emph{sans compétence en programmation}.
+
+\noindent\textbf{Objectif\,:} utiliser l'outil pour comparer des performances de natation (pacing, couloirs de référence France ou États-Unis, superposition d'un nageur marocain).
+
+\tableofcontents
+\newpage
+
+%----------------------------------------------------------------------
+\section{À quoi sert Pacing\,?}
+%----------------------------------------------------------------------
+
+Pacing est une application de visualisation qui permet de\,:
+\begin{itemize}
+  \item explorer des chronos et des répartitions de performances\,;
+  \item tracer des \textbf{couloirs de performance} (percentiles d'âge ou de catégorie d'âge)\,;
+  \item positionner un ou plusieurs nageurs sur ces couloirs\,;
+  \item comparer un nageur marocain (données FRM Natation) au peloton français (Extranat) ou américain (USA Swimming).
+\end{itemize}
+
+\noindent Les données sont stockées \textbf{localement} sur l'ordinateur\,; l'outil ne fonctionne pas sans ces fichiers préalablement installés (voir section~\ref{sec:limites}).
+
+%----------------------------------------------------------------------
+\section{Lancer l'application}
+%----------------------------------------------------------------------
+
+\subsection{Interface recommandée --- bureau (desktop)}
+
+C'est l'interface la plus complète (couloirs France et USA, recherche avancée, overlay Maroc).
+
+\begin{enumerate}
+  \item Ouvrir un terminal à la racine du dossier \texttt{Pacing}.
+  \item Activer l'environnement Python si nécessaire (\texttt{source .venv/bin/activate}).
+  \item Lancer la commande\,:
+  \begin{verbatim}
+python app/interfaces/desktop_flet.py
+  \end{verbatim}
+  \item Au premier démarrage, un écran de chargement affiche \textbf{trois barres de progression} en parallèle\,:
+  \begin{itemize}
+    \item \textbf{Graphes} --- précalcul des visualisations pour accélérer l'affichage\,;
+    \item \textbf{Nageurs par épreuve} --- index de recherche des nageurs français\,;
+    \item \textbf{Données USA Swimming} --- préparation du jeu de données américain pour les couloirs.
+  \end{itemize}
+  Attendre la fin du chargement avant d'utiliser l'application.
+  \item La fenêtre \textbf{«\,Pacing -- Desktop\,»} s'ouvre ensuite sur l'interface principale (barre latérale de navigation à gauche, graphique à droite).
+\end{enumerate}
+
+%----------------------------------------------------------------------
+\section{Présentation de l'interface}
+%----------------------------------------------------------------------
+
+\subsection{Disposition générale}
+
+\begin{itemize}
+  \item \textbf{Barre latérale gauche (\emph{Navigation})} --- menus de filtres, champs de recherche nageur et indicateur de chargement.
+  \item \textbf{Zone principale (droite)} --- graphique, titre de la figure, nombre de lignes analysées et messages d'état.
+\end{itemize}
+
+\subsection{Raccourcis visuels}
+
+\begin{itemize}
+  \item \textbf{Interrupteur «\,Mode couloir déciles 10-90\,»} --- visible en haut de la barre latérale lorsque le couloir France est actif\,; bascule vers le mode déciles (section~\ref{sec:deciles}).
+  \item \textbf{Bouton thème clair / sombre} --- icône soleil ou lune en haut à droite de la barre latérale\,; adapte les couleurs de l'interface sans modifier les graphiques.
+  \item \textbf{Anneau de chargement vert} --- apparaît brièvement sous les filtres lors du recalcul d'un graphique.
+\end{itemize}
+
+\noindent L'application ne comporte \textbf{qu'une seule fenêtre} de travail\,; toutes les analyses se font depuis cette interface.
+
+%----------------------------------------------------------------------
+\section{Sélectionner une base de données ou un pays de référence}
+%----------------------------------------------------------------------
+
+Dans la barre latérale gauche (\textbf{Navigation}), les choix s'effectuent de haut en bas.
+
+\subsection{Choisir une catégorie de graphique}
+
+\begin{enumerate}
+  \item Ouvrir le menu \textbf{Catégorie}.
+  \item Pour les couloirs de performance, sélectionner \textbf{Couloirs de performance}.
+  \item Pour d'autres analyses (distributions, clubs, pacing comparatif, etc.), choisir la catégorie correspondante, puis le \textbf{Graphique} souhaité dans le menu suivant.
+\end{enumerate}
+
+\subsection{Choisir le pays de référence du peloton}
+
+Le menu \textbf{Pays} n'apparaît que lorsque la catégorie \textbf{Couloirs de performance} est active.
+
+\begin{center}
+\begin{tabular}{lll}
+\hline
+\textbf{Option} & \textbf{Source} & \textbf{Usage principal} \\
+\hline
+France & Extranat (FFN) & Couloirs par âge, filtres nage / distance / bassin \\
+États-Unis & USA Swimming & Couloir par tranches d'âge (AgeGroup) \\
+\hline
+\end{tabular}
+\end{center}
+
+\noindent\textbf{Important\,:} le Maroc n'est pas un pays de référence du peloton. Les performances marocaines (FRM Natation) se superposent \emph{en complément} sur un couloir France ou USA (section~\ref{sec:overlay}).
+
+%----------------------------------------------------------------------
+\section{Choisir une distance, une nage, un bassin ou une catégorie}
+%----------------------------------------------------------------------
+
+\subsection{Couloir France (Extranat)}
+
+Après avoir choisi le graphique \textbf{Couloir de performance (âge) - nageur cible}\,:
+
+\begin{enumerate}
+  \item \textbf{Stroke} --- type de nage (\emph{Freestyle}, \emph{Backstroke}, \emph{Breaststroke}, \emph{Butterfly}, \emph{IM}, etc.).
+  \item \textbf{Distance} --- distance en mètres (50, 100, 200, 400, 800, 1500\ldots).
+  \item \textbf{Bassin} --- \textbf{LCM} (50\,m) ou \textbf{SCM} (25\,m).
+  \item \textbf{Sexe (couloir)} (optionnel) --- \textbf{Tous}, \textbf{Femme} ou \textbf{Homme} pour restreindre le peloton de référence.
+\end{enumerate}
+
+\noindent L'épreuve analysée est la combinaison \texttt{Distance + Stroke + Bassin} (ex.\ \emph{100 Freestyle LCM}).
+
+\subsection{Couloir États-Unis (USA Swimming)}
+
+Lorsque \textbf{Pays = États-Unis}, le graphique \textbf{Couloir de performance (AgeGroup) - USA Swimming} se sélectionne automatiquement. Les menus \textbf{Stroke}, \textbf{Distance} et \textbf{Bassin} sont remplacés par\,:
+
+\begin{itemize}
+  \item \textbf{Épreuve (USA Swimming)} --- liste des épreuves disponibles dans le cache\,;
+  \item \textbf{Sexe (couloir)} --- filtre Femme / Homme / Tous.
+\end{itemize}
+
+\subsection{Autres catégories de graphiques}
+
+Pour les graphiques hors couloirs (histogrammes, boxplots, heatmaps, pacing comparatif\ldots), seuls les filtres pertinents au graphique choisi apparaissent. Par exemple\,:
+\begin{itemize}
+  \item certains graphiques globaux n'affichent aucun filtre d'épreuve\,;
+  \item le boxplot demande \textbf{Distance} et \textbf{Bassin} sans \textbf{Stroke}.
+\end{itemize}
+
+\subsection{Mode déciles (France uniquement)}
+\label{sec:deciles}
+
+Un interrupteur \textbf{Mode couloir déciles 10-90} (en haut de la barre latérale) permet de basculer vers un couloir basé sur les déciles 10\,\% à 90\,\% du peloton français, au lieu du couloir centré sur un nageur cible.
+
+%----------------------------------------------------------------------
+\section{Rechercher un nageur}
+%----------------------------------------------------------------------
+
+La recherche est disponible via le champ \textbf{Rechercher un nageur} (ou ses variantes USA / Maroc) dans la barre latérale.
+
+\subsection{Procédure commune}
+
+\begin{enumerate}
+  \item Configurer l'épreuve (filtres ou menu USA).
+  \item Saisir un \textbf{nom} ou une \textbf{année de naissance} dans le champ de recherche.
+  \item Sélectionner un résultat dans la liste (format \texttt{Nom (AAAA)}).
+  \item Cliquer sur le bouton \checkmark{} (\emph{Confirmer la recherche}) pour valider et afficher le graphique.
+\end{enumerate}
+
+\noindent Sans confirmation \checkmark{}, le graphique ne se met pas à jour avec le nageur choisi.
+
+\subsection{Libellés selon le contexte}
+
+\begin{center}
+\begin{tabular}{ll}
+\hline
+\textbf{Contexte} & \textbf{Libellé du champ / liste} \\
+\hline
+Couloir France & Rechercher un nageur / Nageur cible (couloir de perf.) \\
+Couloir USA & Rechercher un nageur (USA Swimming) / Nageur cible (USA) \\
+Overlay Maroc & Rechercher un nageur (Maroc) / Nageur marocain (FRM Natation) \\
+Heatmap & Nageur cible (heatmap) \\
+Pacing comparatif & Nageur cible 1/2/3 (pacing) \\
+\hline
+\end{tabular}
+\end{center}
+
+\noindent Si aucun résultat ne correspond, le message \textbf{«\,Aucun nageur trouvé\,»} s'affiche. Un indicateur \textbf{«\,Recherche en cours\ldots\,»} peut apparaître pendant le chargement.
+
+%----------------------------------------------------------------------
+\section{Superposer un nageur marocain sur un couloir France ou USA}
+\label{sec:overlay}
+%----------------------------------------------------------------------
+
+\subsection{Principe}
+
+Le peloton de référence (courbes en pointillés et zone ombrée) reste calculé sur les données \textbf{françaises} ou \textbf{américaines}. Le nageur marocain est tracé en \textbf{courbe verte} (\emph{Nageur marocain (MAR)}) sans modifier ce peloton.
+
+\subsection{Étapes --- couloir France}
+
+\begin{enumerate}
+  \item \textbf{Catégorie} $\rightarrow$ \textbf{Couloirs de performance}.
+  \item \textbf{Pays} $\rightarrow$ \textbf{France}.
+  \item Choisir \textbf{Stroke}, \textbf{Distance}, \textbf{Bassin} (et \textbf{Sexe} si besoin).
+  \item Rechercher et confirmer (\checkmark{}) le nageur français de référence, \emph{ou} utiliser le couloir global sans nageur cible.
+  \item Dans \textbf{Rechercher un nageur (Maroc)}, saisir le nom du nageur marocain.
+  \item Sélectionner le résultat, puis cliquer \checkmark{}.
+  \item Le graphique affiche le peloton Extranat, la courbe rouge du nageur français (si sélectionné) et la courbe verte du nageur marocain.
+\end{enumerate}
+
+\subsection{Étapes --- couloir USA}
+
+\begin{enumerate}
+  \item \textbf{Catégorie} $\rightarrow$ \textbf{Couloirs de performance}.
+  \item \textbf{Pays} $\rightarrow$ \textbf{États-Unis}.
+  \item Choisir \textbf{Épreuve (USA Swimming)} et \textbf{Sexe (couloir)}.
+  \item Confirmer (\checkmark{}) un nageur USA si souhaité.
+  \item Rechercher et confirmer (\checkmark{}) le nageur marocain.
+\end{enumerate}
+
+\noindent Si le nageur marocain n'a pas de performance solo valide sur l'épreuve (relais uniquement, chrono manquant, âge non exploitable), un message d'erreur explicite s'affiche à la place de la courbe verte.
+
+%----------------------------------------------------------------------
+\section{Interpréter les graphiques de couloir de performance}
+%----------------------------------------------------------------------
+
+\subsection{Axes et orientation}
+
+\begin{itemize}
+  \item \textbf{Axe horizontal} --- âge (France) ou catégorie d'âge USA (\emph{10 \& Under}, \emph{11-12}, \emph{13-14}, \emph{15-18}, \emph{19 \& Over}).
+  \item \textbf{Axe vertical} --- temps en secondes, \textbf{inversé}\,: plus le point est haut, meilleur est le chrono.
+\end{itemize}
+
+\subsection{Éléments du peloton de référence}
+
+\begin{center}
+\begin{tabular}{lp{9.5cm}}
+\hline
+\textbf{Élément graphique} & \textbf{Signification} \\
+\hline
+Courbes pointillées (10\,\%, 25\,\%, 50\,\%, 75\,\%, 90\,\%) & Percentiles de temps du peloton à chaque âge ou AgeGroup \\
+Zone ombrée 25--75\,\% & Intervalle interquartile --- «\,cœur\,» des performances \\
+Zone 20--80\,\% (mode déciles) & Bande élargie entre les déciles 20 et 80 \\
+\hline
+\end{tabular}
+\end{center}
+
+\subsection{Courbes des nageurs}
+
+\begin{itemize}
+  \item \textbf{Courbe rouge} --- nageur cible France ou USA.
+  \item \textbf{Courbe verte} --- nageur marocain superposé (overlay FRM Natation).
+\end{itemize}
+
+\subsection{Lecture pratique}
+
+\begin{enumerate}
+  \item \textbf{Position à un âge donné\,:} un point \emph{au-dessus} de la médiane (50\,\%) indique un chrono meilleur que la moitié du peloton de référence à cet âge.
+  \item \textbf{Évolution\,:} la pente de la courbe du nageur montre sa progression (ou son ralentissement) au fil des âges ou catégories.
+  \item \textbf{Comparaison Maroc / France ou USA\,:} comparer la courbe verte à la zone ombrée et aux percentiles\,; elle indique où se situe le nageur marocain sur la \emph{même épreuve}, indépendamment du peloton marocain.
+  \item \textbf{Filtre sexe\,:} si \textbf{Femme} ou \textbf{Homme} est sélectionné, le peloton et les percentiles ne portent que sur ce genre.
+\end{enumerate}
+
+\noindent Des exemples visuels sont disponibles dans le dossier \texttt{docs/screenshots/} du projet (fichiers \emph{Couloir de performance}, \emph{Couloir déciles}, etc.).
+
+%----------------------------------------------------------------------
+\section{Limites actuelles de l'outil}
+\label{sec:limites}
+%----------------------------------------------------------------------
+
+\subsection{Données et installation}
+
+\begin{itemize}
+  \item L'application nécessite des fichiers de données déjà présents dans le dossier \texttt{data/} (performances Extranat, données USA Swimming, résultats FRM Natation). Sans eux, des messages du type \textbf{«\,Aucune donnée trouvée\,»} ou \textbf{«\,Cache Parquet USA Swimming introuvable\,»} peuvent apparaître lors du choix du pays États-Unis.
+  \item La mise à jour des données (collecte, nettoyage) relève d'opérations techniques distinctes\,; ce guide ne les couvre pas.
+  \item La couverture des compétitions marocaines dépend des fichiers disponibles dans \texttt{data/processed/frmnatation/}.
+\end{itemize}
+
+\subsection{Couloirs de performance}
+
+\begin{itemize}
+  \item Seules les \textbf{nages solo} alimentent le peloton de référence Extranat (les relais sont exclus).
+  \item Il faut au minimum \textbf{5 performances par âge} (France) ou \textbf{100 points par AgeGroup} (USA) pour tracer les percentiles\,; sinon\,: \textbf{«\,Pas assez de points pour calculer les percentiles\,»}.
+  \item Plage d'âge par défaut\,: environ 14--35 ans (ajustée selon les données disponibles).
+  \item Le Maroc n'est disponible qu'en \textbf{superposition}, pas comme peloton de référence.
+  \item Les homonymes sont distingués par l'année de naissance\,; en cas de doute, vérifier l'année affichée dans la liste.
+\end{itemize}
+
+\subsection{Interface et performances}
+
+\begin{itemize}
+  \item Le \textbf{premier lancement} du desktop peut être long (précalcul des caches).
+  \item Certains libellés de menus restent en anglais (\emph{Stroke}, \emph{Freestyle}, etc.).
+\end{itemize}
+
+%----------------------------------------------------------------------
+\section{Récapitulatif rapide}
+%----------------------------------------------------------------------
+
+\begin{enumerate}
+  \item Lancer \texttt{python app/interfaces/desktop_flet.py} et attendre la fin du chargement.
+  \item \textbf{Catégorie} $\rightarrow$ \textbf{Couloirs de performance}.
+  \item \textbf{Pays} $\rightarrow$ \textbf{France} ou \textbf{États-Unis}.
+  \item Configurer l'épreuve (Stroke / Distance / Bassin, ou Épreuve USA).
+  \item Rechercher un nageur, sélectionner, confirmer avec \checkmark{}.
+  \item Pour comparer un Marocain\,: \textbf{Rechercher un nageur (Maroc)} $\rightarrow$ \checkmark{}.
+  \item Lire le graphique\,: zone ombrée = peloton de référence\,; courbe rouge = nageur France/USA\,; courbe verte = nageur marocain.
+\end{enumerate}
+
+\vspace{0.5em}
+\noindent\textit{Document opérationnel --- application Pacing (interface desktop Flet). Pour l'installation technique, voir le fichier \texttt{README.md} à la racine du projet.}
+
+\end{document}

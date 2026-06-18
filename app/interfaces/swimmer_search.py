@@ -28,7 +28,7 @@ class SwimmerSearch:
     résolus dynamiquement sur l'instance ``app`` parente.
 
     Attributes:
-        app: Instance ``PacingDesktopApp`` (ou onglet Parquet).
+        app: Instance ``PacingDesktopApp``.
         container (ft.Column): Racine du widget à insérer dans la sidebar.
         input (ft.AutoComplete): Champ de recherche principal.
     """

@@ -41,7 +41,6 @@ from services.usaswimming_competitions_data_loader import (
     UsaswimmingCompetitionsDataLoader,
 )
 from swimmer_search import SwimmerSearch
-from usaswimming_parquet_tab import UsaswimmingParquetTab
 from desktop_helpers import (
     CORRIDOR_CHART_PNG_DPI,
     _event_combinations,
@@ -1682,35 +1681,7 @@ class PacingDesktopApp:
             expand=True,
         )
         self._apply_theme_palette()
-        usaswimming_parquet_tab = UsaswimmingParquetTab(self.page)
-        tabs_content = ft.Column(
-            controls=[
-                ft.TabBar(
-                    tabs=[
-                        ft.Tab(label="Pacing"),
-                        ft.Tab(label="USA Swimming Parquet"),
-                    ],
-                    scrollable=False,
-                ),
-                ft.TabBarView(
-                    controls=[
-                        layout,
-                        usaswimming_parquet_tab.build_view(),
-                    ],
-                    expand=True,
-                ),
-            ],
-            expand=True,
-            spacing=0,
-        )
-        self.page.add(
-            ft.Tabs(
-                content=tabs_content,
-                length=2,
-                selected_index=0,
-                expand=True,
-            )
-        )
+        self.page.add(layout)
         self._refresh_filters_from_data()
 
     def _toggle_theme(self, _: ft.ControlEvent) -> None:
