@@ -9,7 +9,6 @@ Pacing permet d’explorer des chronos et des splits, de comparer des nageurs et
 ## Fonctionnalités principales
 
 - **Interface desktop (Flet)** : recherche des nageurs selon le nom, le prénom ou l’année de naissance, filtres par épreuve, graphiques interactifs, couloirs de performance.
-- **Interface web test (Streamlit)** : mêmes familles de graphiques dans le navigateur.
 - **API FastAPI** (`app/main.py`) : endpoints pour Extranat, Omega et USA Swimming.
 - **Notebooks Jupyter** : analyses et graphiques reproductibles (`app/visualization/`).
 
@@ -38,7 +37,7 @@ playwright install chromium
 | Scraping | `requests`, `beautifulsoup4`, `playwright` | Extranat, Omega, USA Swimming |
 | Données | `pandas`, `pyarrow`, `numpy` | DataFrames, cache Parquet |
 | Visualisation | `matplotlib`, `seaborn` | Graphiques (`services/graph_service.py`) |
-| Interfaces | `flet`, `streamlit` | Desktop et web |
+| Interfaces | `flet` | Application desktop |
 | Notebooks | `jupyter`, `notebook`, `ipykernel` | Analyses dans `app/visualization/` |
 
 ## Utilisation
@@ -50,7 +49,6 @@ Toutes les commandes ci-dessous s’exécutent depuis la racine du projet.
 | Interface | Commande |
 |-----------|----------|
 | Desktop | `python app/interfaces/desktop_flet.py` |
-| Web | `streamlit run app/interfaces/web_streamlit.py` |
 | API | `uvicorn app.main:app --reload` |
 | Notebooks | `jupyter notebook app/visualization/` |
 
@@ -70,7 +68,7 @@ Les modules `services/*_data_loader.py` sont importés par les interfaces ; ils 
 ```
 Pacing/
 ├── app/
-│   ├── interfaces/       # UI desktop (Flet), web (Streamlit), helpers
+│   ├── interfaces/       # UI desktop (Flet) et helpers
 │   ├── models/           # Modèles Pydantic / structures de données
 │   ├── routers/          # Routes FastAPI
 │   ├── scripts/          # Prétraitements (Extranat, FRM Natation, USA Swimming)
@@ -98,4 +96,4 @@ Pacing/
 
 ## Captures d'écran
 
-Captures déposées dans [`docs/screenshots/`](docs/screenshots/) (desktop, Streamlit, notebooks).
+Captures déposées dans [`docs/screenshots/`](docs/screenshots/) (desktop, notebooks).

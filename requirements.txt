@@ -8,7 +8,6 @@
 #
 # Lancer :
 #   Desktop   : python app/interfaces/desktop_flet.py
-#   Streamlit : streamlit run app/interfaces/web_streamlit.py
 #   Notebooks : jupyter notebook app/visualization/
 
 # --- API FastAPI ---
@@ -28,16 +27,13 @@ pandas>=2.0.0
 pyarrow>=14.0.0
 numpy>=1.24.0
 
-# --- Visualisation (graph_service, Flet, Streamlit, notebooks) ---
+# --- Visualisation (graph_service, Flet, notebooks) ---
 matplotlib>=3.7.0
 seaborn>=0.13.0
 
 # --- Interface desktop Flet (ft.run) ---
 flet>=0.24.0
 flet-desktop>=0.24.0
-
-# --- Interface web Streamlit ---
-streamlit>=1.28.0
 
 # --- Notebooks Jupyter (app/visualization/*.ipynb) ---
 jupyter>=1.0.0
