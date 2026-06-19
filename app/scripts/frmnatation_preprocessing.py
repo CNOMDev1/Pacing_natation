@@ -1,17 +1,24 @@
-"""Prétraitement FRM Natation : filtre les performances et normalise les noms.
+"""Pretraitement FRM Natation : filtre les performances et normalise les noms.
 
-Ce script lit les JSON bruts scrapés depuis les pages HTML marocaines
-(``data/raw/frmnatation/html_results/``) et produit des fichiers normalisés
-sous ``data/processed/frmnatation/html_results/``.
+Ce script lit les JSON bruts marocains depuis deux dossiers sous
+``data/raw/frmnatation/`` :
 
-Le flux de données :
-1. **Filtrage** — suppression des performances sans ``SwimTimeSeconds`` valide.
-2. **Noms** — normalisation ``NOM MAJUSCULE + Prénom`` (particules EL, AIT, …).
-3. **Épreuves** — conversion des codes nage FRM (DOS, PAP, 4N) vers l'anglais
-   (BK, FL, IM) et reconstruction du libellé ``Event``.
-4. **Catégories** — ajout de ``AgeGroup`` USA Swimming à partir de l'âge.
+1. ``html_results/`` --- JSON deja proches du schema unifie (HTML externe).
+2. ``json_from_pdfs_llamaextract/`` --- JSON tabulaires extraits de PDF via
+   LlamaExtract (``source_file``, ``tables[]``).
 
-Point d'entrée CLI : ``python -m app.scripts.frmnatation_preprocessing``.
+Les fichiers normalises sont ecrits sous ``data/processed/frmnatation/html_results/``
+(schema unifie consomme par ``FrmnatationHtmlResultsDataLoader``).
+
+Le flux de donnees :
+1. **Conversion** --- les payloads LlamaExtract sont transformes en schema unifie.
+2. **Filtrage** --- suppression des performances sans ``SwimTimeSeconds`` valide.
+3. **Noms** --- normalisation ``NOM MAJUSCULE + Prenom`` (particules EL, AIT, ...).
+4. **Epreuves** --- conversion des codes nage FRM (DOS, PAP, 4N) vers l'anglais
+   (BK, FL, IM) et reconstruction du libelle ``Event``.
+5. **Categories** --- ajout de ``AgeGroup`` USA Swimming a partir de l'age.
+
+Point d'entree CLI : ``python -m app.scripts.frmnatation_preprocessing``.
 """
 
 from __future__ import annotations
@@ -30,6 +37,13 @@ FRMNATATION_HTML_RESULTS_DIR = (
     / "raw"
     / "frmnatation"
     / "html_results"
+)
+FRMNATATION_LLAMAEXTRACT_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "data"
+    / "raw"
+    / "frmnatation"
+    / "json_from_pdfs_llamaextract"
 )
 FRMNATATION_OUTPUT_DIR = (
     Path(__file__).resolve().parents[2]
@@ -226,10 +240,39 @@ def build_event_label(epreuve: Dict[str, Any]) -> Optional[str]:
     return f"{distance} {stroke} {course}"
 
 
+def sanitize_epreuve_event(epreuve: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+    """Nettoie ``Event`` : libelle canonique ou ``None`` si epreuve inconnue.
+
+    Ne conserve un ``Event`` non nul que s'il peut etre reconstruit depuis
+    ``Distance``, ``Stroke`` et ``Course``. Supprime toute autre valeur
+    (ex. ``PDF_TABLE_001`` ou libelle orphelin).
+
+    Args:
+        epreuve (Dict[str, Any]): Dictionnaire epreuve apres normalisation nage.
+
+    Returns:
+        Tuple[Dict[str, Any], bool]: Epreuve mise a jour et indicateur de changement.
+    """
+    out = dict(epreuve)
+    changed = False
+    canonical = build_event_label(out)
+    current = out.get("Event")
+
+    if canonical is not None:
+        if current != canonical:
+            out["Event"] = canonical
+            changed = True
+    elif current is not None:
+        out["Event"] = None
+        changed = True
+
+    return out, changed
+
+
 def _normalize_epreuve_stroke_and_event(
     epreuve: Dict[str, Any],
 ) -> Tuple[Dict[str, Any], bool]:
-    """Normalise Stroke (anglais) puis met à jour Event en conséquence."""
+    """Normalise Stroke (anglais) puis nettoie ``Event`` en consequence."""
     out = dict(epreuve)
     changed = False
 
@@ -239,10 +282,8 @@ def _normalize_epreuve_stroke_and_event(
         out["Stroke"] = new_stroke
         changed = True
 
-    new_event = build_event_label(out)
-    if new_event is not None and new_event != out.get("Event"):
-        out["Event"] = new_event
-        changed = True
+    out, event_changed = sanitize_epreuve_event(out)
+    changed = changed or event_changed
 
     return out, changed
 
@@ -275,7 +316,251 @@ def _normalize_swimmer(swimmer: Any) -> Tuple[Any, bool]:
     return out, changed
 
 
-# --- Prétraitement compétition et batch ---
+def parse_swim_time_to_seconds(raw: Any) -> Optional[float]:
+    """Convertit un temps affiche FRM en secondes decimales.
+
+    Accepte ``HH:MM:SS``, ``MM:SS.ss``, ``SS.ss`` ou entiers.
+
+    Args:
+        raw (Any): Chaine ou nombre brut (ex. ``35.97``, ``1:02.15``).
+
+    Returns:
+        Optional[float]: Secondes arrondies a 2 decimales, ou None si invalide.
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip().replace(",", ".")
+    if not text:
+        return None
+
+    hh_mm_ss = re.match(r"^(\d+):(\d{1,2}):(\d{1,2}(?:\.\d+)?)$", text)
+    if hh_mm_ss:
+        hours = int(hh_mm_ss.group(1))
+        minutes = int(hh_mm_ss.group(2))
+        seconds = float(hh_mm_ss.group(3))
+        if 0 <= minutes < 60 and 0 <= seconds < 60:
+            return round(hours * 3600 + minutes * 60 + seconds, 2)
+        return None
+
+    mm_ss = re.match(r"^(\d+):(\d{1,2}(?:\.\d+)?)$", text)
+    if mm_ss:
+        minutes = int(mm_ss.group(1))
+        seconds = float(mm_ss.group(2))
+        if 0 <= seconds < 60:
+            return round(minutes * 60 + seconds, 2)
+        return None
+
+    ss = re.match(r"^(\d+\.\d+)$", text)
+    if ss:
+        return round(float(ss.group(1)), 2)
+
+    plain = re.match(r"^(\d+)$", text)
+    if plain:
+        return round(float(plain.group(1)), 2)
+
+    return None
+
+
+def parse_llama_rank(raw: Any) -> Optional[int]:
+    """Extrait un classement entier depuis une cellule LlamaExtract.
+
+    Args:
+        raw (Any): Valeur brute (ex. ``\"1.\"``, ``\"12\"``).
+
+    Returns:
+        Optional[int]: Rang ou None si non parseable.
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip().rstrip(".")
+    if not text or not text.isdigit():
+        return None
+    return int(text)
+
+
+def parse_year_of_birth(raw: Any) -> Optional[int]:
+    """Convertit une annee de naissance LlamaExtract en entier.
+
+    Args:
+        raw (Any): Valeur brute (ex. ``\"2003\"``).
+
+    Returns:
+        Optional[int]: Annee ou None.
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text.isdigit():
+        return None
+    year = int(text)
+    if 1900 <= year <= 2100:
+        return year
+    return None
+
+
+def is_llamaextract_competition(data: Dict[str, Any]) -> bool:
+    """Indique si un JSON brut provient de LlamaExtract (PDF).
+
+    Args:
+        data (Dict[str, Any]): Objet JSON racine.
+
+    Returns:
+        bool: True si les cles ``source_file`` et ``tables`` sont presentes.
+    """
+    return isinstance(data.get("tables"), list) and "source_file" in data
+
+
+def meet_name_from_llama_source(source_file: Any) -> str:
+    """Derive le nom de competition depuis le PDF source LlamaExtract.
+
+    Args:
+        source_file (Any): Nom de fichier PDF (ex. ``\"Meeting X_0.pdf\"``).
+
+    Returns:
+        str: Libelle Meet sans extension ni suffixe ``_0``.
+    """
+    name = Path(str(source_file or "competition_sans_nom")).stem
+    if name.endswith("_0"):
+        name = name[:-2]
+    return name.strip() or "competition_sans_nom"
+
+
+def _llama_row_to_performance(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Convertit une ligne tabulaire LlamaExtract en performance unifiee.
+
+    Args:
+        row (Dict[str, Any]): Ligne avec colonnes FR (Place, Nom et prenom, ...).
+
+    Returns:
+        Optional[Dict[str, Any]]: Performance normalisee, ou None si chrono absent.
+    """
+    swim_time_raw = row.get("Temps")
+    swim_time = str(swim_time_raw).strip() if swim_time_raw is not None else ""
+    swim_time_seconds = parse_swim_time_to_seconds(swim_time)
+    if swim_time_seconds is None:
+        return None
+
+    raw_name = row.get("Nom et prénom") or row.get("Nom et prenom")
+    name = str(raw_name).strip() if raw_name is not None else ""
+    if not name:
+        return None
+
+    yob = parse_year_of_birth(row.get("Naissance"))
+    nationality = row.get("Nation")
+    nat_str = str(nationality).strip().upper() if nationality is not None else None
+
+    swimmer: Dict[str, Any] = {
+        "Name": name,
+        "Gender": None,
+        "Year_of_birth": yob,
+        "Age": None,
+        "Nationality": nat_str or None,
+    }
+
+    club_raw = row.get("Club")
+    club = str(club_raw).strip() if club_raw is not None else None
+
+    return {
+        "Rank": parse_llama_rank(row.get("Place")),
+        "club": club,
+        "SwimTime": swim_time,
+        "SwimTimeSeconds": swim_time_seconds,
+        "Status": "OK",
+        "Speed": None,
+        "swimmer": swimmer,
+        "splits": [],
+    }
+
+
+def llamaextract_table_to_epreuve(table: Dict[str, Any], table_index: int) -> Optional[Dict[str, Any]]:
+    """Convertit une table LlamaExtract en epreuve au schema unifie.
+
+    Les PDF extraits ne contiennent en general pas la distance ni la nage :
+    ``Event`` reste ``None`` ; la categorie d'age PDF (``category``) est
+    conservee dans ``tour``.
+
+    Args:
+        table (Dict[str, Any]): Table avec ``category``, ``headers``, ``rows``.
+        table_index (int): Index zero-based de la table dans le fichier source.
+
+    Returns:
+        Optional[Dict[str, Any]]: Epreuve avec performances, ou None si vide.
+    """
+    rows = table.get("rows")
+    if not isinstance(rows, list):
+        return None
+
+    performances: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        perf = _llama_row_to_performance(row)
+        if perf is not None:
+            performances.append(perf)
+
+    if not performances:
+        return None
+
+    category = str(table.get("category") or "").strip()
+    tour = category if category else f"Table {table_index + 1}"
+
+    return {
+        "Event": None,
+        "Distance": None,
+        "Stroke": None,
+        "Course": "LCM",
+        "PoolLength": 50,
+        "tour": tour,
+        "performances": performances,
+    }
+
+
+def llamaextract_to_competition(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Transforme un JSON LlamaExtract en competition au schema unifie Pacing.
+
+    Args:
+        data (Dict[str, Any]): Payload brut ``{source_file, tables[]}``.
+
+    Returns:
+        Dict[str, Any]: Competition avec ``Meet``, ``epreuves`` et metadonnees.
+    """
+    tables = data.get("tables") or []
+    epreuves: List[Dict[str, Any]] = []
+    if isinstance(tables, list):
+        for idx, table in enumerate(tables):
+            if not isinstance(table, dict):
+                continue
+            epreuve = llamaextract_table_to_epreuve(table, idx)
+            if epreuve is not None:
+                epreuves.append(epreuve)
+
+    return {
+        "Meet": meet_name_from_llama_source(data.get("source_file")),
+        "SwimDate": None,
+        "SwimYear": None,
+        "location": None,
+        "Country": "MAR",
+        "source_format": "llamaextract_pdf",
+        "source_file": data.get("source_file"),
+        "epreuves": epreuves,
+    }
+
+
+def load_competition_from_raw(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Charge une competition brute (HTML ou LlamaExtract) au schema unifie.
+
+    Args:
+        raw (Dict[str, Any]): JSON brut lu depuis le disque.
+
+    Returns:
+        Dict[str, Any]: Structure competition prete pour ``preprocess_competition``.
+    """
+    if is_llamaextract_competition(raw):
+        return llamaextract_to_competition(raw)
+    return raw
+
+
+# --- Pretraitement competition et batch ---
 
 
 def preprocess_competition(
@@ -340,49 +625,51 @@ def preprocess_competition(
     return out, before, after, names_changed
 
 
-def preprocess_html_results_directory(
-    input_dir: Path = FRMNATATION_HTML_RESULTS_DIR,
-    output_dir: Path = FRMNATATION_OUTPUT_DIR,
-) -> None:
-    """Parcourt ``html_results/`` et écrit les JSON normalisés.
-
-    Lit chaque ``*.json`` du dossier source, appelle ``preprocess_competition``
-    et conserve le même nom de fichier dans ``data/processed/``.
+def _preprocess_json_directory(
+    input_dir: Path,
+    output_dir: Path,
+    *,
+    label: str,
+) -> Tuple[int, int, int]:
+    """Parcourt un dossier de JSON bruts et ecrit les versions normalisees.
 
     Args:
-        input_dir (Path): Dossier des JSON bruts.
-        output_dir (Path): Dossier de sortie.
+        input_dir (Path): Dossier source (``*.json`` a la racine).
+        output_dir (Path): Dossier de sortie processed.
+        label (str): Libelle affiche dans les logs (ex. ``html_results``).
 
     Returns:
-        None
+        Tuple[int, int, int]: Total performances avant filtrage, apres filtrage,
+            et nombre de noms normalises.
     """
     if not input_dir.is_dir():
-        print(f"Dossier introuvable : {input_dir}")
-        return
+        print(f"[{label}] Dossier introuvable : {input_dir}")
+        return 0, 0, 0
 
     json_files = sorted(input_dir.glob("*.json"))
     if not json_files:
-        print(f"Aucun fichier JSON trouvé dans {input_dir}")
-        return
+        print(f"[{label}] Aucun fichier JSON trouve dans {input_dir}")
+        return 0, 0, 0
 
     total_before = 0
     total_after = 0
     total_names_changed = 0
 
-    print(f"{len(json_files)} fichiers FRM Natation trouvés dans {input_dir}")
+    print(f"[{label}] {len(json_files)} fichiers trouves dans {input_dir}")
 
     for idx, input_path in enumerate(json_files, start=1):
         output_path = output_dir / input_path.name
-        print(f"[{idx}/{len(json_files)}] {input_path.name}")
+        print(f"[{label}] [{idx}/{len(json_files)}] {input_path.name}")
 
         with input_path.open("r", encoding="utf-8") as f:
             raw = json.load(f)
 
         if not isinstance(raw, dict):
-            print("  [WARN] racine JSON non objet, ignoré.")
+            print("  [WARN] racine JSON non objet, ignore.")
             continue
 
-        cleaned, n_before, n_after, n_names = preprocess_competition(raw)
+        competition = load_competition_from_raw(raw)
+        cleaned, n_before, n_after, n_names = preprocess_competition(competition)
         total_before += n_before
         total_after += n_after
         total_names_changed += n_names
@@ -391,22 +678,96 @@ def preprocess_html_results_directory(
         if removed or n_names:
             parts = []
             if removed:
-                parts.append(f"performances {n_before} -> {n_after} ({removed} supprimée(s))")
+                parts.append(f"performances {n_before} -> {n_after} ({removed} supprimee(s))")
             if n_names:
-                parts.append(f"{n_names} nom(s) normalisé(s)")
+                parts.append(f"{n_names} nom(s) normalise(s)")
             print("  " + ", ".join(parts))
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with output_path.open("w", encoding="utf-8") as f_out:
             json.dump(cleaned, f_out, ensure_ascii=False, indent=2)
 
-    print(
-        f"\nTerminé. {total_before} performances lues, "
-        f"{total_after} conservées, {total_before - total_after} supprimées, "
-        f"{total_names_changed} noms normalisés."
+    return total_before, total_after, total_names_changed
+
+
+def preprocess_html_results_directory(
+    input_dir: Path = FRMNATATION_HTML_RESULTS_DIR,
+    output_dir: Path = FRMNATATION_OUTPUT_DIR,
+) -> None:
+    """Parcourt ``html_results/`` et ecrit les JSON normalises.
+
+    Lit chaque ``*.json`` du dossier source, appelle ``preprocess_competition``
+    et conserve le meme nom de fichier dans ``data/processed/``.
+
+    Args:
+        input_dir (Path): Dossier des JSON bruts HTML.
+        output_dir (Path): Dossier de sortie.
+
+    Returns:
+        None
+    """
+    before, after, names = _preprocess_json_directory(
+        input_dir,
+        output_dir,
+        label="html_results",
     )
-    print(f"Fichiers écrits dans {output_dir}")
+    if before or after or names:
+        print(
+            f"\n[html_results] Termine. {before} performances lues, "
+            f"{after} conservees, {before - after} supprimees, "
+            f"{names} noms normalises."
+        )
+        print(f"[html_results] Fichiers ecrits dans {output_dir}")
+
+
+def preprocess_llamaextract_directory(
+    input_dir: Path = FRMNATATION_LLAMAEXTRACT_DIR,
+    output_dir: Path = FRMNATATION_OUTPUT_DIR,
+) -> None:
+    """Parcourt ``json_from_pdfs_llamaextract/`` et ecrit les JSON normalises.
+
+    Convertit d'abord chaque payload LlamaExtract vers le schema unifie, puis
+    applique le meme filtrage et normalisation que ``html_results/``.
+
+    Args:
+        input_dir (Path): Dossier des JSON bruts LlamaExtract.
+        output_dir (Path): Dossier de sortie (``processed/html_results/``).
+
+    Returns:
+        None
+    """
+    before, after, names = _preprocess_json_directory(
+        input_dir,
+        output_dir,
+        label="llamaextract",
+    )
+    if before or after or names:
+        print(
+            f"\n[llamaextract] Termine. {before} performances lues, "
+            f"{after} conservees, {before - after} supprimees, "
+            f"{names} noms normalises."
+        )
+        print(f"[llamaextract] Fichiers ecrits dans {output_dir}")
+
+
+def preprocess_all_frmnatation_directories(
+    html_input_dir: Path = FRMNATATION_HTML_RESULTS_DIR,
+    llama_input_dir: Path = FRMNATATION_LLAMAEXTRACT_DIR,
+    output_dir: Path = FRMNATATION_OUTPUT_DIR,
+) -> None:
+    """Execute le pretraitement HTML puis LlamaExtract vers ``processed/``.
+
+    Args:
+        html_input_dir (Path): Dossier ``data/raw/.../html_results``.
+        llama_input_dir (Path): Dossier ``data/raw/.../json_from_pdfs_llamaextract``.
+        output_dir (Path): Dossier de sortie partage.
+
+    Returns:
+        None
+    """
+    preprocess_html_results_directory(input_dir=html_input_dir, output_dir=output_dir)
+    preprocess_llamaextract_directory(input_dir=llama_input_dir, output_dir=output_dir)
 
 
 if __name__ == "__main__":
-    preprocess_html_results_directory()
+    preprocess_all_frmnatation_directories()
