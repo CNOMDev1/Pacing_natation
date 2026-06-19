@@ -55,6 +55,7 @@ from desktop_helpers import (
 )
 from services.graph_service import (
     GRAPH_CATEGORIES,
+    GRAPH_CHRONOS_PAR_NAGE,
     GRAPHES_NOTEBOOK,
     GRAPHES_PAR_KEY,
     SCOPE_NO_FILTER_GRAPHS,
@@ -64,6 +65,7 @@ from services.graph_service import (
     ServiceGraphe,
     unwrap_matplotlib_figure,
 )
+from services.stroke_labels import stroke_code_to_label
 
 # --- Chemins d'export et flags de prefetch au démarrage ---
 
@@ -144,7 +146,7 @@ class PacingDesktopApp:
             None
         """
         self.page = page
-        self.page.title = "Pacing – Desktop"
+        self.page.title = "Pacing"
         self.page.theme_mode = ft.ThemeMode.DARK
         self.page.bgcolor = "#020617"
         self.page.padding = 0
@@ -470,8 +472,8 @@ class PacingDesktopApp:
                     parquet_cache_path,
                     middle_header="Nageurs événements — prefetched_event_swimmers.json",
                     right_header="Parquet USA Swimming — _parquet_cache",
-                    middle_progress_label="Event swimmers",
-                    right_progress_label="Parquet",
+                    middle_progress_label="Nageurs par événement",
+                    right_progress_label="Cache Parquet",
                 )
                 startup.mount()
                 self._startup_prefetch_ui = startup
@@ -1452,7 +1454,7 @@ class PacingDesktopApp:
             menu_width=dropdown_menu_width,
         )
         self.stroke_dd = ft.Dropdown(
-            label="Stroke",
+            label="Nage",
             options=[],
             on_select=self._on_filter_change,
             filled=True,
@@ -1593,7 +1595,7 @@ class PacingDesktopApp:
         self._theme_toggle_btn = ft.IconButton(
             icon=ft.icons.Icons.LIGHT_MODE,
             icon_color="#facc15",
-            tooltip="Basculer light/dark mode",
+            tooltip="Basculer mode clair / sombre",
             on_click=self._toggle_theme,
         )
 
@@ -4700,15 +4702,21 @@ class PacingDesktopApp:
                 self._nav_combos_cache_key = combos_key
             combos = self._nav_combos_cache
 
-        # Stroke options
-        stroke_vals = list(combos.keys())
+        # Options de nage (libellés français, clés internes inchangées)
+        stroke_vals = sorted(
+            combos.keys(),
+            key=lambda s: stroke_code_to_label(str(s)),
+        )
         if self.selected_stroke not in stroke_vals:
             self.selected_stroke = stroke_vals[0] if stroke_vals else None
         stroke_keys = tuple(str(s) for s in stroke_vals)
         if self._sync_dropdown(
             self.stroke_dd,
             new_option_keys=stroke_keys,
-            build_options=lambda sv=stroke_vals: [ft.dropdown.Option(s) for s in sv],
+            build_options=lambda sv=stroke_vals: [
+                ft.dropdown.Option(key=str(s), text=stroke_code_to_label(str(s)))
+                for s in sv
+            ],
             value=self.selected_stroke,
             visible=self.selected_graph
             not in (
@@ -4997,7 +5005,7 @@ class PacingDesktopApp:
             self.corridor_deciles_confirmed_yob = None
 
         # Option spécifique pacing comparatif (nageur cible)
-        if self.selected_graph == "Split speed - F vs M + nageurs cibles":
+        if self.selected_graph == "Vitesse de split - F vs M + nageurs cibles":
             pacing_scope_key = (
                 id(df_nav),
                 stroke,
@@ -5087,7 +5095,7 @@ class PacingDesktopApp:
             self.selected_pacing_swimmers = []
 
         # Chronos dans le temps: borne la taille d'échantillon aux données disponibles
-        if self.selected_graph == "Line Plot of Swim Times by Stroke Type Over Time for a Sample of 5000":
+        if self.selected_graph == GRAPH_CHRONOS_PAR_NAGE:
             if self.df.empty:
                 max_count = 0
             else:

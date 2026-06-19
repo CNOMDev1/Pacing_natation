@@ -12,6 +12,12 @@ import pandas as pd
 import seaborn as sns
 from matplotlib.colors import to_hex
 
+from services.stroke_labels import (
+    format_event_label,
+    localize_event_string,
+    relabel_stroke_column,
+    stroke_code_to_label,
+)
 from services.corridor_data import (
     CorridorSwimmerSpec,
     CORRIDOR_FR_SWIMMER_COLOR,
@@ -108,6 +114,12 @@ class DesktopGraphCategory:
     graph_names: Tuple[str, ...]
 
 
+GRAPH_CHRONOS_PAR_NAGE = "Évolution des chronos par type de nage (échantillon 5000)"
+GRAPH_VITESSE_DISTANCE_NAGE = "Vitesse par distance et type de nage"
+GRAPH_VITESSE_MAX_SPLIT_NAGE = "Vitesse maximale par split et type de nage"
+GRAPH_RELAY_SPLIT_DISTANCE = "Vitesse de split selon la distance (relais)"
+
+
 DESKTOP_GRAPH_MENU: Tuple[DesktopGraphCategory, ...] = (
     DesktopGraphCategory(
         "Distributions de temps",
@@ -141,19 +153,19 @@ DESKTOP_GRAPH_MENU: Tuple[DesktopGraphCategory, ...] = (
     DesktopGraphCategory(
         "Chronos dans le temps",
         (
-            "Line Plot of Swim Times by Stroke Type Over Time for a Sample of 5000",
+            GRAPH_CHRONOS_PAR_NAGE,
         ),
     ),
     DesktopGraphCategory(
         "Vitesse globale",
         (
-            "Swimming Speed by Distance and Stroke Type",
-            "Max Speed per Split Distance and Stroke",
+            GRAPH_VITESSE_DISTANCE_NAGE,
+            GRAPH_VITESSE_MAX_SPLIT_NAGE,
         ),
     ),
     DesktopGraphCategory(
         "Pacing comparatif",
-        ("Split speed - F vs M + nageurs cibles",),
+        ("Vitesse de split - F vs M + nageurs cibles",),
     ),
     DesktopGraphCategory(
         "Synthèse des vitesses par distance et nage",
@@ -169,7 +181,7 @@ DESKTOP_GRAPH_MENU: Tuple[DesktopGraphCategory, ...] = (
     ),
     DesktopGraphCategory(
         "Pacing en relais",
-        ("Split Speed vs Distance (Relay Events) with Mean Trend Line",),
+        (GRAPH_RELAY_SPLIT_DISTANCE,),
     ),
     DesktopGraphCategory(
         "Couloirs de performance",
@@ -191,9 +203,9 @@ SCOPE_NO_FILTER_GRAPHS = frozenset(
         "Nombre de performances par épreuve (LCM + SCM)",
         "Comptage par sexe (global)",
         "Camembert par sexe (global)",
-        "Line Plot of Swim Times by Stroke Type Over Time for a Sample of 5000",
-        "Swimming Speed by Distance and Stroke Type",
-        "Max Speed per Split Distance and Stroke",
+        GRAPH_CHRONOS_PAR_NAGE,
+        GRAPH_VITESSE_DISTANCE_NAGE,
+        GRAPH_VITESSE_MAX_SPLIT_NAGE,
         "Heatmap vitesse moyenne (distance x nage)",
     }
 )
@@ -344,6 +356,7 @@ class ServiceGraphe:
         local_df[swim_col] = pd.to_numeric(local_df.get(swim_col), errors="coerce")
         local_df = local_df.dropna(subset=[stroke_col, swim_col])
         local_df["SwimTimeMinutes"] = local_df[swim_col] / 60.0
+        local_df = relabel_stroke_column(local_df, stroke_col)
         fig, ax = plt.subplots(figsize=(12, 8))
         sns.boxplot(data=local_df, x=stroke_col, y="SwimTimeMinutes", palette="Set2", ax=ax)
         ax.set_xlabel("Type de nage")
@@ -394,12 +407,13 @@ class ServiceGraphe:
         local_df[distance_col] = pd.to_numeric(local_df.get(distance_col), errors="coerce")
         local_df[speed_col] = pd.to_numeric(local_df.get(speed_col), errors="coerce")
         local_df = local_df.dropna(subset=[distance_col, stroke_col, speed_col])
+        local_df = relabel_stroke_column(local_df, stroke_col)
         pivot = local_df.pivot_table(values=speed_col, index=distance_col, columns=stroke_col, aggfunc="mean")
         fig, ax = plt.subplots(figsize=(12, 7))
         sns.heatmap(pivot, annot=True, fmt=".2f", cmap="coolwarm", ax=ax)
         ax.set_title("Heatmap vitesse moyenne (distance x nage)")
-        ax.set_xlabel("Stroke")
-        ax.set_ylabel("Distance")
+        ax.set_xlabel("Nage")
+        ax.set_ylabel("Distance (m)")
         fig.tight_layout()
         return fig
 
@@ -417,6 +431,7 @@ class ServiceGraphe:
         local_df = local_df.dropna(subset=[speed_col, distance_col, stroke_col])
         if local_df.empty:
             return None
+        local_df = relabel_stroke_column(local_df, stroke_col)
         speed_by_dist = (
             local_df.groupby([distance_col, stroke_col], as_index=False)[speed_col]
             .mean()
@@ -431,9 +446,10 @@ class ServiceGraphe:
             marker="o",
             ax=ax,
         )
-        ax.set_title("Swimming Speed by Distance and Stroke Type")
+        ax.set_title(GRAPH_VITESSE_DISTANCE_NAGE)
         ax.set_xlabel("Distance (m)")
         ax.set_ylabel("Vitesse (m/s)")
+        ax.legend(title="Nage")
         ax.grid(alpha=0.3, linestyle="--")
         fig.tight_layout()
         return fig
@@ -504,6 +520,7 @@ class ServiceGraphe:
         if df_splits.empty:
             return None, pd.DataFrame()
 
+        df_splits = relabel_stroke_column(df_splits, "Stroke")
         df_splits_max = df_splits.loc[
             df_splits.groupby(["Stroke", "SplitDistance"])["SplitSpeed"].idxmax()
         ].reset_index(drop=True)
@@ -522,11 +539,11 @@ class ServiceGraphe:
 
         max_split = int(df_splits_max["SplitDistance"].max())
         ax.set_xticks(np.arange(0, max_split + 50, 50))
-        ax.set_title("Max Speed per Split Distance and Stroke", fontsize=16)
-        ax.set_xlabel("Split Distance (m)")
-        ax.set_ylabel("Split Speed (m/s)")
+        ax.set_title(GRAPH_VITESSE_MAX_SPLIT_NAGE, fontsize=16)
+        ax.set_xlabel("Distance du split (m)")
+        ax.set_ylabel("Vitesse du split (m/s)")
         ax.grid(True, linestyle="--", alpha=0.5)
-        ax.legend(title="Stroke", bbox_to_anchor=(1.05, 1), loc="upper left")
+        ax.legend(title="Nage", bbox_to_anchor=(1.05, 1), loc="upper left")
         fig.tight_layout()
         return fig, df_splits_max
 
@@ -584,6 +601,7 @@ class ServiceGraphe:
                 N=("SplitSpeed", "size"),
             )
         )
+        df_stats = relabel_stroke_column(df_stats, "Stroke")
 
         df_plot = df_stats.melt(
             id_vars=["Stroke", "SplitDistance", "N"],
@@ -612,11 +630,11 @@ class ServiceGraphe:
 
         max_split = int(df_plot["SplitDistance"].max())
         ax.set_xticks(np.arange(0, max_split + 50, 50))
-        ax.set_title("Vitesse moyenne et mediane par split et stroke", fontsize=16)
-        ax.set_xlabel("Split Distance (m)")
-        ax.set_ylabel("Speed (m/s)")
+        ax.set_title("Vitesse moyenne et médiane par split et nage", fontsize=16)
+        ax.set_xlabel("Distance du split (m)")
+        ax.set_ylabel("Vitesse (m/s)")
         ax.grid(True, linestyle="--", alpha=0.5)
-        ax.legend(title="Stroke / Stat", bbox_to_anchor=(1.05, 1), loc="upper left")
+        ax.legend(title="Nage / Statistique", bbox_to_anchor=(1.05, 1), loc="upper left")
         fig.tight_layout()
         return fig, df_plot
 
@@ -810,11 +828,11 @@ class ServiceGraphe:
                     fontsize=10,
                 )
 
-        ax.set_title("Number of Performances per Event (LCM + SCM)", fontsize=16, fontweight="bold")
+        ax.set_title("Nombre de performances par épreuve (LCM + SCM)", fontsize=16, fontweight="bold")
         ax.text(
             0.5,
             1.08,
-            f"Total Performances: {total_performances}",
+            f"Total des performances : {total_performances}",
             ha="center",
             va="center",
             transform=ax.transAxes,
@@ -822,8 +840,8 @@ class ServiceGraphe:
             fontweight="bold",
             color="#333333",
         )
-        ax.set_xlabel("Event")
-        ax.set_ylabel("Number of Performances")
+        ax.set_xlabel("Épreuve")
+        ax.set_ylabel("Nombre de performances")
         ax.set_xticks(x)
         ax.set_xticklabels(events, rotation=45)
         ax.legend()
@@ -882,7 +900,7 @@ class ServiceGraphe:
             colors=["#4FA2F6", "#F585BD"],
             startangle=90,
         )
-        ax.set_title(f"Répartition des performances par sexe pour {nom_event}")
+        ax.set_title(f"Répartition des performances par sexe pour {localize_event_string(nom_event)}")
         fig.tight_layout()
         return fig
 
@@ -922,7 +940,7 @@ class ServiceGraphe:
             color="#8C5CE4",
             ax=ax,
         )
-        ax.set_title(f"Temps médian des 10 meilleurs clubs - {nom_event}")
+        ax.set_title(f"Temps médian des 10 meilleurs clubs - {localize_event_string(nom_event)}")
         ax.set_xlabel("Club")
         ax.set_ylabel("Temps médian (minutes)")
         plt.setp(ax.get_xticklabels(), rotation=90)
@@ -960,6 +978,7 @@ class ServiceGraphe:
 
         df_plot["SwimTimeMinutes"] = df_plot["SwimTimeSeconds"] / 60
         df_sample = df_plot.sample(min(sample_size, len(df_plot)), random_state=42)
+        df_sample = relabel_stroke_column(df_sample, "Stroke")
 
         fig, ax = plt.subplots(figsize=(20, 6))
         sns.lineplot(
@@ -973,7 +992,7 @@ class ServiceGraphe:
         ax.set_title(f"Évolution des temps de nage dans le temps (à partir de {start_year})")
         ax.set_xlabel("Année")
         ax.set_ylabel("Temps de nage (minutes)")
-        ax.legend(title="Stroke")
+        ax.legend(title="Nage")
         fig.tight_layout()
         return fig
 
@@ -1031,7 +1050,7 @@ class ServiceGraphe:
             ax=ax,
         )
 
-        ax.set_title(f"Top 10 nageurs (meilleur temps) - {nom_event}")
+        ax.set_title(f"Top 10 nageurs (meilleur temps) - {localize_event_string(nom_event)}")
         ax.set_ylabel("Nageur")
         ax.set_xlabel("")
         ax.set_xticks([])
@@ -1329,7 +1348,11 @@ class ServiceGraphe:
         labels = [f"{tick * 50} m" for tick in ticks]
         ax.set_xticks(ticks)
         ax.set_xticklabels(labels)
-        ax.set_title(f"{nom_event} - split_speed - F vs M + nageurs cibles", fontsize=14, fontweight="bold")
+        ax.set_title(
+            f"{localize_event_string(nom_event)} - vitesse de split - F vs M + nageurs cibles",
+            fontsize=14,
+            fontweight="bold",
+        )
         ax.set_xlabel("Rang du split", fontsize=12)
         ax.set_ylabel("Vitesse par split", fontsize=12)
         ax.grid(alpha=0.25)
@@ -1405,7 +1428,7 @@ class ServiceGraphe:
         )
         ax.set_xticks(range(50, int(df_splits["split_distance"].max()) + 50, 50))
         plt.setp(ax.get_xticklabels(), rotation=45)
-        ax.set_title(f"Vitesse par split pour {nom_nageur} - {nom_event}")
+        ax.set_title(f"Vitesse par split pour {nom_nageur} - {localize_event_string(nom_event)}")
         ax.set_xlabel("Split (m)")
         ax.set_ylabel("Vitesse (m/s)")
         ax.grid(True)
@@ -1822,7 +1845,11 @@ class ServiceGraphe:
             ax=ax,
         )
         ax.set_xticks(range(50, int(df_splits["split_distance"].max()) + 50, 50))
-        ax.set_title(f"Vitesse par split - Top {top_n} nageurs uniques ({nom_event}, {annee_debut}-{annee_fin})", fontsize=16)
+        ax.set_title(
+            f"Vitesse par split - Top {top_n} nageurs uniques "
+            f"({localize_event_string(nom_event)}, {annee_debut}-{annee_fin})",
+            fontsize=16,
+        )
         ax.set_xlabel("Distance par splits (m)", fontsize=14)
         ax.set_ylabel("Vitesse (m/s)", fontsize=14)
         ax.grid(True)
@@ -1869,7 +1896,7 @@ class ServiceGraphe:
         df_cmp["Nageur"] = df_cmp["swimmer"].apply(lambda x: x.get("Name"))
         df_cmp["Speed"] = pd.to_numeric(df_cmp["Speed"], errors="coerce")
         df_cmp["Distance"] = pd.to_numeric(df_cmp["Distance"], errors="coerce")
-        df_cmp["Stroke"] = df_cmp["Stroke"].astype(str).str.strip()
+        df_cmp["Stroke"] = df_cmp["Stroke"].astype(str).str.strip().map(stroke_code_to_label)
 
         df_cmp["Nageur_norm"] = df_cmp["Nageur"].map(norm_txt)
         nageur_norm = norm_txt(nageur_cible)
@@ -1921,8 +1948,8 @@ class ServiceGraphe:
             if empty:
                 ax.text(0.5, 0.5, "Pas de donnees disponibles", ha="center", va="center", fontsize=12)
                 ax.set_title(title)
-                ax.set_xlabel("Stroke")
-                ax.set_ylabel("Distance")
+                ax.set_xlabel("Nage")
+                ax.set_ylabel("Distance (m)")
                 ax.set_xticks([])
                 ax.set_yticks([])
                 return
@@ -1937,8 +1964,8 @@ class ServiceGraphe:
                 vmax=vmax,
             )
             ax.set_title(title)
-            ax.set_xlabel("Stroke")
-            ax.set_ylabel("Distance")
+            ax.set_xlabel("Nage")
+            ax.set_ylabel("Distance (m)")
 
         fig, axes = plt.subplots(1, 2, figsize=(18, 7), sharey=True)
         draw_heatmap(axes[0], pivot_target, f"{nageur_cible} - Vitesse moyenne", cbar=False)
@@ -2030,7 +2057,10 @@ class ServiceGraphe:
         )
         max_dist = max(df_median_splits["split_distance"].max(), df_best_splits["split_distance"].max())
         ax.set_xticks(range(50, int(max_dist) + 50, 50))
-        ax.set_title(f"Temps median vs meilleur nageur - Event {nom_event}", fontsize=16)
+        ax.set_title(
+            f"Temps médian vs meilleur nageur - {localize_event_string(nom_event)}",
+            fontsize=16,
+        )
         ax.set_xlabel("Distance par split (m)", fontsize=14)
         ax.set_ylabel("Temps (s)", fontsize=14)
         ax.grid(True)
@@ -2116,7 +2146,10 @@ class ServiceGraphe:
         )
         max_dist = max(df_median_splits["split_distance"].max(), df_top10_median["split_distance"].max())
         ax.set_xticks(range(50, int(max_dist) + 50, 50))
-        ax.set_title(f"Temps median vs Top 10 nageurs - Event {nom_event}", fontsize=16)
+        ax.set_title(
+            f"Temps médian vs Top 10 nageurs - {localize_event_string(nom_event)}",
+            fontsize=16,
+        )
         ax.set_xlabel("Distance par split (m)", fontsize=14)
         ax.set_ylabel("Temps (s)", fontsize=14)
         ax.grid(True)
@@ -2195,7 +2228,10 @@ class ServiceGraphe:
             ax=ax,
         )
         ax.set_xticks(range(50, int(df_splits["split_distance"].max()) + 50, 50))
-        ax.set_title(f"Vitesse mediane par split selon le genre - {nom_event}", fontsize=16)
+        ax.set_title(
+            f"Vitesse médiane par split selon le genre - {localize_event_string(nom_event)}",
+            fontsize=16,
+        )
         ax.set_xlabel("Distance par splits (m)", fontsize=14)
         ax.set_ylabel("Vitesse mediane (m/s)", fontsize=14)
         ax.grid(True)
@@ -2313,9 +2349,13 @@ class ServiceGraphe:
             marker="s",
             label="Mediane par split_distance_m",
         )
-        ax.set_title(f"{nom_event} - relais uniquement - split_speed en fonction de la distance", fontsize=13, fontweight="bold")
+        ax.set_title(
+            f"{localize_event_string(nom_event)} - relais uniquement - vitesse de split selon la distance",
+            fontsize=13,
+            fontweight="bold",
+        )
         ax.set_xlabel("Distance du split (m)")
-        ax.set_ylabel("split_speed")
+        ax.set_ylabel("Vitesse de split")
         ax.grid(alpha=0.25)
         ax.legend()
         fig.tight_layout()
@@ -2432,9 +2472,9 @@ class ServiceGraphe:
             ax, long_plot, specs, source_df=df, nom_event=nom_event
         )
         ax.invert_yaxis()
-        ax.set_xlabel("Age")
+        ax.set_xlabel("Âge")
         ax.set_ylabel("Temps (secondes)")
-        ax.set_title(f"Couloir de performance - {nom_event}")
+        ax.set_title(f"Couloir de performance - {localize_event_string(nom_event)}")
         ax.grid(alpha=0.3)
         ax.legend()
         fig.tight_layout()
@@ -2550,9 +2590,9 @@ class ServiceGraphe:
             ax, long_plot, specs, source_df=df, nom_event=nom_event
         )
         ax.invert_yaxis()
-        ax.set_xlabel("Age")
+        ax.set_xlabel("Âge")
         ax.set_ylabel("Temps (secondes)")
-        ax.set_title(f"Couloir de performance global - {nom_event}")
+        ax.set_title(f"Couloir de performance global - {localize_event_string(nom_event)}")
         ax.grid(alpha=0.3)
         ax.legend()
         fig.tight_layout()
@@ -2755,9 +2795,11 @@ class ServiceGraphe:
         ax.set_xticks(x_positions)
         ax.set_xticklabels(ordered_index, rotation=20, ha="right")
         ax.invert_yaxis()
-        ax.set_xlabel("AgeGroup")
+        ax.set_xlabel("Catégorie d'âge")
         ax.set_ylabel("Temps (secondes)")
-        ax.set_title(f"Couloir de performance global (AgeGroup) - {nom_event}")
+        ax.set_title(
+            f"Couloir de performance global (catégorie d'âge) - {localize_event_string(nom_event)}"
+        )
         ax.grid(alpha=0.3)
         ax.legend()
         fig.tight_layout()
@@ -2876,9 +2918,11 @@ class ServiceGraphe:
         )
 
         ax.invert_yaxis()
-        ax.set_xlabel("Age")
+        ax.set_xlabel("Âge")
         ax.set_ylabel("Temps (secondes)")
-        ax.set_title(f"Couloir de performance global (déciles 10-90) - {nom_event}")
+        ax.set_title(
+            f"Couloir de performance global (déciles 10-90) - {localize_event_string(nom_event)}"
+        )
         ax.grid(alpha=0.3)
         ax.legend(ncol=2)
         fig.tight_layout()
@@ -3258,12 +3302,12 @@ class ServiceGraphe:
         elif selected_graph == "Temps médian des 10 meilleurs clubs":
             if distance and stroke and pool:
                 nom_event = f"{distance} {stroke} {pool}"
-                chart_title = f"Temps médian des 10 meilleurs clubs - {nom_event}"
+                chart_title = f"Temps médian des 10 meilleurs clubs - {format_event_label(distance, stroke, pool)}"
                 fig, _meta = svc.plot_temps_median_top10_clubs_par_event(
                     df_scope, nom_event=nom_event
                 )
 
-        elif selected_graph == "Line Plot of Swim Times by Stroke Type Over Time for a Sample of 5000":
+        elif selected_graph == GRAPH_CHRONOS_PAR_NAGE:
             chart_title = "Évolution des temps de nage dans le temps (à partir de 2000)"
             fig = svc.plot_evolution_temps_nage(
                 df,
@@ -3271,18 +3315,20 @@ class ServiceGraphe:
                 sample_size=max(0, int(selected_chronos_sample_size)),
             )
 
-        elif selected_graph == "Swimming Speed by Distance and Stroke Type":
-            chart_title = "Swimming Speed by Distance and Stroke Type"
+        elif selected_graph == GRAPH_VITESSE_DISTANCE_NAGE:
+            chart_title = GRAPH_VITESSE_DISTANCE_NAGE
             fig = svc.plot_swimming_speed_by_distance_and_stroke(df_scope)
 
-        elif selected_graph == "Max Speed per Split Distance and Stroke":
-            chart_title = "Max Speed per Split Distance and Stroke"
+        elif selected_graph == GRAPH_VITESSE_MAX_SPLIT_NAGE:
+            chart_title = GRAPH_VITESSE_MAX_SPLIT_NAGE
             fig, _dfm = svc.plot_vitesse_max_par_split_et_nage(df_scope)
 
-        elif selected_graph == "Split speed - F vs M + nageurs cibles":
+        elif selected_graph == "Vitesse de split - F vs M + nageurs cibles":
             if distance and stroke and pool:
                 nom_event = f"{distance} {stroke} {pool}"
-                chart_title = f"{nom_event} - split_speed - F vs M + nageurs cibles"
+                chart_title = (
+                    f"{format_event_label(distance, stroke, pool)} - vitesse de split - F vs M + nageurs cibles"
+                )
                 pacing = selected_pacing_swimmers[:3]
                 target_colors: Dict[str, str] = {}
                 if pacing:
@@ -3298,7 +3344,9 @@ class ServiceGraphe:
         elif selected_graph == "Temps médian vs meilleur nageur":
             if distance and stroke and pool:
                 nom_event = f"{distance} {stroke} {pool}"
-                chart_title = f"Temps médian vs meilleur nageur - Event {nom_event}"
+                chart_title = (
+                    f"Temps médian vs meilleur nageur - {format_event_label(distance, stroke, pool)}"
+                )
                 fig, _a, _b, meta = svc.plot_temps_median_vs_meilleur_nageur_par_split_event(
                     df_scope, nom_event=nom_event
                 )
@@ -3310,7 +3358,9 @@ class ServiceGraphe:
         elif selected_graph == "Temps médian vs Top 10 nageurs":
             if distance and stroke and pool:
                 nom_event = f"{distance} {stroke} {pool}"
-                chart_title = f"Temps médian vs Top 10 nageurs - Event {nom_event}"
+                chart_title = (
+                    f"Temps médian vs Top 10 nageurs - {format_event_label(distance, stroke, pool)}"
+                )
                 fig, _a, _b, meta = svc.plot_temps_median_vs_top10_nageurs_par_split_event(
                     df_scope, nom_event=nom_event
                 )
@@ -3322,7 +3372,9 @@ class ServiceGraphe:
         elif selected_graph == "Vitesse médiane par split selon le genre":
             if distance and stroke and pool:
                 nom_event = f"{distance} {stroke} {pool}"
-                chart_title = f"Vitesse médiane par split selon le genre - {nom_event}"
+                chart_title = (
+                    f"Vitesse médiane par split selon le genre - {format_event_label(distance, stroke, pool)}"
+                )
                 fig, _med, meta = svc.plot_vitesse_mediane_par_split_selon_genre_top_n_event(
                     df_scope, nom_event=nom_event, top_n=10
                 )
@@ -3357,7 +3409,7 @@ class ServiceGraphe:
                 )
                 has_specs = bool(overlay_kwargs.get("swimmer_specs"))
                 if has_fr or has_ma or has_specs:
-                    chart_title = f"Couloir de performance - {nom_event}"
+                    chart_title = f"Couloir de performance - {format_event_label(distance, stroke, pool)}"
                     plot_kwargs = dict(overlay_kwargs)
                     if plot_kwargs.get("swimmer_specs"):
                         plot_kwargs.pop("overlay_nageur", None)
@@ -3387,7 +3439,9 @@ class ServiceGraphe:
                         elif warn_parts:
                             chart_title = f"{chart_title} — {warn_parts[0]}"
                 elif overlay_kwargs.get("swimmer_specs") or overlay_kwargs:
-                    chart_title = f"Couloir de performance global - {nom_event}"
+                    chart_title = (
+                        f"Couloir de performance global - {format_event_label(distance, stroke, pool)}"
+                    )
                     fig, meta = svc.plot_performance_corridor_global_plot_time(
                         corridor_df,
                         nom_event=nom_event,
@@ -3402,7 +3456,9 @@ class ServiceGraphe:
                 else:
                     # Au démarrage du mode "nageur cible", afficher Graphe28 (global)
                     # tant qu'aucun nageur n'a été confirmé.
-                    chart_title = f"Couloir de performance global - {nom_event}"
+                    chart_title = (
+                        f"Couloir de performance global - {format_event_label(distance, stroke, pool)}"
+                    )
                     fig, meta = svc.plot_performance_corridor_global_plot_time(
                         corridor_df,
                         nom_event=nom_event,
@@ -3415,7 +3471,9 @@ class ServiceGraphe:
         elif selected_graph == "Couloir de performance global (âge)":
             if distance and stroke and pool:
                 nom_event = f"{distance} {stroke} {pool}"
-                chart_title = f"Couloir de performance global - {nom_event}"
+                chart_title = (
+                    f"Couloir de performance global - {format_event_label(distance, stroke, pool)}"
+                )
                 fig, meta = svc.plot_performance_corridor_global_plot_time(
                     corridor_df,
                     nom_event=nom_event,
@@ -3431,7 +3489,9 @@ class ServiceGraphe:
         elif selected_graph == "Couloir de performance global (déciles 10-90)":
             if distance and stroke and pool:
                 nom_event = f"{distance} {stroke} {pool}"
-                chart_title = f"Couloir global (déciles 10-90) - {nom_event}"
+                chart_title = (
+                    f"Couloir global (déciles 10-90) - {format_event_label(distance, stroke, pool)}"
+                )
                 deciles_kwargs: Dict[str, Any] = dict(overlay_kwargs)
                 if selected_corridor_swimmer_name:
                     deciles_kwargs["nom_nageur"] = selected_corridor_swimmer_name
@@ -3451,11 +3511,12 @@ class ServiceGraphe:
                     elif meta.get("overlay_swimmer_message"):
                         chart_title = str(meta["overlay_swimmer_message"])
 
-        elif selected_graph == "Split Speed vs Distance (Relay Events) with Mean Trend Line":
+        elif selected_graph == GRAPH_RELAY_SPLIT_DISTANCE:
             if distance and stroke and pool:
                 nom_event = f"{distance} {stroke} {pool}"
+                nom_event_label = format_event_label(distance, stroke, pool)
                 chart_title = (
-                    f"{nom_event} — relais uniquement — split_speed en fonction de la distance"
+                    f"{nom_event_label} — relais uniquement — vitesse de split selon la distance"
                 )
                 fig, _p, _m, _md, meta = svc.plot_relais_split_speed_par_distance(
                     df_scope, nom_event=nom_event

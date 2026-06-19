@@ -1,0 +1,1092 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{parskip}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{titlesec}
+
+\definecolor{pacingtitle}{HTML}{1A5276}
+
+\titleformat{\section}
+  {\normalfont\Large\bfseries\color{pacingtitle}}
+  {\thesection}{1em}{}
+\titleformat{\subsection}
+  {\normalfont\large\bfseries\color{pacingtitle!75!black}}
+  {\thesubsection}{1em}{}
+
+\makeatletter
+\renewcommand{\maketitle}{%
+  \begin{center}
+    {\LARGE\bfseries\color{pacingtitle}\@title\par}
+    \vskip 1.5em
+    {\large\@author\par}
+    \vskip 0.5em
+    {\large\@date\par}
+  \end{center}%
+}
+\makeatother
+
+\geometry{margin=2.2cm}
+\setlist[itemize]{noitemsep, topsep=3pt, parsep=0pt, partopsep=0pt}
+\setlist[enumerate]{noitemsep, topsep=3pt, parsep=0pt, partopsep=0pt}
+\setlength{\parskip}{0.45em}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  backgroundcolor=\color{gray!8},
+  columns=fullflexible,
+  keepspaces=true
+}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=blue!60!black
+}
+
+\title{Document de reprise technique --- Projet Pacing}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+\vspace{-1.2em}
+
+\noindent\textbf{Public vise\,:} developpeur reprenant le projet apres une longue interruption de maintenance, ou un nouveau contributeur devant comprendre l'architecture complete.
+
+\noindent\textbf{Objectif\,:} permettre la reprise autonome du depot \texttt{Pacing/} : structure, formats de donnees, pipelines ETL, caches, separation metier/interface, environnement d'execution et points de vigilance.
+
+\tableofcontents
+\newpage
+
+%======================================================================
+\section{Vue d'ensemble}
+%======================================================================
+
+\textbf{Pacing} est une application Python d'analyse du \emph{pacing} et des performances en natation. Elle agrege des donnees issues de quatre sources principales\,:
+
+\begin{itemize}
+  \item \textbf{Extranat}
+  \item \textbf{USA Swimming} 
+  \item \textbf{Omega Timing} 
+  \item \textbf{FRM Natation}  
+\end{itemize}
+
+\subsection{Interfaces et points d'entree}
+
+\begin{longtable}{@{}p{0.28\textwidth}p{0.65\textwidth}@{}}
+\toprule
+\textbf{Interface} & \textbf{Commande / fichier} \\
+\midrule
+\endhead
+Desktop (recommandee) & \texttt{python app/interfaces/desktop\_flet.py} \\
+API REST & \texttt{uvicorn app.main:app --reload} \\
+Notebooks Jupyter & \texttt{jupyter notebook app/visualization/} \\
+Scraping Extranat & \texttt{python services/extranat\_service.py} \\
+Scraping USA Swimming & \texttt{python services/usaswimming\_service.py} \\
+Scraping Omega (PDF) & \texttt{python -m services.omega\_service} \\
+Pretraitement France & \texttt{python -m app.scripts.extranat\_preprocessing} \\
+Pretraitement USA & \texttt{python -m app.scripts.usaswimming\_preprocessing} \\
+Pretraitement Maroc & \texttt{python -m app.scripts.frmnatation\_preprocessing} \\
+Token USA Swimming & \texttt{python app/scripts/get\_token\_usaswimming.py} \\
+\bottomrule
+\end{longtable}
+
+\subsection{Principe architectural}
+
+Le depot suit une separation nette\,:
+
+\begin{enumerate}
+  \item \texttt{services/} --- \textbf{coeur metier} : scraping, loaders, calcul des couloirs, graphiques matplotlib\,;
+  \item \texttt{app/interfaces/} --- \textbf{UI desktop Flet}, orchestration du prefetch et caches d'affichage\,;
+  \item \texttt{app/routers/} + \texttt{app/main.py} --- \textbf{API FastAPI} (fine couche au-dessus des services)\,;
+  \item \texttt{app/scripts/} --- \textbf{ETL offline} (raw $\rightarrow$ processed)\,;
+  \item \texttt{app/models/} --- schemas Pydantic (validation JSON brut)\,;
+  \item \texttt{data/} --- donnees locales \textbf{gitignorees} (non versionnees).
+\end{enumerate}
+
+%======================================================================
+\section{Structure des dossiers et des fichiers}
+%======================================================================
+
+\subsection{Arborescence du depot (versionnee)}
+
+\begin{lstlisting}
+Pacing/
+├── README.md
+├── requirements.txt
+├── .gitignore
+├── app/
+│   ├── main.py                    # Point d'entree FastAPI
+│   ├── interfaces/
+│   │   ├── desktop_flet.py        # Application desktop 
+│   │   ├── desktop_helpers.py     # Chargement Extranat, filtres, base64
+│   │   ├── corridor_prefetch.py   # Prefetch couloirs au demarrage
+│   │   ├── loading_progress.py    # Barres de progression Flet
+│   │   ├── project_path.py        # PROJECT_DIR, sys.path
+│   │   └── swimmer_search.py      # Widget recherche nageur
+│   ├── models/
+│   │   ├── extranat_models.py     # Pydantic : JSON brut Extranat
+│   │   └── usaswimming_models.py  # Pydantic : enregistrements API USA
+│   ├── routers/
+│   │   ├── extranat.py            # GET /extranat/results
+│   │   ├── omega.py               # GET /omega/pdfs, /pdfs/by-years
+│   │   └── usaswimming.py         # GET /usaswimming/results
+│   ├── scripts/                   # ETL offline : raw -> processed (par pays)
+│   │   ├── extranat_preprocessing.py      # France : JSON brut Extranat -> schema unifie
+│   │   ├── frmnatation_preprocessing.py   # Maroc : html_results + LlamaExtract PDF -> processed
+│   │   ├── usaswimming_preprocessing.py   # USA : raw -> schema unifie
+│   │   └── get_token_usaswimming.py       # Auth Playwright : Bearer token Data Hub
+│   └── visualization/             # Notebooks Jupyter (prototypes, hors UI Flet)
+│       ├── graphics.ipynb                 # Extranat/USA : test de tous les GraphSpec
+│       ├── graphics_frmnatation.ipynb     # Maroc : exploration DataFrame html_results
+│       └── setup_env.py                   # sys.path : ensure_project_root() pour notebooks
+├── services/                      # Coeur metier : scraping, loaders, graphiques
+│   ├── extranat_service.py                # France : scraping ffn.extranat.fr -> raw
+│   ├── extranat_competitions_data_loader.py  # France : JSON processed -> DataFrame
+│   ├── usaswimming_service.py             # USA : API Sisense Data Hub -> raw
+│   ├── usaswimming_competitions_data_loader.py  # USA : Parquet annuel -> DataFrame
+│   ├── frmnatation_html_results_data_loader.py  # Maroc : JSON processed -> overlay UI
+│   ├── omega_service.py                   # PDF Total Ranking Omega -> raw (stockage)
+│   ├── graph_service.py           # ServiceGraphe, tous les graphiques
+│   ├── corridor_data.py           # Couloirs de performance
+│   ├── stroke_labels.py           # Libelles FR des codes nage
+│   └── machine_workers.py         # Parallelisme adaptatif RAM/CPU
+└── docs/
+    ├── guide_utilisateur_pacing.tex
+    ├── document_reprise_technique_pacing.tex   # Ce document
+    └── screenshots/
+\end{lstlisting}
+
+\subsection{Arborescence \texttt{data/} (locale, gitignoree)}
+
+Le dossier \texttt{data/} est exclu du depot Git (\texttt{.gitignore}). Il doit etre recree manuellement ou par les scripts de scraping/pretraitement.
+
+\begin{lstlisting}
+data/
+├── raw/                                    # Donnees brutes (scraping)
+│   ├── extranat/
+│   │   ├── competitions_per_type/          # JSON par type/idtyp/competition
+│   │   ├── Resumes/                        # Bilans d'erreurs scraping
+│   ├── frmnatation/
+│   │   ├── html_results/                   # JSON bruts (HTML -> JSON externe)
+│   │   └── json_from_pdfs_llamaextract/    # JSON bruts (PDF -> LlamaExtract, converti au pretraitement)
+│   ├── omega/
+│   │   └── pdfs/{annee}/                   # PDF Total Ranking
+│   └── usaswimming/
+│       └── {annee}/{meet}.json             # Reponses API brutes
+├── processed/                              # Donnees normalisees
+│   ├── extranat/competitions_per_type/     # Meme arborescence que raw
+│   ├── frmnatation/html_results/            # JSON unifie : html_results + json_from_pdfs_llamaextract 
+│   └── usaswimming/
+│       ├── {annee}/*.json
+│       └── _parquet_cache/{annee}.parquet  # Cache USA uniquement
+└── exports/                                # Caches UI desktop
+    ├── prefetched_graphs.json              # Graphes matplotlib prefetch (PNG base64)
+    └── prefetched_event_swimmers.json      # Nageurs/epreuve : prefetch couloirs + combos nav (recherche = df_nav)
+\end{lstlisting}
+
+\subsection{Fichiers secrets / locaux (gitignores)}
+
+\begin{itemize}
+  \item \texttt{cookies\_omegatiming.txt} --- en-tete Cookie pour Omega Timing\,;
+  \item \texttt{services/bearer\_token.txt} --- token Bearer USA Swimming\,;
+  \item \texttt{services/state.json} --- session Playwright USA Swimming\,;
+  \item \texttt{.venv/} --- environnement virtuel Python\,;
+  \item \texttt{playwright\_tmp\_profile/} --- profil Chromium temporaire.
+\end{itemize}
+
+%======================================================================
+\section{Formats de donnees}
+%======================================================================
+
+\subsection{JSON --- schema unifie (processed)}
+\label{sec:schema-unifie}
+
+Apres pretraitement, France, USA et Maroc convergent vers une structure commune\,:
+
+\begin{lstlisting}
+{
+  "Meet": "Championnats de France 2024",
+  "SwimDate": "2024-06-15",
+  "SwimYear": 2024,
+  "location": "Chartres",
+  "Country": "FRA",
+  "epreuves": [{
+    "Event": "100 FR LCM",
+    "Distance": 100,
+    "Stroke": "FR",
+    "Course": "LCM",
+    "PoolLength": 50,
+    "tour": "Finale",
+    "performances": [{
+      "Rank": 1,
+      "Club": "...",
+      "SwimTime": "52.34",
+      "SwimTimeSeconds": 52.34,
+      "Status": "OK",
+      "Speed": 1.91,
+      "swimmer": [{
+        "Name": "DUPONT Jean",
+        "Gender": "M",
+        "Year_of_birth": 2005,
+        "Age": 19,
+        "Nationality": "FRA",
+        "AgeGroup": "15-18"
+      }],
+      "splits": []
+    }]
+  }]
+}
+\end{lstlisting}
+
+\textbf{Particularites par source\,:}
+\begin{itemize}
+  \item \textbf{Extranat} --- champs supplementaires \texttt{points}, \texttt{mpp}, \texttt{mpp\_date}\,; \texttt{splits} renseignes (passages intermediaires)\,;
+  \item \textbf{USA Swimming} --- \texttt{TimeStandard}, \texttt{Session}, \texttt{AgeGroup} USA\,;
+  \item \textbf{FRM Natation} --- \texttt{splits} toujours vides\,: pas de pacing par segments pour le Maroc\,; codes nage convertis (DOS$\rightarrow$BK, PAP$\rightarrow$FL, 4N$\rightarrow$IM).
+\end{itemize}
+
+\subsection{JSON --- format brut FRM Natation (deux sources raw)}
+
+Deux dossiers coexistent sous \texttt{data/raw/frmnatation/}\,; les deux sont lus par \texttt{frmnatation\_preprocessing.py} et ecrits dans \texttt{data/processed/frmnatation/html\_results/}.
+
+\textbf{\texttt{html\_results/}} (HTML externe)\,:
+\begin{itemize}
+  \item un fichier JSON par competition\,;
+  \item structure deja proche du schema unifie (\texttt{Meet}, \texttt{epreuves}, \texttt{performances}, \texttt{swimmer})\,;
+  \item produit par un outil externe convertissant les pages HTML FRM Natation\,;
+  \item lu par \texttt{preprocess\_html\_results\_directory()}.
+\end{itemize}
+
+\textbf{\texttt{json\_from\_pdfs\_llamaextract/}} (PDF via LlamaExtract)\,:
+\begin{itemize}
+  \item environ 140 fichiers JSON (\texttt{*.json}), un PDF source par fichier\,;
+  \item produit par \textbf{LlamaExtract} (outil externe, hors depot)\,: extraction de tableaux depuis des PDF de resultats de competitions marocaines\,;
+  \item structure brute\,: \texttt{\{source\_file, tables[]\}} (\texttt{category}, \texttt{headers}, \texttt{rows})\,;
+  \item converti par \texttt{llamaextract\_to\_competition()} puis le meme pretraitement que \texttt{html\_results/}\,;
+  \item sortie partagee dans \texttt{data/processed/frmnatation/html\_results/} (champ \texttt{source\_format=llamaextract\_pdf})\,;
+  \item \textbf{limite}\,: distance et nage absentes des tableaux PDF\,: \texttt{Event} synthetique \texttt{PDF\_TABLE\_001}, \texttt{PDF\_TABLE\_002}, ... (filtre par epreuve limite en UI).
+\end{itemize}
+
+\subsection{JSON --- format brut Extranat}
+
+Modeles Pydantic dans \texttt{app/models/extranat\_models.py}\,: hierarchie \texttt{CompetitionExtranat} $\rightarrow$ \texttt{Epreuve} $\rightarrow$ \texttt{Performance} $\rightarrow$ \texttt{Nageur}. Champs en francais (\texttt{name}, \texttt{nom}, \texttt{nageur}, \texttt{temps}, \texttt{classement}, etc.).
+
+\subsection{JSON --- format brut USA Swimming}
+
+Modele \texttt{NageurRecord} dans \texttt{app/models/usaswimming\_models.py}\,: liste plate de performances avant regroupement par \texttt{usaswimming\_preprocessing}.
+
+\subsection{Parquet (USA Swimming uniquement)}
+\label{sec:parquet}
+
+\textbf{Chemin}\,: \texttt{data/processed/usaswimming/\_parquet\_cache/\{annee\}.parquet}
+
+\textbf{Moteur}\,: pyarrow (requis\,: pas de fallback fastparquet dans le code actuel).
+
+\textbf{Colonnes principales}\,:
+
+\begin{longtable}{@{}p{0.32\textwidth}p{0.58\textwidth}@{}}
+\toprule
+\textbf{Colonne} & \textbf{Description} \\
+\midrule
+\endhead
+\texttt{Year}, \texttt{SourceFile} & Annee et nom du JSON source \\
+\texttt{Meet}, \texttt{SwimDate}, \texttt{Location}, \texttt{Country} & Metadonnees competition \\
+\texttt{Event}, \texttt{Distance}, \texttt{Stroke}, \texttt{Course}, \texttt{PoolLength}, \texttt{Tour} & Epreuve \\
+\texttt{Rank}, \texttt{Club}, \texttt{SwimTime}, \texttt{SwimTimeSeconds}, \texttt{Status}, \texttt{Speed} & Resultat \\
+\texttt{TimeStandard}, \texttt{AgeGroup}, \texttt{Session} & Specifique USA \\
+\texttt{swimmer} & \textbf{Chaine JSON} serialisee (\texttt{list[dict]}) --- Parquet ne gere pas nativement les structures imbriquees \\
+\texttt{Name}, \texttt{Gender}, \texttt{Year\_of\_birth}, \texttt{Age\_at\_Performance}, \texttt{Nationality} & Denormalises depuis le 1\textsuperscript{er} nageur \\
+\bottomrule
+\end{longtable}
+
+\textbf{Lecture optimisee}\,: projection de colonnes + filtre pushdown PyArrow sur \texttt{Event} (\texttt{UsaswimmingCompetitionsDataLoader.load()}).
+
+\textbf{Important}\,: a l'execution, le loader USA \textbf{ne lit jamais les JSON processed}\,: seul le Parquet est consulte. Sans cache Parquet, les couloirs USA restent vides.
+
+\subsection{Autres formats}
+
+\begin{itemize}
+  \item \textbf{PDF} --- Omega Timing, stockes sous \texttt{data/raw/omega/pdfs/}. Non parses.
+  \item \textbf{PNG encode base64} --- rendus matplotlib pour l'UI Flet, serialises dans \texttt{prefetched\_graphs.json}.
+  \item \textbf{Texte} --- cookies et tokens d'authentification (voir section~\ref{sec:secrets}).
+\end{itemize}
+
+\subsection{Caches d'export JSON (UI)}
+
+\texttt{data/exports/prefetched\_graphs.json}\,:
+\begin{lstlisting}
+{
+  "generated_at": "...",
+  "total_renders": 42,
+  "renders": [{
+    "category": "...",
+    "name": "...",
+    "image_base64": "...",
+    "status": "ok"
+  }]
+}
+\end{lstlisting}
+
+\texttt{data/exports/prefetched\_event\_swimmers.json}\,:
+index imbrique \texttt{Stroke $\rightarrow$ Distance $\rightarrow$ Pool $\rightarrow$ Gender $\rightarrow$ [libelles nageurs]} (\texttt{Nom (YOB)}), genere au demarrage depuis \texttt{df\_nav}.
+\textbf{Usages}\,: prefetch des graphiques couloir (\texttt{CorridorPrefetchManager}) et combos navigation Stroke/Distance/Bassin (hors couloir France).
+\textbf{Non utilise pour}\,: les barres de recherche nageur (\texttt{SwimmerSearch} / \texttt{AutoComplete}) --- celles-ci lisent \texttt{df\_nav} en direct (\texttt{\_corridor\_swimmer\_labels\_from\_nav}).
+
+%======================================================================
+\section{Logique de cache et de chargement des donnees}
+%======================================================================
+
+\subsection{Vue d'ensemble des loaders}
+
+\begin{longtable}{@{}p{0.35\textwidth}p{0.25\textwidth}p{0.32\textwidth}@{}}
+\toprule
+\textbf{Loader} & \textbf{Source disque} & \textbf{Cache} \\
+\midrule
+\endhead
+\texttt{ExtranatCompetitionsDataLoader} & JSON processed (recursif) & Aucun disque\,: relecture parallele a chaque appel \\
+\texttt{load\_data()} (desktop\_helpers) & Wrapper Extranat & \texttt{@lru\_cache(maxsize=1)} --- duree de vie du processus \\
+\texttt{UsaswimmingCompetitionsDataLoader} & Parquet \texttt{\_parquet\_cache/} & Construction via \texttt{build\_parquet\_cache()} \\
+\texttt{FrmnatationHtmlResultsDataLoader} & JSON processed Maroc & \texttt{self.\_df\_cache} en memoire apres 1\textsuperscript{re} lecture \\
+\bottomrule
+\end{longtable}
+
+\subsection{Construction du cache Parquet USA}
+
+\begin{enumerate}
+  \item \textbf{Ou}\,: \texttt{UsaswimmingCompetitionsDataLoader.build\_parquet\_cache()} dans \texttt{services/usaswimming\_competitions\_data\_loader.py}.
+  \item \textbf{Quand}\,: au demarrage desktop via \texttt{\_run\_usaswimming\_parquet\_cache\_worker()} dans \texttt{desktop\_flet.py}\,; ou manuellement en important le loader.
+  \item \textbf{Comment}\,: un thread par annee (\texttt{cache\_build\_max\_workers} = \texttt{recommended\_cache\_build\_workers()})\,; chaque annee produit \texttt{\{year\}.parquet}.
+  \item \textbf{Invalidation}\,: incrementale --- les fichiers existants sont ignores sauf si \texttt{overwrite=True}. \textbf{Pas de verification mtime/hash} sur les JSON sources\,: un Parquet obsolete reste servi tant qu'il n'est pas supprime ou reconstruit.
+\end{enumerate}
+
+\subsection{Caches UI desktop (\texttt{desktop\_flet.py})}
+
+\begin{longtable}{@{}p{0.30\textwidth}p{0.35\textwidth}p{0.27\textwidth}@{}}
+\toprule
+\textbf{Cache} & \textbf{Stockage} & \textbf{Invalidation} \\
+\midrule
+\endhead
+\texttt{graph\_render\_registry} & Memoire + \texttt{prefetched\_graphs.json} & Rechargement si mtime JSON change \\
+\texttt{\_event\_swimmers\_cache} & Memoire + \texttt{prefetched\_event\_swimmers.json} & Regenere au demarrage si absent/vide \\
+\texttt{\_scope\_performances\_cache} & OrderedDict LRU (64 entrees) & Vide au changement pays/navigation \\
+\texttt{\_usa\_events\_cache} & Memoire & Prechauffe en thread background \\
+Couloirs prefetch & Memoire uniquement & \texttt{\_write\_corridor\_graphs\_json()} = \textbf{no-op} (desactive) \\
+Index labels Maroc & Memoire & \texttt{\_invalidate\_moroccan\_corridor\_swimmer\_label\_cache()} \\
+\bottomrule
+\end{longtable}
+
+\textbf{Flags de prefetch au demarrage}\,:
+\begin{itemize}
+  \item \texttt{ENABLE\_PERSISTENT\_GRAPH\_CACHE = True}
+  \item \texttt{ENABLE\_NOTEBOOK\_PREFETCH\_ON\_START = True}
+  \item \texttt{ENABLE\_EVENT\_SWIMMERS\_CACHE\_PREFETCH\_ON\_START = True}
+  \item \texttt{ENABLE\_SCOPE\_PERFORMANCES\_CACHE\_PREFETCH\_ON\_START = True}
+  \item \texttt{ENABLE\_CORRIDOR\_CHART\_PREFETCH\_ON\_START = True}
+\end{itemize}
+
+Au premier lancement, l'ecran de chargement affiche \textbf{trois barres} en parallele\,: graphes notebook, index nageurs par epreuve, cache Parquet USA.
+
+\subsection{Cache couloirs (\texttt{corridor\_data.py})}
+
+\texttt{\_PREP\_CACHE}\,: OrderedDict LRU, \textbf{96 entrees max}, cle \texttt{(id(df), event, solo\_only, require\_name)}. La fonction \texttt{prepare\_corridor\_long\_df()} est couteuse sur de gros DataFrames Extranat\,: ce cache evite les recalculs lors du trace repete.
+
+\subsection{Parallelisme adaptatif (\texttt{machine\_workers.py})}
+
+Le module detecte RAM et CPU, classe la machine en profil \emph{modeste} ($<$12\,Go), \emph{standard} (12--28\,Go) ou \emph{haute performance} ($\geq$28\,Go), puis recommande\,:
+\begin{itemize}
+  \item \texttt{recommended\_cache\_build\_workers()} --- taches \texttt{memory\_heavy} (construction Parquet)\,;
+  \item \texttt{recommended\_io\_workers()} --- taches \texttt{io\_bound} (lectures JSON paralleles).
+\end{itemize}
+
+Plafonds conservateurs sur machines modestes pour eviter les OOM lors du chargement d'une annee USA entiere en RAM.
+
+\subsection{Prefetch couloirs (\texttt{corridor\_prefetch.py})}
+
+\texttt{CorridorPrefetchManager} orchestre le pre-rendu des graphiques couloir a partir de \texttt{prefetched\_event\_swimmers.json}. \textbf{Note}\,: \texttt{worker\_count = 1} (parallelisme volontairement limite). L'ecriture disque des couloirs est desactivee cote application (\texttt{\_write\_corridor\_graphs\_json} retourne immediatement).
+
+%======================================================================
+\section{Organisation des modules Python}
+%======================================================================
+
+\subsection{Coeur metier (\texttt{services/})}
+
+Le dossier \texttt{services/} concentre la logique metier\,: scraping, chargement des donnees, graphiques matplotlib et couloirs de performance. Il est importe depuis \texttt{app/} via \texttt{from services....}.
+
+\begin{longtable}{@{}p{0.38\textwidth}p{0.54\textwidth}@{}}
+\toprule
+\textbf{Module} & \textbf{Role et symboles cles} \\
+\midrule
+\endhead
+\texttt{extranat\_service.py} & Scraping ffn.extranat.fr\,: \texttt{http\_get\_with\_retries}, \texttt{get\_competition\_types}, \texttt{get\_results\_for\_competitions\_url}, \texttt{get\_all\_results\_by\_type}, \texttt{main} \\
+\texttt{extranat\_competitions\_data\_loader.py} & \texttt{ExtranatCompetitionsDataLoader.load()}, \texttt{\_build\_rows\_from\_comp} \\
+\texttt{usaswimming\_service.py} & API Sisense JAQL\,: \texttt{load\_bearer\_token}, \texttt{run\_one\_shot\_full\_download}, \texttt{save\_data\_by\_competition} \\
+\texttt{usaswimming\_competitions\_data\_loader.py} & \texttt{build\_parquet\_cache}, \texttt{load} (Parquet only) \\
+\texttt{frmnatation\_html\_results\_data\_loader.py} & \texttt{FrmnatationHtmlResultsDataLoader}\,: \texttt{rows\_for\_swimmer}, \texttt{usa\_overlay\_rows\_for\_swimmer} \\
+\texttt{omega\_service.py} & Telechargement PDF Omega\,: \texttt{download\_total\_ranking\_pdfs\_for\_meet}, \texttt{get\_all\_pdfs\_response} \\
+\texttt{graph\_service.py} & \texttt{ServiceGraphe}, \texttt{DESKTOP\_GRAPH\_MENU}, tous les rendus matplotlib \\
+\texttt{corridor\_data.py} & \texttt{prepare\_corridor\_long\_df}, \texttt{compute\_corridor\_percentiles\_df}, \texttt{resolve\_corridor\_swimmer*} \\
+\texttt{stroke\_labels.py} & \texttt{stroke\_code\_to\_label}, \texttt{format\_event\_label} (libelles FR UI) \\
+\texttt{machine\_workers.py} & Detection profil machine, recommandation workers \\
+\bottomrule
+\end{longtable}
+
+\subsubsection{\texttt{extranat\_service.py} --- scraping France}
+
+\textbf{Role en une phrase}\,: interroge ffn.extranat.fr et ecrit les resultats bruts en JSON sous \texttt{data/raw/extranat/}.
+
+\textbf{Commande}\,: \texttt{python services/extranat\_service.py}
+
+\textbf{Entree}\,: site web Extranat (HTML, formulaires, pagination).
+
+\textbf{Sortie}\,: \texttt{data/raw/extranat/competitions\_per\_type/\{type\}/\{competition\}.json} + resumes dans \texttt{Resumes/}.
+
+\textbf{Etapes}\,: types de competition (\texttt{idtyp}) $\rightarrow$ calendrier $\rightarrow$ resultats par epreuve (splits, MPP) $\rightarrow$ bilan d'erreurs (\texttt{generate\_resume()}).
+
+\textbf{Aval}\,: \texttt{extranat\_preprocessing.py} puis \texttt{ExtranatCompetitionsDataLoader}.
+
+\subsubsection{\texttt{extranat\_competitions\_data\_loader.py} --- chargement France}
+
+\textbf{Role en une phrase}\,: lit les JSON Extranat \textbf{processed} et les aplatit en \texttt{pandas.DataFrame} pour l'UI et les graphiques.
+
+\textbf{Donnees}\,: \texttt{data/processed/extranat/competitions\_per\_type/**/*.json}
+
+\textbf{Fonctions cles}\,: \texttt{load()} (parcours recursif parallele), \texttt{\_build\_rows\_from\_comp()} (competition $\rightarrow$ lignes).
+
+\textbf{Particularites}\,: conserve \texttt{splits} et \texttt{swimmer} au format Extranat (\texttt{list[dict]}).
+
+\subsubsection{\texttt{usaswimming\_service.py} --- scraping USA}
+
+\textbf{Role en une phrase}\,: telecharge les chronos historiques via l'API Sisense USA Swimming Data Hub et les sauvegarde en JSON bruts.
+
+\textbf{Prerequis}\,: \texttt{services/bearer\_token.txt} (genere par \texttt{get\_token\_usaswimming.py}).
+
+\textbf{Sortie}\,: \texttt{data/raw/usaswimming/\{year\}/\{meet\}.json} (liste plate de performances).
+
+\textbf{Fonctions cles}\,: \texttt{run\_one\_shot\_full\_download()}, \texttt{save\_data\_by\_competition()}, \texttt{run\_polling\_loop()} (mises a jour incrementales).
+
+\textbf{Aval}\,: \texttt{usaswimming\_preprocessing.py} puis \texttt{UsaswimmingCompetitionsDataLoader}.
+
+\subsubsection{\texttt{usaswimming\_competitions\_data\_loader.py} --- chargement USA}
+
+\textbf{Role en une phrase}\,: convertit les JSON processed USA en cache Parquet annuel, puis charge exclusivement ce cache en DataFrame.
+
+\textbf{Donnees}\,: \texttt{data/processed/usaswimming/} $\rightarrow$ \texttt{\_parquet\_cache/\{year\}.parquet}
+
+\textbf{Fonctions cles}\,: \texttt{build\_parquet\_cache()} (construction, appelee au demarrage UI), \texttt{load()} (\textbf{Parquet only}, jamais les JSON a la volee).
+
+\textbf{Particularites}\,: colonne \texttt{swimmer} serialisee en chaine JSON dans le Parquet\,: volume USA tres eleve, lecture optimisee obligatoire.
+
+\subsubsection{\texttt{frmnatation\_html\_results\_data\_loader.py} --- chargement Maroc}
+
+\textbf{Role en une phrase}\,: charge les JSON marocains processed et expose les nageurs pour l'overlay dans l'UI desktop.
+
+\textbf{Donnees}\,: \texttt{data/processed/frmnatation/html\_results/*.json}
+
+\textbf{Fonctions cles}\,: \texttt{load()} (cache memoire), \texttt{list\_swimmer\_labels()}, \texttt{rows\_for\_swimmer()}, \texttt{usa\_overlay\_rows\_for\_swimmer()}.
+
+\textbf{Particularites}\,: le Maroc n'est \textbf{pas} un peloton de reference pour les couloirs\,: sert uniquement a superposer un nageur marocain (courbe verte) sur les couloirs France ou USA.
+
+\subsubsection{\texttt{omega\_service.py} --- PDF Omega Timing}
+
+\textbf{Role en une phrase}\,: parcourt omegatiming.com et telecharge les PDF "\,Total Ranking\," natation par annee de competition.
+
+\textbf{Commande}\,: \texttt{python -m services.omega\_service}
+
+\textbf{Prerequis}\,: \texttt{cookies\_omegatiming.txt} a la racine (session Playwright).
+
+\textbf{Sortie}\,: \texttt{data/raw/omega/pdfs/\{year\}/*.pdf} --- \textbf{stockage seul}, pas de parsing ni lien avec le pipeline Maroc FRM.
+
+\textbf{API}\,: expose aussi via \texttt{GET /omega/pdfs} et \texttt{GET /omega/pdfs/by-years}.
+
+\subsection{Interface (\texttt{app/interfaces/})}
+
+\begin{itemize}
+  \item \texttt{desktop\_flet.py} --- classe \texttt{PacingDesktopApp}\,: navigation, filtres, rendu graphiques, orchestration prefetch, overlay nageur marocain.
+  \item \texttt{desktop\_helpers.py} --- \texttt{load\_data()} (cache LRU), combinaisons d'epreuves, conversion matplotlib$\rightarrow$base64.
+  \item \texttt{swimmer\_search.py} --- widget autocompletion nageur.
+  \item \texttt{loading\_progress.py} --- composants UI barres de progression triple prefetch.
+  \item \texttt{corridor\_prefetch.py} --- \texttt{CorridorPrefetchManager}.
+\end{itemize}
+
+\subsection{API (\texttt{app/main.py}, \texttt{app/routers/})}
+
+Endpoints exposes\,:
+\begin{itemize}
+  \item \texttt{GET /} --- sante API\,;
+  \item \texttt{GET /extranat/results} --- lance un scraping complet Extranat (long\,!) via \texttt{get\_all\_results\_grouped\_by\_event\_by\_type}\,;
+  \item \texttt{GET /omega/pdfs} --- liste/telecharge PDF Omega\,;
+  \item \texttt{GET /omega/pdfs/by-years?start\_year=\&end\_year=} --- plage d'annees\,;
+  \item \texttt{GET /usaswimming/results} --- telechargement + agregation\,: HTTP 503 si echec.
+\end{itemize}
+
+\subsection{Scripts ETL (\texttt{app/scripts/})}
+
+Scripts batch \texttt{raw $\rightarrow$ processed}, invoques en module Python (\texttt{python -m app.scripts....}) depuis la racine du depot. Aucun de ces scripts n'est importe par l'UI desktop\,: ils s'executent manuellement apres le scraping (ou en maintenance).
+
+\subsubsection{\texttt{extranat\_preprocessing.py} --- France}
+
+\textbf{Role}\,: convertir les JSON bruts Extranat (champs francais, structure scraper) vers le \textbf{schema unifie Pacing} (Meet, Event, SwimTimeSeconds, \ldots).
+
+\textbf{Entree}\,: \texttt{data/raw/extranat/competitions\_per\_type/**/*.json} (produits par \texttt{extranat\_service.py}).
+
+\textbf{Sortie}\,: \texttt{data/processed/extranat/competitions\_per\_type/} (meme arborescence relative).
+
+\textbf{Commande}\,: \texttt{python -m app.scripts.extranat\_preprocessing}
+
+\textbf{Fonctions cles}\,:
+\begin{itemize}
+  \item \texttt{clean\_extranat\_directory()} --- parcours recursif de tous les JSON bruts\,;
+  \item \texttt{clean\_extranat\_competition()} --- transformation d'une competition (metadonnees, epreuves, performances)\,;
+  \item \texttt{format\_extranat\_event\_name()} --- libelle unifie type \texttt{"200 FR LCM"}\,;
+  \item \texttt{parse\_swim\_time\_to\_seconds()} / \texttt{clean\_extranat\_split\_time()} --- chronos et splits\,;
+  \item \texttt{infer\_extranat\_gender\_from\_filename()} --- genre par defaut depuis le suffixe \texttt{-Dames}/\texttt{-Messieurs} du nom de fichier.
+\end{itemize}
+
+\textbf{Transformations principales}\,: \texttt{name} $\rightarrow$ \texttt{Meet}\,; suppression des epreuves "\,temps cumules\,"\,; parsing MPP/splits\,; exclusion YOB invalides et splits aberrants.
+
+\textbf{Consommateur aval}\,: \texttt{ExtranatCompetitionsDataLoader.load()} et l'UI desktop.
+
+\subsubsection{\texttt{usaswimming\_preprocessing.py} --- USA}
+
+\textbf{Role}\,: nettoyer les listes plates de performances API USA Swimming et les \textbf{regrouper par competition} au format unifie (competition $\rightarrow$ epreuves $\rightarrow$ performances).
+
+\textbf{Entree}\,: \texttt{data/raw/usaswimming/**/*.json} (un fichier = liste de \texttt{NageurRecord}, produite par \texttt{usaswimming\_service.py}).
+
+\textbf{Sortie}\,: \texttt{data/processed/usaswimming/} (un JSON par competition, arborescence conservee).
+
+\textbf{Commande}\,: \texttt{python -m app.scripts.usaswimming\_preprocessing}
+
+\textbf{Fonctions cles}\,:
+\begin{itemize}
+  \item \texttt{clean\_usaswimming\_directory()} --- batch recursif raw $\rightarrow$ processed\,;
+  \item \texttt{clean\_file()} --- regroupement par \texttt{(Event, Session)} en epreuves\,;
+  \item \texttt{clean\_record()} --- validation nom, dates, genre, pays, calcul \texttt{SwimTimeSeconds} / \texttt{Speed}\,;
+  \item \texttt{compute\_status\_from\_swim\_time()} --- statuts DNS/DSQ/DNF/OK.
+\end{itemize}
+
+\textbf{Champs USA conserves}\,: \texttt{TimeStandard}, \texttt{Session}, \texttt{AgeGroup}.
+
+\textbf{Consommateur aval}\,: \texttt{UsaswimmingCompetitionsDataLoader.build\_parquet\_cache()} puis \texttt{load()}.
+
+\subsubsection{\texttt{frmnatation\_preprocessing.py} --- Maroc}
+
+\textbf{Role}\,: filtrer et normaliser les JSON FRM Natation depuis \textbf{deux sources raw}, puis ecrire un schema unifie unique.
+
+\textbf{Entrees}\,:
+\begin{itemize}
+  \item \texttt{data/raw/frmnatation/html\_results/*.json} --- JSON proches du schema unifie (HTML externe)\,;
+  \item \texttt{data/raw/frmnatation/json\_from\_pdfs\_llamaextract/*.json} --- JSON tabulaires LlamaExtract (PDF).
+\end{itemize}
+
+\textbf{Sortie}\,: \texttt{data/processed/frmnatation/html\_results/} (meme nom de fichier pour les deux sources).
+
+\textbf{Commande}\,: \texttt{python -m app.scripts.frmnatation\_preprocessing} (appelle \texttt{preprocess\_all\_frmnatation\_directories()}).
+
+\textbf{Fonctions cles}\,:
+\begin{itemize}
+  \item \texttt{preprocess\_all\_frmnatation\_directories()} --- batch HTML puis LlamaExtract\,;
+  \item \texttt{llamaextract\_to\_competition()} --- conversion \texttt{tables[]} $\rightarrow$ \texttt{epreuves/performances}\,;
+  \item \texttt{preprocess\_competition()} --- filtrage + normalisation d'une competition\,;
+  \item \texttt{normalize\_frm\_name()} --- format \texttt{NOM MAJUSCULE + Prenom} (particules EL, AIT, \ldots)\,;
+  \item \texttt{normalize\_stroke\_code()} --- DOS$\rightarrow$BK, PAP$\rightarrow$FL, 4N$\rightarrow$IM\,;
+  \item \texttt{age\_to\_age\_group()} --- ajout categorie d'age USA (\texttt{13-14}, \texttt{19 \& Over}, \ldots).
+\end{itemize}
+
+\textbf{Filtrage}\,: suppression des performances sans \texttt{SwimTimeSeconds} valide. Les \texttt{splits} restent vides (pas de pacing Maroc).
+
+\textbf{LlamaExtract}\,: les epreuves PDF utilisent \texttt{Event=PDF\_TABLE\_NNN} faute de distance/nage dans les tableaux source.
+
+\textbf{Modele Pydantic associe}\,: \texttt{app/models/frmn\_models.py} (\texttt{FrmCompetition}) pour validation optionnelle.
+
+\textbf{Consommateur aval}\,: \texttt{FrmnatationHtmlResultsDataLoader.load()} (overlay nageur marocain dans l'UI).
+
+\subsubsection{\texttt{get\_token\_usaswimming.py} --- authentification USA}
+
+\textbf{Role}\,: obtenir le token Bearer pour l'API USA Swimming Data Hub via Playwright (hors pipeline ETL de donnees).
+
+\textbf{Sorties}\,: \texttt{services/state.json} (session/cookies) et \texttt{services/bearer\_token.txt} (en-tete \texttt{Authorization}).
+
+\textbf{Commande}\,: \texttt{python app/scripts/get\_token\_usaswimming.py}
+
+\textbf{Flux}\,:
+\begin{enumerate}
+  \item \textbf{Premiere execution} --- navigateur visible, connexion manuelle sur \url{https://data.usaswimming.org}, sauvegarde de \texttt{state.json}\,;
+  \item \textbf{Executions suivantes} --- Chromium headless avec \texttt{state.json}, interception reseau du Bearer\,;
+  \item \textbf{Fallback} --- mode visible si la capture headless echoue.
+\end{enumerate}
+
+\textbf{Consommateur}\,: \texttt{usaswimming\_service.py} lit \texttt{services/bearer\_token.txt} a la racine du depot.
+
+\textbf{Attention (bug connu)}\,: le script calcule \texttt{\_SERVICES\_DIR} comme \texttt{app/services/} (parent relatif a \texttt{app/scripts/}), alors que \texttt{usaswimming\_service.py} attend \texttt{services/bearer\_token.txt} a la racine. Verifier manuellement l'emplacement du token apres generation.
+
+\subsection{Modeles (\texttt{app/models/})}
+
+Validation Pydantic v2 des JSON bruts avant ou pendant le pretraitement. Les \texttt{idtyp} Extranat sont lus dynamiquement par \texttt{get\_competition\_types()} dans \texttt{extranat\_service.py} (voir annexe).
+
+\subsection{Visualisation (\texttt{app/visualization/})}
+
+Notebooks Jupyter \textbf{independants de l'UI desktop Flet}\,: zone de prototypage et de validation visuelle. Les graphiques matures sont factorises dans \texttt{services/graph\_service.py} (\texttt{ServiceGraphe}, \texttt{Graphe1}...\texttt{Graphe29}) et consommes par \texttt{desktop\_flet.py}.
+
+\textbf{Lancement}\,: \texttt{jupyter notebook app/visualization/} depuis la racine \texttt{Pacing/}.
+
+\subsubsection{\texttt{setup\_env.py}}
+
+\textbf{Role}\,: bootstrap Python pour les notebooks (equivalent de \texttt{ensure\_project\_imports()} pour l'UI).
+
+\textbf{Fonction exportee}\,: \texttt{ensure\_project\_root()} --- remonte l'arborescence depuis le repertoire courant, charge \texttt{app/interfaces/project\_path.py} et ajoute la racine du depot a \texttt{sys.path} pour permettre \texttt{from services....}.
+
+\textbf{Usage typique dans un notebook}\,:
+\begin{lstlisting}
+from setup_env import ensure_project_root
+PROJECT_DIR = ensure_project_root()
+\end{lstlisting}
+
+\textbf{Note}\,: \texttt{graphics.ipynb} utilise parfois un chemin \texttt{PROJECT\_ROOT} code en dur\,: preferer \texttt{setup\_env} pour la portabilite (comme \texttt{graphics\_frmnatation.ipynb}).
+
+\subsubsection{\texttt{graphics.ipynb} --- Extranat / USA Swimming}
+
+\textbf{Role}\,: bac a sable pour tester \textbf{tous les types de graphiques} (\texttt{Graphe1} a \texttt{Graphe29}) avant integration dans l'application desktop.
+
+\textbf{Donnees}\,: charge les JSON processed Extranat via \texttt{ExtranatCompetitionsDataLoader} (\texttt{data/processed/extranat/competitions\_per\_type/}).
+
+\textbf{Contenu typique}\,:
+\begin{itemize}
+  \item import et \texttt{importlib.reload} de \texttt{services.graph\_service}\,;
+  \item filtrage par epreuve (\texttt{Event}, genre, distance)\,;
+  \item appels \texttt{ServiceGraphe().build\_figure(GrapheN, df)} pour histogrammes, camemberts, courbes d'evolution, splits, couloirs de performance (\texttt{Graphe27}--\texttt{Graphe29}), etc.
+\end{itemize}
+
+\textbf{Relation avec l'UI}\,: les \texttt{GraphSpec} valides ici sont references par cle dans \texttt{graph\_service.GRAPHES\_PAR\_KEY} et prefetches au demarrage de \texttt{desktop\_flet.py}.
+
+\subsubsection{\texttt{graphics\_frmnatation.ipynb} --- Maroc (FRM Natation)}
+
+\textbf{Role}\,: exploration des donnees marocaines \textbf{sans passer par} \texttt{graph\_service} (volume faible, pas de splits).
+
+\textbf{Donnees}\,: \texttt{data/processed/frmnatation/html\_results/*.json} via \texttt{ensure\_project\_root()}.
+
+\textbf{Contenu typique}\,:
+\begin{itemize}
+  \item fonctions locales \texttt{\_competition\_to\_rows()} et \texttt{load\_html\_results()} --- aplatissement JSON $\rightarrow$ \texttt{pandas.DataFrame} (meme logique que \texttt{FrmnatationHtmlResultsDataLoader})\,;
+  \item statistiques descriptives (nombre de lignes, competitions, nageurs)\,;
+  \item visualisations ad hoc matplotlib/pandas sur les chronos marocains.
+\end{itemize}
+
+\textbf{Limite}\,: ne couvre pas l'overlay "\,Nageur marocain (MAR)\," sur couloirs France/USA\,: ce cas est gere uniquement dans l'UI desktop (\texttt{usa\_overlay\_rows\_for\_swimmer()}).
+
+%======================================================================
+\section{Dependances et environnement}
+%======================================================================
+
+\subsection{Gestionnaire de paquets}
+
+\textbf{pip + requirements.txt} uniquement. Pas de \texttt{pyproject.toml}, \texttt{setup.py}, conda (\texttt{environment.yml}) ni lockfile (\texttt{poetry.lock}, \texttt{pip-tools}).
+
+\subsection{Versions requises}
+
+\begin{longtable}{@{}p{0.35\textwidth}p{0.20\textwidth}p{0.35\textwidth}@{}}
+\toprule
+\textbf{Paquet} & \textbf{Version min.} & \textbf{Usage} \\
+\midrule
+\endhead
+Python & 3.10+ & Langage \\
+fastapi & $\geq$0.100.0 & API REST \\
+uvicorn[standard] & $\geq$0.22.0 & Serveur ASGI \\
+pydantic & $\geq$2.0.0 & Modeles \\
+requests & $\geq$2.31.0 & HTTP scraping \\
+beautifulsoup4 & $\geq$4.12.0 & Parsing HTML \\
+playwright & $\geq$1.40.0 & Auth Omega, token USA \\
+pandas & $\geq$2.0.0 & DataFrames \\
+pyarrow & $\geq$14.0.0 & Parquet \\
+numpy & $\geq$1.24.0 & Calculs numeriques \\
+matplotlib & $\geq$3.7.0 & Graphiques \\
+seaborn & $\geq$0.13.0 & Graphiques \\
+flet, flet-desktop & $\geq$0.24.0 & UI desktop \\
+jupyter, notebook, ipykernel & $\geq$1.0 / 7.0 / 6.25 & Notebooks \\
+\bottomrule
+\end{longtable}
+
+\subsection{Installation standard}
+
+\begin{lstlisting}
+cd Pacing/
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+playwright install chromium
+\end{lstlisting}
+
+\subsection{Dependance systeme}
+
+\textbf{Chromium} via Playwright\,: requis pour Omega (cookies) et USA Swimming (capture token Bearer).
+
+\subsection{Fichiers secrets}
+\label{sec:secrets}
+
+\begin{itemize}
+  \item \texttt{services/bearer\_token.txt} --- lu par \texttt{usaswimming\_service.load\_bearer\_token()}\,;
+  \item \texttt{services/state.json} --- session Playwright pour \texttt{get\_token\_usaswimming.py}\,;
+  \item \texttt{cookies\_omegatiming.txt} --- a la racine du projet, lu par \texttt{omega\_service}.
+\end{itemize}
+
+%======================================================================
+\section{Pipeline de preparation --- France (Extranat)}
+%======================================================================
+
+\subsection{Etape 1 --- Scraping}
+
+\textbf{Module}\,: \texttt{services/extranat\_service.py}
+
+\textbf{Commande}\,: \texttt{python services/extranat\_service.py}
+
+\textbf{Flux}\,:
+\begin{enumerate}
+  \item \texttt{get\_competition\_types()} --- lit le \texttt{<select id=liste\_type>} sur ffn.extranat.fr\,;
+  \item \texttt{get\_competitions\_for\_url()} --- pagination du calendrier par \texttt{idtyp}\,;
+  \item \texttt{get\_results\_for\_competitions\_url()} --- formulaire par epreuve, parsing tableaux HTML (splits, MPP)\,;
+  \item \texttt{get\_all\_results\_by\_type()} / \texttt{main()} --- orchestration\,: types $\rightarrow$ competitions $\rightarrow$ resultats\,;
+  \item \texttt{generate\_resume()} --- bilan d'erreurs dans \texttt{data/raw/extranat/Resumes/}.
+\end{enumerate}
+
+\textbf{Sortie}\,: \texttt{data/raw/extranat/competitions\_per\_type/\{type\}/\{competition\}.json}
+
+\textbf{Resilience HTTP}\,: \texttt{http\_get\_with\_retries} avec backoff exponentiel\,: retries sur 403, 429, 5xx\,: mode \texttt{retry\_forever} pour pages critiques\,: recreation periodique de session \texttt{requests}.
+
+\subsection{Etape 2 --- Pretraitement}
+
+\textbf{Module}\,: \texttt{app/scripts/extranat\_preprocessing.py}
+
+\textbf{Commande}\,: \texttt{python -m app.scripts.extranat\_preprocessing}
+
+\textbf{Transformations principales}\,:
+\begin{itemize}
+  \item Renommage \texttt{name $\rightarrow$ Meet}, normalisation dates/lieux/pays/bassin\,;
+  \item Conversion noms d'epreuves vers \texttt{"200 FR LCM"}\,;
+  \item Parsing chronos, calcul \texttt{SwimTimeSeconds} et \texttt{Speed}\,;
+  \item Extraction nageurs (\texttt{parse\_name\_year\_nationality})\,;
+  \item Traitement splits avec filtre \texttt{SPLIT\_SECONDS\_MIN=20}, \texttt{SPLIT\_SECONDS\_MAX=120}\,;
+  \item Exclusion YOB invalides\,;
+  \item Suppression doublons suspects \texttt{1 LCM/SCM}.
+\end{itemize}
+
+\textbf{Sortie}\,: \texttt{data/processed/extranat/competitions\_per\_type/} (meme arborescence que raw).
+
+\subsection{Etape 3 --- Chargement et consommation}
+
+\texttt{ExtranatCompetitionsDataLoader.load()} $\rightarrow$ DataFrame pandas.
+
+Consomme par\,: \texttt{desktop\_helpers.load\_data()}, \texttt{ServiceGraphe}, \texttt{corridor\_data}, interface desktop (peloton de reference France).
+
+%======================================================================
+\section{Pipeline de preparation --- USA (USA Swimming)}
+%======================================================================
+
+\subsection{Etape 1 --- Authentification}
+
+\textbf{Module}\,: \texttt{app/scripts/get\_token\_usaswimming.py}
+
+\textbf{Flux}\,:
+\begin{enumerate}
+  \item Premiere execution\,: navigateur visible, connexion manuelle sur \url{https://data.usaswimming.org}, sauvegarde \texttt{services/state.json}\,;
+  \item Executions suivantes\,: mode headless, interception reseau de l'en-tete \texttt{Authorization: Bearer ...}\,;
+  \item Ecriture dans \texttt{services/bearer\_token.txt}.
+\end{enumerate}
+
+\textbf{Attention (bug connu)}\,: le script calcule \texttt{\_SERVICES\_DIR} comme \texttt{app/services/} (parent relatif a \texttt{app/scripts/}), alors que \texttt{usaswimming\_service.py} lit \texttt{services/bearer\_token.txt} a la racine. Verifier manuellement l'emplacement du token apres generation.
+
+\subsection{Etape 2 --- Scraping API}
+
+\textbf{Module}\,: \texttt{services/usaswimming\_service.py}
+
+\textbf{Commande}\,: \texttt{python services/usaswimming\_service.py}
+
+\textbf{Flux}\,:
+\begin{enumerate}
+  \item Endpoint JAQL Sisense\,: \texttt{USA Swimming Times Elasticube}\,;
+  \item \texttt{run\_one\_shot\_full\_download()} --- fenetres de dates paginees par annee\,;
+  \item En cas de \texttt{SafeModeException} (limite serveur $\sim$30\,s)\,: subdivision semestre puis mois\,;
+  \item \texttt{save\_data\_by\_competition()} --- un JSON par competition/reunion.
+\end{enumerate}
+
+\textbf{Sortie}\,: \texttt{data/raw/usaswimming/\{year\}/\{meet\}.json}
+
+\subsection{Etape 3 --- Pretraitement}
+
+\textbf{Module}\,: \texttt{app/scripts/usaswimming\_preprocessing.py}
+
+\textbf{Commande}\,: \texttt{python -m app.scripts.usaswimming\_preprocessing}
+
+\textbf{Transformations}\,:
+\begin{itemize}
+  \item \texttt{clean\_record()} --- validation nom, dates, chronos, genre, pays\,;
+  \item \texttt{clean\_file()} --- regroupement par \texttt{(Event, Session)} au format unifie competition$\rightarrow$epreuves$\rightarrow$performances\,;
+  \item \texttt{clean\_usaswimming\_directory()} --- parcours recursif de \texttt{data/raw/usaswimming/}.
+\end{itemize}
+
+\textbf{Sortie}\,: \texttt{data/processed/usaswimming/\{year\}/*.json}
+
+\subsection{Etape 4 --- Cache Parquet}
+
+\textbf{Module}\,: \texttt{services/usaswimming\_competitions\_data\_loader.py}
+
+\textbf{Methode}\,: \texttt{build\_parquet\_cache(years=..., overwrite=False)}
+
+\textbf{Note README}\,: le fichier \texttt{services/build\_usaswimming\_parquet\_cache.py} mentionne dans le README \textbf{n'existe pas}. La construction se fait via le loader ou au demarrage desktop.
+
+\textbf{Sortie}\,: \texttt{data/processed/usaswimming/\_parquet\_cache/\{year\}.parquet}
+
+\subsection{Etape 5 --- Chargement runtime}
+
+\texttt{UsaswimmingCompetitionsDataLoader.load(years, columns, event)} --- \textbf{Parquet uniquement}.
+
+%======================================================================
+\section{Pipeline de preparation --- Maroc (FRM Natation)}
+%======================================================================
+
+\subsection{Etape 0 --- Sources brutes (hors depot)}
+
+\textbf{Aucun scraper FRM Natation n'est present dans ce depot.}
+
+Deux jeux de donnees brutes peuvent exister sous \texttt{data/raw/frmnatation/}\,:
+
+\begin{enumerate}
+  \item \textbf{\texttt{html\_results/*.json}}\,: un fichier JSON par competition, produit par conversion HTML $\rightarrow$ JSON externe. Format deja proche du schema unifie.
+  \item \textbf{\texttt{json\_from\_pdfs\_llamaextract/*.json}}\,: JSON extraits de PDF via \textbf{LlamaExtract} (\texttt{source\_file}, \texttt{tables[]}). Environ 140 fichiers en local.
+\end{enumerate}
+
+Les deux sources sont traitees par \texttt{frmnatation\_preprocessing.py} (point d'entree \texttt{preprocess\_all\_frmnatation\_directories()}) et convergent vers \texttt{data/processed/frmnatation/html\_results/}.
+
+\subsection{Etape 1 --- Pretraitement}
+
+\textbf{Module}\,: \texttt{app/scripts/frmnatation\_preprocessing.py}
+
+\textbf{Commande}\,: \texttt{python -m app.scripts.frmnatation\_preprocessing}
+
+\textbf{Transformations}\,:
+\begin{itemize}
+  \item Conversion LlamaExtract (\texttt{llamaextract\_to\_competition})\,: tables PDF $\rightarrow$ schema unifie\,;
+  \item Suppression performances sans \texttt{SwimTimeSeconds} valide\,;
+  \item Normalisation noms \texttt{normalize\_frm\_name} (NOM MAJUSCULE + prenom casse titre, particules EL, AIT, BEN, ...)\,;
+  \item Conversion codes nage FRM$\rightarrow$EN (DOS$\rightarrow$BK, PAP$\rightarrow$FL, 4N$\rightarrow$IM)\,;
+  \item Reconstruction libelle \texttt{Event} (\texttt{"100 BK LCM"})\,;
+  \item Ajout \texttt{AgeGroup} USA Swimming a partir de l'age (\texttt{age\_to\_age\_group})\,;
+  \item Resolution homonymes\,: si YOB absent, mode statistique sur les occurrences du nom.
+\end{itemize}
+
+\textbf{Sortie}\,: \texttt{data/processed/frmnatation/html\_results/}
+
+\subsection{Etape 2 --- Chargement}
+
+\textbf{Module}\,: \texttt{services/frmnatation\_html\_results\_data\_loader.py}
+
+\texttt{FrmnatationHtmlResultsDataLoader.load()} --- lecture parallele JSON, cache memoire \texttt{\_df\_cache}.
+
+\subsection{Role dans l'application}
+
+Le Maroc n'est \textbf{pas} un peloton de reference pour les couloirs. Il sert d'\textbf{overlay}\,: superposition d'un nageur marocain (courbe verte, libelle "\,Nageur marocain (MAR)\,") sur les couloirs France ou USA.
+
+Methodes cles\,: \texttt{rows\_for\_swimmer()}, \texttt{usa\_overlay\_rows\_for\_swimmer()}, \texttt{list\_swimmer\_labels()}.
+
+\textbf{Limitation}\,: pas de splits\,: les graphiques de pacing par segments ne sont pas disponibles pour les nageurs marocains.
+
+%======================================================================
+\section{Traitement des PDF}
+%======================================================================
+
+\subsection{Clarification --- Maroc et PDF}
+
+Le pipeline Maroc dans l'application est\,: raw (\texttt{html\_results/} \textbf{ou} \texttt{json\_from\_pdfs\_llamaextract/}) $\rightarrow$ \texttt{frmnatation\_preprocessing.py} $\rightarrow$ \texttt{processed/html\_results/} $\rightarrow$ loader.
+
+\textbf{Cas particulier PDF Maroc}\,: \texttt{json\_from\_pdfs\_llamaextract/} contient des JSON issus de PDF de competitions marocaines (LlamaExtract). Ce n'est \textbf{pas} le pipeline Omega Timing (\texttt{data/raw/omega/pdfs/}). La conversion PDF $\rightarrow$ JSON est externe\,: seul le pretraitement Pacing (\texttt{llamaextract\_to\_competition}) est dans le depot.
+
+Si l'on parle de "\,PDF marocains\," au sens large (resultats de competitions internationales incluant des nageurs marocains), seule la source \textbf{Omega Timing} telecharge des PDF\,: ils ne sont pas parses ni relies au pipeline Maroc FRM.
+
+\subsection{Pipeline Omega Timing (PDF)}
+
+\textbf{Module}\,: \texttt{services/omega\_service.py}
+
+\textbf{Commande}\,: \texttt{python -m services.omega\_service}
+
+\textbf{Flux}\,:
+\begin{enumerate}
+  \item \textbf{Authentification}\,: cookies Chromium serialises dans \texttt{cookies\_omegatiming.txt} (rafraichissement Playwright si expires)\,;
+  \item \textbf{Index annuel}\,: page \texttt{/sports-timing-live-results/\{year\}}, extraction liens "\,Swimming\,"\,;
+  \item \textbf{Page competition}\,: trois strategies CSS pour trouver les liens PDF "\,Total Ranking\,"\,;
+  \item \textbf{Telechargement}\,: ecriture binaire dans \texttt{data/raw/omega/pdfs/\{year\}/}.
+\end{enumerate}
+
+\textbf{Traitements speciaux}\,:
+\begin{itemize}
+  \item Annees $<$ 2010\,: timeouts reduits (\texttt{TIMEOUT\_OLD\_YEARS = 15\,s})\,;
+  \item Annee 2000\,: URLs de secours hardcodees (\texttt{DIRECT\_COMPETITION\_URLS})\,;
+  \item Plage par defaut\,: 2000--2026.
+\end{itemize}
+
+\textbf{Ce que le pipeline ne fait pas}\,:
+\begin{itemize}
+  \item Extraction de texte ou de tableaux depuis les PDF\,;
+  \item Conversion PDF $\rightarrow$ JSON\,;
+  \item Integration dans \texttt{graph\_service} ou les couloirs\,;
+  \item Liaison automatique avec FRM Natation ou Extranat.
+\end{itemize}
+
+Les PDF Omega constituent une \textbf{archive locale} utilisable pour un futur parser, mais aucun code d'ingestion n'existe a ce jour.
+
+\subsection{API Omega}
+
+\begin{itemize}
+  \item \texttt{GET /omega/pdfs} --- reponse agregee via \texttt{get\_all\_pdfs\_response}\,;
+  \item \texttt{GET /omega/pdfs/by-years?start\_year=X\&end\_year=Y} --- collecte ciblee (\texttt{execute=True}).
+\end{itemize}
+
+%======================================================================
+\section{Points fragiles, limites et erreurs connues}
+%======================================================================
+
+\subsection{Donnees et pipelines}
+
+\begin{longtable}{@{}p{0.30\textwidth}p{0.62\textwidth}@{}}
+\toprule
+\textbf{Probleme} & \textbf{Impact / contournement} \\
+\midrule
+\endhead
+Dossier \texttt{data/} absent & Application vide\,: "\,Aucune donnee trouvee\,", DataFrames vides. Recreer l'arborescence et executer scraping + pretraitement. \\
+Scraper FRM absent & Impossible de produire \texttt{data/raw/frmnatation/html\_results/} depuis ce depot. \\
+JSON LlamaExtract sans Event reel & Epreuves \texttt{PDF\_TABLE\_NNN}\,: filtrage par \texttt{100 FR LCM} impossible pour ces fichiers\,: recherche nageur par nom toujours possible. \\
+PDF Omega non parses & Telechargement uniquement\,: aucune analyse automatisee des PDF. \\
+README obsolete & Reference \texttt{build\_usaswimming\_parquet\_cache.py} inexistant\,: utiliser \texttt{build\_parquet\_cache()}. \\
+Parquet USA manquant & Couloirs USA vides\,: lancer desktop (construction auto) ou \texttt{build\_parquet\_cache()}. \\
+Parquet stale & Pas de rebuild auto si JSON sources changent\,: supprimer \texttt{\_parquet\_cache/} ou \texttt{overwrite=True}. \\
+Splits Maroc absents & Graphiques pacing/splits limites pour overlay marocain. \\
+Erreurs JSON silencieuses & Loaders retournent \texttt{[]} sur \texttt{except}\,: fichiers corrompus ignores sans alerte. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Scraping et authentification}
+
+\begin{itemize}
+  \item \textbf{Extranat}\,: protection anti-bot (403/429)\,: delais, \texttt{retry\_forever}, changement de session\,: fragilite aux changements HTML du site FFN.
+  \item \textbf{USA Swimming}\,: expiration token Bearer\,: relancer \texttt{get\_token\_usaswimming.py}\,: \texttt{SafeModeException} force subdivision temporelle\,: incoherence chemin token (\texttt{app/services/} vs \texttt{services/}).
+  \item \textbf{Omega}\,: expiration cookies\,: variantes de mise en page\,: annees anciennes souvent inaccessibles.
+\end{itemize}
+
+\subsection{Qualite des donnees}
+
+\begin{itemize}
+  \item Filtre splits Extranat\,: 20--120\,s par segment (exclut valeurs aberrantes)\,;
+  \item Relais vs solo\,: logique couloir souvent en \texttt{solo\_only=True} (premier nageur de la liste)\,;
+  \item Doublons \texttt{1 LCM/SCM} supprimes en pretraitement Extranat\,;
+  \item Homonymes FRM\,: resolution par mode de \texttt{Year\_of\_birth}.
+\end{itemize}
+
+\subsection{Performance et memoire}
+
+\begin{itemize}
+  \item Construction Parquet\,: plafond workers via \texttt{machine\_workers} (evite OOM)\,;
+  \item Cache scope performances\,: 64 entrees LRU\,;
+  \item Cache corridor prep\,: 96 entrees LRU\,;
+  \item Prefetch couloirs\,: 1 worker (desactivation parallelisme)\,;
+  \item Dataset USA volumineux\,: privilegier projection colonnes + filtre \texttt{Event} a la lecture Parquet.
+\end{itemize}
+
+\subsection{Caches UI}
+
+\begin{itemize}
+  \item \texttt{\_write\_corridor\_graphs\_json()} desactive\,: couloirs prefetch = memoire seulement\,;
+  \item Cache FRM\,: pas d'invalidation si fichiers JSON processed mis a jour pendant l'execution (redemarrer l'app)\,;
+  \item \texttt{load\_data()} Extranat\,: cache processus entier\,: redemarrer pour recharger apres mise a jour processed.
+\end{itemize}
+
+\subsection{Messages d'erreur utilisateur (code)}
+
+\begin{itemize}
+  \item \texttt{"Nageur marocain introuvable : \{name\}"} --- \texttt{graph\_service.py}\,;
+  \item \texttt{"Cache Parquet USA Swimming introuvable"} --- guide utilisateur / UI\,;
+  \item Overlay Maroc echoue si\,: relais uniquement, chrono manquant, age non exploitable\,;
+  \item API USA\,: HTTP 503 si \texttt{run\_one\_shot\_full\_download} echoue\,;
+  \item \texttt{get\_token\_usaswimming.py}\,: \texttt{FileNotFoundError} si \texttt{state.json} absent en mode headless.
+\end{itemize}
+
+%======================================================================
+\section{Checklist de reprise rapide}
+%======================================================================
+
+Pour reprendre le projet apres une longue interruption\,:
+
+\begin{enumerate}
+  \item Cloner le depot, creer \texttt{.venv}, installer \texttt{requirements.txt}, \texttt{playwright install chromium}.
+  \item Verifier la presence de \texttt{data/processed/} pour chaque source utilisee (Extranat, USA, Maroc).
+  \item Pour USA\,: verifier \texttt{services/bearer\_token.txt} et \texttt{\_parquet\_cache/}. Reconstruire si necessaire.
+  \item Pour Omega\,: verifier \texttt{cookies\_omegatiming.txt}.
+  \item Lancer \texttt{python app/interfaces/desktop\_flet.py} et attendre la fin du triple prefetch.
+  \item En cas de donnees vides\,: enchainer scraping $\rightarrow$ pretraitement $\rightarrow$ rebuild Parquet (USA).
+  \item Consulter \texttt{docs/guide\_utilisateur\_pacing.tex} pour l'usage fonctionnel cote utilisateur final.
+\end{enumerate}
+
+\subsection{Chaine de dependances par pays}
+
+\begin{lstlisting}
+France:
+  extranat_service.main()
+    -> extranat_preprocessing.clean_extranat_directory()
+    -> ExtranatCompetitionsDataLoader.load()
+    -> desktop_helpers.load_data()
+
+USA:
+  get_token_usaswimming.py
+    -> usaswimming_service.run_one_shot_full_download()
+    -> usaswimming_preprocessing.clean_usaswimming_directory()
+    -> UsaswimmingCompetitionsDataLoader.build_parquet_cache()
+    -> UsaswimmingCompetitionsDataLoader.load()
+
+Maroc:
+  [HTML->JSON externe]  -> data/raw/frmnatation/html_results/
+  [PDF->JSON LlamaExtract externe]  -> data/raw/frmnatation/json_from_pdfs_llamaextract/
+    -> frmnatation_preprocessing.preprocess_all_frmnatation_directories()
+    -> FrmnatationHtmlResultsDataLoader.load()
+
+Omega (PDF, stockage seul):
+  omega_service.main() / API /omega/pdfs*
+    -> data/raw/omega/pdfs/{year}/*.pdf
+\end{lstlisting}
+
+%======================================================================
+\section{Annexe --- Types de competition Extranat (\texttt{idtyp})}
+%======================================================================
+
+Reference\,: \texttt{services/extranat\_service.py} (\texttt{get\_competition\_types()})
+
+\begin{longtable}{@{}rl@{}}
+\toprule
+\textbf{idtyp} & \textbf{Libelle} \\
+\midrule
+\endhead
+7 & Competitions internationales \\
+6 & Championnats nationaux \\
+5 & Meetings nationaux labellises \\
+14 & Coupes Nationales \\
+8 & Competitions interregionales \\é
+12 & Regionaux (web confrontation) \\
+4 & Championnats Regionaux \\
+15 & Coupes Regionales \\
+3 & Interclubs TC (Reg. \& Dep.) \\
+2 & Interclubs Jeunes (Reg. \& Dep.) \\
+1 & Interclubs Avenirs (Reg. \& Dep.) \\
+13 & Animation " A vos plots ! " \\
+\bottomrule
+\end{longtable}
+
+\end{document}
