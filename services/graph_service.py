@@ -22,13 +22,19 @@ from services.corridor_data import (
     CorridorSwimmerSpec,
     CORRIDOR_FR_SWIMMER_COLOR,
     CORRIDOR_MA_SWIMMER_COLOR,
+    STANDARD_CORRIDOR_PERCENTILES,
+    add_within_swim_speed_pct,
     build_corridor_chart_plot_kwargs,
     compute_corridor_percentiles_df,
+    compute_group_percentiles_df,
     corridor_age_limits,
     corridor_norm_name,
+    draw_percentile_corridor_bands,
+    extract_event_split_speed_rows,
     filter_corridor_long_df_gender,
     merge_corridor_swimmer_specs_for_plot,
     plot_corridor_swimmer_specs,
+    plot_normalized_pacing_profiles_on_ax,
     prepare_corridor_long_df,
     prepare_corridor_long_df_combined,
     resolve_corridor_plot_gender,
@@ -118,6 +124,9 @@ GRAPH_CHRONOS_PAR_NAGE = "Évolution des chronos par type de nage (échantillon 
 GRAPH_VITESSE_DISTANCE_NAGE = "Vitesse par distance et type de nage"
 GRAPH_VITESSE_MAX_SPLIT_NAGE = "Vitesse maximale par split et type de nage"
 GRAPH_RELAY_SPLIT_DISTANCE = "Vitesse de split selon la distance (relais)"
+GRAPH_PACING_PROFILE_NORMALIZED = (
+    "Profil de pacing normalisé - nageur vs couloir de référence"
+)
 
 
 DESKTOP_GRAPH_MENU: Tuple[DesktopGraphCategory, ...] = (
@@ -186,6 +195,7 @@ DESKTOP_GRAPH_MENU: Tuple[DesktopGraphCategory, ...] = (
     DesktopGraphCategory(
         "Couloirs de performance",
         (
+            GRAPH_PACING_PROFILE_NORMALIZED,
             "Couloir de performance (âge) - nageur cible",
             "Couloir de performance global (âge)",
             "Couloir de performance global (déciles 10-90)",
@@ -2365,6 +2375,132 @@ class ServiceGraphe:
             "points_count": len(df_pts),
         }
 
+    def plot_pacing_profile_normalized_corridor(
+        self,
+        df: pd.DataFrame,
+        nom_event: str,
+        nom_nageur: Optional[str] = None,
+        year_of_birth: Optional[int] = None,
+        min_points: int = 5,
+        figsize: tuple[int, int] = (12, 8),
+        overlay_nageur: Optional[str] = None,
+        overlay_year_of_birth: Optional[int] = None,
+        overlay_df: Optional[pd.DataFrame] = None,
+        gender_filter: Optional[str] = None,
+        swimmer_specs: Optional[List[CorridorSwimmerSpec]] = None,
+    ) -> tuple[Optional[plt.Figure], dict[str, object]]:
+        """Profil de pacing normalisé : couloir percentile + courbe(s) nageur(s).
+
+        Le groupe de référence (France/USA) est affiché en bandes P10–P90 et
+        P25–P75 avec la médiane. Chaque nageur cible est tracé en ligne, sa
+        vitesse par split étant exprimée en % de sa vitesse moyenne sur la nage.
+
+        Args:
+            df (pd.DataFrame): Peloton de référence (Extranat ou USA Swimming).
+            nom_event (str): Libellé de l'épreuve.
+            nom_nageur (Optional[str]): Nageur cible principal (legacy UI).
+            year_of_birth (Optional[int]): Année de naissance du nageur principal.
+            min_points (int): Effectif minimal par split pour le couloir.
+            figsize (tuple[int, int]): Taille de la figure matplotlib.
+            overlay_nageur (Optional[str]): Nageur de surcouche (ex. marocain).
+            overlay_year_of_birth (Optional[int]): Année de naissance overlay.
+            overlay_df (Optional[pd.DataFrame]): Performances supplémentaires (MAR).
+            gender_filter (Optional[str]): Filtre F/M sur le peloton de référence.
+            swimmer_specs (Optional[List[CorridorSwimmerSpec]]): Nageurs à tracer.
+
+        Returns:
+            tuple[Optional[plt.Figure], dict[str, object]]: Figure et métadonnées.
+        """
+        ref_splits = extract_event_split_speed_rows(df, nom_event)
+        if ref_splits.empty:
+            return None, {
+                "message": f"Aucune performance avec splits complets pour {nom_event}",
+            }
+
+        plot_parts: List[pd.DataFrame] = [ref_splits]
+        if overlay_df is not None and not overlay_df.empty:
+            extra = extract_event_split_speed_rows(overlay_df, nom_event)
+            if not extra.empty:
+                plot_parts.append(extra)
+        plot_splits = pd.concat(plot_parts, ignore_index=True).drop_duplicates(
+            subset=["swim_key", "split_no"], keep="first"
+        )
+
+        specs = merge_corridor_swimmer_specs_for_plot(
+            swimmer_specs,
+            nom_nageur=nom_nageur,
+            year_of_birth=year_of_birth,
+            overlay_nageur=overlay_nageur,
+            overlay_year_of_birth=overlay_year_of_birth,
+            overlay_label=CORRIDOR_OVERLAY_SWIMMER_LABEL,
+        )
+        gender = resolve_corridor_plot_gender(plot_splits, gender_filter, specs)
+        if gender in ("F", "M"):
+            ref_splits = ref_splits[
+                ref_splits["Gender"].astype(str).str.strip().str.upper() == gender
+            ].copy()
+            plot_splits = plot_splits[
+                plot_splits["Gender"].astype(str).str.strip().str.upper() == gender
+            ].copy()
+
+        ref_norm = add_within_swim_speed_pct(ref_splits)
+        if ref_norm.empty:
+            return None, {
+                "message": "Impossible de normaliser les profils du groupe de référence.",
+                "gender": gender,
+            }
+
+        percentiles = STANDARD_CORRIDOR_PERCENTILES
+        df_percentiles = compute_group_percentiles_df(
+            ref_norm,
+            "split_no",
+            "speed_pct",
+            percentiles,
+            min_points=min_points,
+        )
+        if df_percentiles is None or df_percentiles.empty:
+            return None, {
+                "message": "Pas assez de points par split pour calculer le couloir.",
+                "gender": gender,
+            }
+
+        plot_norm = add_within_swim_speed_pct(plot_splits)
+
+        fig, ax = plt.subplots(figsize=figsize)
+        draw_percentile_corridor_bands(
+            ax,
+            df_percentiles.index,
+            df_percentiles,
+            outer_label="Groupe de référence P10–P90",
+            inner_label="Groupe de référence P25–P75",
+            median_label="Médiane du groupe de référence",
+        )
+        trace_messages = plot_normalized_pacing_profiles_on_ax(ax, plot_norm, specs)
+
+        ticks = [int(x) for x in df_percentiles.index.tolist()]
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([f"{t * 50} m" for t in ticks])
+        ax.axhline(100.0, color="#cbd5e1", linewidth=1.0, linestyle=":", zorder=0)
+        ax.set_xlabel("Segment de nage")
+        ax.set_ylabel("Vitesse normalisée (% de la vitesse moyenne de la nage)")
+        ax.set_title(
+            f"Profil de pacing normalisé - {localize_event_string(nom_event)}"
+        )
+        ax.grid(alpha=0.25)
+        ax.legend(loc="best", fontsize=9)
+        fig.tight_layout()
+
+        meta: dict[str, object] = {
+            "message": "ok",
+            "gender": gender,
+            "splits_available": ticks,
+            "reference_swims": int(ref_norm["swim_key"].nunique()),
+            "swimmer_trace_messages": trace_messages,
+        }
+        if trace_messages:
+            meta["overlay_swimmer_message"] = "; ".join(trace_messages)
+        return fig, meta
+
     def plot_performance_corridor_plot_time(
         self,
         df: pd.DataFrame,
@@ -2437,7 +2573,7 @@ class ServiceGraphe:
             long_ref, swimmer_frames, default_min=age_min, default_max=age_max
         )
 
-        percentiles = [10, 25, 50, 75, 90]
+        percentiles = STANDARD_CORRIDOR_PERCENTILES
         df_percentiles = compute_corridor_percentiles_df(
             long_ref,
             percentiles,
@@ -2452,22 +2588,7 @@ class ServiceGraphe:
             }
 
         fig, ax = plt.subplots(figsize=figsize)
-        for p in percentiles:
-            ax.plot(
-                df_percentiles.index,
-                df_percentiles[f"p{p}"],
-                linestyle="--",
-                label=f"{p}%",
-                zorder=2,
-            )
-        ax.fill_between(
-            df_percentiles.index,
-            df_percentiles["p25"],
-            df_percentiles["p75"],
-            alpha=0.2,
-            label="Zone 25-75%",
-            zorder=1,
-        )
+        draw_percentile_corridor_bands(ax, df_percentiles.index, df_percentiles)
         trace_messages = plot_corridor_swimmer_specs(
             ax, long_plot, specs, source_df=df, nom_event=nom_event
         )
@@ -2557,7 +2678,7 @@ class ServiceGraphe:
             long_ref, swimmer_frames, default_min=age_min, default_max=age_max
         )
 
-        percentiles = [10, 25, 50, 75, 90]
+        percentiles = STANDARD_CORRIDOR_PERCENTILES
         df_percentiles = compute_corridor_percentiles_df(
             long_ref,
             percentiles,
@@ -2572,20 +2693,7 @@ class ServiceGraphe:
             }
 
         fig, ax = plt.subplots(figsize=figsize)
-        for p in percentiles:
-            ax.plot(
-                df_percentiles.index,
-                df_percentiles[f"p{p}"],
-                linestyle="--",
-                label=f"{p}%",
-            )
-        ax.fill_between(
-            df_percentiles.index,
-            df_percentiles["p25"],
-            df_percentiles["p75"],
-            alpha=0.2,
-            label="Zone 25-75%",
-        )
+        draw_percentile_corridor_bands(ax, df_percentiles.index, df_percentiles)
         trace_messages = plot_corridor_swimmer_specs(
             ax, long_plot, specs, source_df=df, nom_event=nom_event
         )
@@ -2667,7 +2775,7 @@ class ServiceGraphe:
                 "message": "Pas assez de points par AgeGroup pour calculer les percentiles.",
             }
 
-        percentiles = [10, 25, 50, 75, 90]
+        percentiles = STANDARD_CORRIDOR_PERCENTILES
         df_percentiles = pd.DataFrame(
             {f"p{p}": grouped.apply(lambda x: np.percentile(x, p)) for p in percentiles}
         )
@@ -2681,20 +2789,7 @@ class ServiceGraphe:
 
         x_positions = np.arange(len(df_percentiles))
         fig, ax = plt.subplots(figsize=figsize)
-        for p in percentiles:
-            ax.plot(
-                x_positions,
-                df_percentiles[f"p{p}"],
-                linestyle="--",
-                label=f"{p}%",
-            )
-        ax.fill_between(
-            x_positions,
-            df_percentiles["p25"],
-            df_percentiles["p75"],
-            alpha=0.2,
-            label="Zone 25-75%",
-        )
+        draw_percentile_corridor_bands(ax, x_positions, df_percentiles)
 
         meta: dict[str, object] = {
             "message": "ok",
@@ -2878,7 +2973,7 @@ class ServiceGraphe:
             long_ref, swimmer_frames, default_min=age_min, default_max=age_max
         )
 
-        percentiles = list(range(10, 100, 10))
+        percentiles = STANDARD_CORRIDOR_PERCENTILES
         df_percentiles = compute_corridor_percentiles_df(
             long_ref,
             percentiles,
@@ -2893,20 +2988,7 @@ class ServiceGraphe:
             }
 
         fig, ax = plt.subplots(figsize=figsize)
-        for p in percentiles:
-            ax.plot(
-                df_percentiles.index,
-                df_percentiles[f"p{p}"],
-                linestyle="--",
-                label=f"{p}%",
-            )
-        ax.fill_between(
-            df_percentiles.index,
-            df_percentiles["p20"],
-            df_percentiles["p80"],
-            alpha=0.2,
-            label="Zone 20-80%",
-        )
+        draw_percentile_corridor_bands(ax, df_percentiles.index, df_percentiles)
 
         trace_messages = plot_corridor_swimmer_specs(
             ax,
@@ -2924,7 +3006,7 @@ class ServiceGraphe:
             f"Couloir de performance global (déciles 10-90) - {localize_event_string(nom_event)}"
         )
         ax.grid(alpha=0.3)
-        ax.legend(ncol=2)
+        ax.legend(loc="best", fontsize=9)
         fig.tight_layout()
 
         return fig, {

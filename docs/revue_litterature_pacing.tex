@@ -1,0 +1,253 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[french]{babel}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\geometry{margin=2.5cm}
+
+\title{Revue de littérature -- Pacing, visualisation sportive et implications pour l'application Pacing}
+\author{Projet Pacing}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+
+
+%==============================================================================
+\section{Synthèse selon les attendus de la fiche mission}
+%==============================================================================
+
+\subsection{Définition et modèles théoriques du pacing}
+
+\paragraph{Définition :}
+Le \textit{pacing} (ou stratégie de pacing) désigne la manière dont un athlète répartit son effort et donc sa vitesse ou sa puissance sur la durée d'une épreuve. Abbiss et Laursen (2008) le définissent comme la distribution de l'énergie ou du travail au cours d'une tâche locomotrice, avec pour objectif d'optimiser la performance globale. Mauger (2014) le formule comme la manipulation de la puissance sur un exercice, de sorte à équilibrer dépense énergétique et vitesse pour terminer l'épreuve au mieux des capacités de l'individu.
+
+Cette définition implique que le pacing n'est pas un simple déroulé passif de la fatigue : c'est une \textbf{régulation active}, souvent qualifiée d'``intelligente'', qui anticipe la fin de l'épreuve et ajuste l'intensité en fonction des signaux reçus du corps et de l'environnement.
+
+\paragraph{Modèles physiologiques et mécaniques :}
+Les premiers modèles expliquent le pacing par les contraintes énergétiques et mécaniques. En cyclisme ou en course, la puissance mécanique utile dépend de la résistance aérodynamique ou hydrodynamique, de la masse et de l'inertie : accélérer coûte plus cher que maintenir une vitesse constante. Des modèles mathématiques (Keller, 1974 ; de Koning et al., 1999) prédisent qu'un profil \textit{all-out} au départ est optimal pour les épreuves très courtes, tandis qu'un profil plus régulier l'est pour les épreuves plus longues, car les pertes liées aux variations de vitesse deviennent dominantes.
+
+En natation, la faible efficacité mécanique (6--18\,\% de l'énergie convertie en travail utile selon McGibbon et al., 2018) et la résistance hydrodynamique non linéaire renforcent l'importance de ces modèles : toute fluctuation de vitesse augmente le coût énergétique de manière disproportionnée.
+
+\paragraph{Modèles de régulation centrale.}
+Face aux limites des modèles purement périphériques (épuisement musculaire catastrophique), la littérature a développé des modèles intégrant le rôle du système nerveux central. Le \textit{Central Governor Model} (Noakes et collaborateurs) postule une régulation anticipatoire qui préserve une réserve physiologique. La téléoanticipation (Ulmer) et le modèle du \textit{RPE template} (Tucker) proposent qu'un schéma d'effort attendu est comparé en cours d'épreuve aux sensations perçues et à la distance restante, ce qui guide les ajustements d'allure.
+
+Mauger (2014) souligne que la douleur et l'inconfort liés à l'exercice constituent des signaux perceptifs majeurs, souvent plus parlants pour l'athlète que des grandeurs physiologiques abstraites (concentration de lactate, glycogène résiduel). Konings et Hettinga (2018) complètent ce tableau en montrant que la décision de pacing ne repose pas uniquement sur l'état interne : le comportement des adversaires et le contexte de compétition modifient aussi la régulation.
+
+\paragraph{Modèle par acquisition de compétence.}
+Menting et al. (2022), dans une revue systématique, proposent de considérer le pacing comme une \textbf{compétence motrice et cognitive} acquise progressivement. Le développement du cortex préfrontal chez l'adolescent, la maturation physiologique et l'expérience répétée de la tâche permettent d'affiner le calibrage entre exigences de l'épreuve, signaux afférents et action (maintenir, accélérer ou ralentir l'effort). Cette perspective justifie des analyses différenciées par âge, niveau et historique de performances dans l'application Pacing.
+
+\subsection{Stratégies d'allure et distribution de l'effort}
+
+Abbiss et Laursen (2008) recensent six profils types, identifiables sur des courbes de vitesse ou de puissance en fonction du temps ou de la distance parcourue :
+
+\begin{description}[leftmargin=1.5cm, style=nextline]
+    \item[\textit{All-out} (départ maximal)] Accélération maximale dès le départ, puis décélération progressive. Observé en sprint ($\leq 30$--60\,s). L'énergie consacrée à l'accélération initiale est proportionnellement plus élevée sur de courtes distances.
+    \item[Positif] Vitesse maximale au début, puis ralentissement continu. Fréquent en 100\,m et 200\,m course et natation.
+    \item[Négatif] Vitesse croissante sur l'épreuve, souvent avec un \textit{end spurt} final. Parfois confondu avec l'\textit{all-out} lorsque la phase initiale domine visuellement.
+    \item[Régulier (\textit{even})] Vitesse ou puissance quasi constante après une phase de départ. Recommandé pour les épreuves $> 2$\,min en cyclisme, aviron, ski de fond.
+    \item[Parabolique] Départ rapide, milieu de course plus lent, accélération finale. Fréquent en 400\,m nage libre (Mauger et al., 2012).
+    \item[Variable] Alternance d'accélérations et de ralentissements, souvent liée au terrain, au vent ou à la tactique de groupe.
+\end{description}
+
+La stratégie optimale n'est pas universelle : elle dépend de la durée, de la discipline, des qualités de l'athlète et du format de course (contre-la-montre ou face-à-face). En compétition, les athlètes n'adoptent pas toujours le profil mathématiquement optimal ; la tactique, la présence d'adversaires et l'expérience influencent le choix réel (Konings \& Hettinga, 2018).
+
+\subsection{Variables utilisées pour étudier le pacing}
+
+Les études de pacing mobilisent un ensemble relativement stable de variables, qu'il convient de distinguer pour structurer les données et les graphiques de l'application.
+
+\paragraph{Variables de performance segmentées.}
+Les \textbf{temps intermédiaires} (\textit{splits}) et la \textbf{vitesse par segment} (souvent normalisée en \% de la vitesse moyenne de course) constituent la base de la caractérisation des profils. En natation, la résolution varie : temps par longueur de 50\,m en compétition officielle, ou par secteurs de 5--10\,\% de la distance en analyse fine (McGibbon et al., 2018). Robertson et al. (2009) modélisent statistiquement la contribution de chaque lap au temps final sur plus de 3\,000 performances internationales.
+
+\paragraph{Variables mécaniques et énergétiques.}
+Lorsque les capteurs le permettent (cyclisme, course avec GPS, ergomètres), la \textbf{puissance} (W) et le \textbf{coût mécanique} (résistance, changements de cinétique) sont modélisés. En natation, les variables cinématiques associées --- \textbf{fréquence de bras}, \textbf{distance par cycle} (DPS), composantes non natatoires (départ, virages, arrivée) --- complètent l'analyse du pacing (Veiga \& Roig, 2016).
+
+\paragraph{Variables de variabilité et de stabilité.}
+La \textbf{variabilité inter-laps} (écart-type, coefficient de variation par segment) et la \textbf{reproductibilité} du profil entre compétitions (Skorski et al., 2014) permettent d'évaluer si un athlète possède un ``modèle'' de course stable ou s'il s'écarte de son schéma habituel.
+
+\paragraph{Variables physiologiques et perceptives.}
+VO$_2$, lactate, fréquence cardiaque, seuils ventilatoires sont utilisés en laboratoire. En situation réelle, l'\textbf{échelle d'effort perçu} (RPE) et la \textbf{douleur à l'effort} (Mauger, 2014) sont des proxies de la régulation, même si leur définition varie selon les protocoles.
+
+\paragraph{Variables contextuelles.}
+Phase de compétition (séries vs finale), présence et comportement d'adversaires, type de combinaison (nage, distance, bassin), niveau (élite vs sub-élite), sexe, et conditions environnementales (température, altitude) modulent l'interprétation des profils observés.
+
+\subsection{Visualisations utilisées dans les études de pacing}
+
+La littérature en pacing repose largement sur des représentations temporelles simples mais efficaces :
+
+\paragraph{Courbes de profil.}
+Le tracé de la \textbf{vitesse ou de la puissance en fonction du temps ou de la distance} est le standard (Abbiss \& Laursen, 2008). En natation, la vitesse par lap en \% de la vitesse moyenne de course permet de comparer des épreuves de durées différentes (McGibbon et al., 2018).
+
+\paragraph{Graphiques de splits.}
+Les \textbf{diagrammes en barres ou en lignes par segment} mettent en évidence les portions où l'athlète accélère ou ralentit. Robertson et al. (2009) utilisent des modèles mixtes pour quantifier l'impact d'une variation de lap sur le temps final.
+
+\paragraph{Superpositions et comparaisons.}
+Les études superposent les profils de plusieurs athlètes, ou comparent un individu à des références (record du monde, moyenne des finalistes). Les \textbf{vues facettées} (par sexe, distance, nage) isolent les effets de structure.
+
+\paragraph{Indicateurs de dispersion.}
+Bandes de confiance, intervalles interquartiles ou coefficients de variation par segment traduisent la \textbf{stabilité} du pacing (Skorski et al., 2014 ; Foster et al., 2009 sur le ``performance template'').
+
+\subsection{Visualisation des données sportives : couloirs, trajectoires, segments, distributions, comparaisons}
+
+Au-delà du pacing stricto sensu, la littérature en visualisation sportive (Perin et al., 2018 ; Du \& Yuan, 2021) propose un cadre plus large, directement transposable à l'application Pacing.
+
+\paragraph{Couloirs de performance.}
+Un \textbf{couloir} (ou bande de référence) représente la distribution des performances d'un groupe de référence (par exemple les nageurs France ou USA sur une distance donnée). L'athlète individuel est positionné par rapport aux percentiles (P10, P25, P50, P75, P90). C'est précisément la logique métier de l'application Pacing : superposer un nageur marocain à un couloir de référence pour situer sa performance.
+
+\paragraph{Trajectoires.}
+Les \textbf{trajectoires} désignent l'évolution d'une grandeur dans le temps ou l'espace : trajectoire de vitesse en natation, trajectoire de course au sol, ou trajectoires spatio-temporelles en sports collectifs (Pingali et al., 2001 ; Perin et al., 2013). Pour le pacing, la trajectoire de vitesse normalisée est l'idiome principal.
+
+\paragraph{Segments.}
+La \textbf{décomposition en segments} (laps, tours, phases de jeu) permet d'identifier les portions discriminantes. En natation, distinguer natation libre en bassin, départ, virages et arrivée améliore l'interprétation (Veiga \& Roig, 2016). SoccerStories (Perin et al., 2013) montre l'intérêt d'une granularité sémantique adaptée au phénomène étudié (phases de jeu plutôt que secondes brutes).
+
+\paragraph{Distributions.}
+Les \textbf{distributions} (histogrammes, densités, boxplots, heatmaps de percentiles) résument les performances d'une population sur une variable ou un segment. Elles soutiennent la construction des couloirs et la détection d'outliers.
+
+\paragraph{Comparaisons individu/groupe.}
+La comparaison \textbf{individu vs groupe} est une tâche centrale en analytics sportif (Du \& Yuan, 2021 : tâche de \textit{comparison}). L'encodage positionnel (courbe individuelle + bande de groupe) est perceptivement plus fiable que des comparaisons par couleur seule (Cleveland \& McGill, 1984).
+
+\subsection{Bonnes pratiques de visualisation scientifique}
+
+\paragraph{Grammar of Graphics.}
+Wilkinson (2005) et Wickham (2010) formalisent le graphique comme une composition de couches : données, mappings esthétiques, transformations statistiques, objets géométriques, échelles, système de coordonnées, facettes, annotations et thème. Pour Pacing, ce cadre impose de documenter explicitement chaque graphique (quelles données, quelle variable en abscisse/ordonnée, quelle transformation, quelle géométrie).
+
+\paragraph{Perception et efficacité.}
+Cleveland et McGill (1984) classent les canaux visuels par précision de jugement : position le long d'un axe commun est plus fiable que longueur, angle, surface ou couleur. Munzner (2014) insiste sur l'alignement entre \textbf{tâche analytique} (comparer, chercher, présenter) et \textbf{idiome visuel} choisi. Tufte (2001) préconise la maximisation du ratio données/encre, l'honnêteté graphique (pas de troncature trompeuse d'axes) et la densité informationnelle maîtrisée.
+
+\paragraph{Principes opérationnels pour Pacing.}
+\begin{itemize}[leftmargin=*]
+    \item privilégier position et longueur pour les comparaisons quantitatives ;
+    \item réserver la couleur à des variables catégorielles ou à la mise en évidence d'un athlète ;
+    \item harmoniser unités (m/s, s/100\,m, \% de la moyenne) et les afficher clairement ;
+    \item maintenir une charte visuelle commune (polices, épaisseurs, légendes) sur tous les écrans ;
+    \item éviter le 3D et les effets décoratifs non informatifs (Munzner, 2014).
+\end{itemize}
+
+\subsection{Limites d'interprétation des données de performance}
+
+\paragraph{Profil observé $\neq$ stratégie optimale.}
+Un profil de pacing fréquent en compétition n'est pas nécessairement le plus performant pour un athlète donné. McGibbon et al. (2018) notent que des essais expérimentaux montrent parfois des gains lorsque le pacing est manipulé. Mauger et al. (2012) observent plusieurs stratégies chez des élites du 400\,m NL sans différence significative de performance entre les principales.
+
+\paragraph{Effet du contexte compétitif.}
+Les profils issus de chronomètres individuels ne se généralisent pas toujours aux courses en tête-à-tête (Konings \& Hettinga, 2018). En natation, un concurrent dans le couloir adjacent peut modifier le plan de course. L'outil doit donc contextualiser (compétition, phase, adversaires si disponibles).
+
+\paragraph{Limites des données segmentées.}
+La résolution des splits (50\,m en natation officielle) masque des variations intra-longueur. Les mesures vidéo de British Swimming (secteurs de 6\,\% de la course, Mauger et al., 2012) sont plus fines mais soumises à des biais d'angle de caméra. Toute visualisation doit indiquer la granularité des données.
+
+\paragraph{Variabilité normale vs anomalie.}
+Une variabilité accrue en fin de course est structurelle (Skorski et al., 2014 ; \textit{end spurt}). Interpréter un ralentissement final comme une ``erreur'' sans tenir compte de la littérature serait trompeur.
+
+\paragraph{Généralisation et biais d'échantillon.}
+Les études portent souvent sur des populations élites, des distances spécifiques ou des périodes historiques (ex.\ interdiction des combinaisons polyuréthane en 2010). Les couloirs de référence France/USA/Maroc doivent être lus comme des \textbf{références contextuelles}, non comme des normes universelles.
+
+%==============================================================================
+\section{Approfondissement : pacing en natation}
+%==============================================================================
+
+\subsection{Spécificités de la natation}
+McGibbon et al. (2018) rappellent que le pacing en natation est plus critique que dans de nombreux sports terrestres en raison de la résistance hydrodynamique et de la faible efficacité mécanique. Les profils classiques (négatif, positif, parabolique, en J) sont modulés par la nage, la distance et les composantes non natatoires (départ, virages).
+
+\subsection{Par distance}
+\begin{itemize}[leftmargin=*]
+    \item \textbf{50--100\,m} : profil proche de l'\textit{all-out}, avec décélération progressive ; le dernier segment est souvent décisif (Robertson et al., 2009).
+    \item \textbf{200\,m} : maintien de vitesse crucial ; variabilité des lap times corrélée au classement chez les médaillés (Mytton et al., 2015, cité par McGibbon et al., 2018).
+    \item \textbf{400\,m} : profils \textit{fast-start-even} et paraboliques dominants chez l'élite (Mauger et al., 2012).
+    \item \textbf{800\,m et plus} : faible variabilité inter-laps et \textit{end spurt} en finale.
+    \item \textbf{4 nages} : stratégie de conservation sur le papillon pour préserver les nages suivantes (Saavedra et al., 2012, cité par McGibbon et al., 2018).
+\end{itemize}
+
+\subsection{Reproductibilité et stabilité des profils}
+Skorski et al. (2014), sur 158 nageurs élites masculins et 362 courses, montrent que les profils de pacing sont \textbf{reproductibles entre compétitions} (CV des temps totaux en finale : 0,8--1,3\,\%). La variabilité augmente en fin de course, surtout en brasse. Les différences entre séries et finales sont faibles en termes de forme de profil (environ 1,2\,\% d'amélioration du temps total), ce qui suggère un ``template'' de pacing relativement stable chez l'élite.
+
+\subsection{Segments discriminants}
+Robertson et al. (2009), sur neuf grandes compétitions internationales, établissent que :
+\begin{itemize}[leftmargin=*]
+    \item en 100\,m, le \textbf{deuxième 50\,m} (sprint) ou le \textbf{dernier 50\,m} est fortement corrélé au temps final ;
+    \item en 200\,m et 400\,m, les \textbf{laps intermédiaires} (2\textsuperscript{e} et 3\textsuperscript{e} 50\,m en 200\,m ; 2\textsuperscript{e} et 3\textsuperscript{e} 100\,m en 400\,m) pèsent le plus sur le classement ;
+    \item une amélioration ciblée d'un lap peut se traduire par 0,4--0,8\,\% de gain sur le temps final pour un finaliste.
+\end{itemize}
+Ces résultats orientent directement la hiérarchisation visuelle des segments dans l'application.
+
+%==============================================================================
+\section{Approfondissement : visualisation sportive et Grammar of Graphics}
+%==============================================================================
+
+\subsection{Taxonomies des données et des tâches}
+Perin et al. (2018) distinguent trois types de données sportives : \textit{box score} (statistiques agrégées par match ou compétition), \textit{tracking} (actions et trajectoires), et \textit{méta-données} (informations sur athlètes, calendrier, classements). Les données de pacing en natation relèvent principalement du \textit{box score} segmenté (splits par lap) avec une dimension temporelle ordonnée.
+
+Du \& Yuan (2021) classent les tâches en \textbf{présentation}, \textbf{comparaison} et \textbf{prédiction}. L'application Pacing se situe surtout sur la comparaison (individu vs couloir de référence) et la présentation (profil de course d'un nageur).
+
+\subsection{Exemple : SoccerStories}
+Perin et al. (2013) illustrent qu'une visualisation efficace en sport ne repose pas sur un graphique unique : les experts ont besoin de \textbf{granularité sémantique} (phases de jeu), de \textbf{multiples vues coordonnées} et d'outils de narration. Les statistiques agrégées seules (possession, tirs) ne suffisent pas à comprendre la dynamique. Transposé au pacing, cela plaide pour combiner profil global, zoom sur segments critiques et comparaison au couloir.
+
+\subsection{Intérêt pour une grammaire visuelle dédiée}
+Wickham (2010) montre qu'une grammaire explicite permet de construire des graphiques complexes par empilement de couches (par exemple : géométrie \textit{ribbon} pour le couloir + \textit{line} pour l'individu + \textit{point} pour les segments critiques). Documenter cette grammaire dans le projet facilite la maintenance, la portabilité vers NiceGUI ou une API, et la cohérence entre graphiques.
+
+%==============================================================================
+\section{Implications concrètes pour la refonte des graphiques Pacing}
+%==============================================================================
+
+La fiche mission exige que la revue ne reste pas théorique. Le tableau ci-dessous traduit les enseignements en décisions de design pour l'application.
+
+\begin{table}[h!]
+\centering
+\small
+\begin{tabular}{p{0.22\linewidth}p{0.36\linewidth}p{0.36\linewidth}}
+\toprule
+\textbf{Tâche analytique} & \textbf{Proposition visuelle} & \textbf{Fondement littéraire} \\
+\midrule
+Situer un nageur par rapport à un référentiel national & Courbe de vitesse normalisée + bande percentile (P10--P90, P25--P75) + ligne médiane & Couloir de performance ; encodage positionnel (Cleveland \& McGill) ; comparaison individu/groupe (Du \& Yuan) \\
+\addlinespace
+Identifier les segments à fort levier & Barres ou lignes par lap, avec surbrillance des segments à corrélation élevée avec le temps final & Robertson et al. (2009) ; McGibbon et al. (2018) \\
+\addlinespace
+Évaluer la stabilité du profil & Superposition de courses historiques + CV ou bande d'écart par segment & Skorski et al. (2014) ; Foster et al. (2009) \\
+\addlinespace
+Classifier le type de stratégie & Forme du profil (fast-start-even, parabolique, positif\ldots) avec légende explicative & Abbiss \& Laursen (2008) ; Mauger et al. (2012) \\
+\addlinespace
+Contextualiser une performance & Facettes ou filtres : distance, nage, bassin, sexe, phase (séries/finale) & Konings \& Hettinga (2018) ; Menting et al. (2022) \\
+\addlinespace
+Documenter chaque graphique & Fiche grammaticale : données, mapping, geom, échelles, unités, limites & Wilkinson (2005) ; Wickham (2010) ; Munzner (2014) \\
+\bottomrule
+\end{tabular}
+\caption{Traduction des apports de la revue en choix concrets pour l'application Pacing.}
+\end{table}
+
+\paragraph{Critique des graphiques actuels.}
+Sur la base de cette revue, une critique systématique des graphiques existants devrait vérifier pour chaque figure : (i) l'unité et l'échelle sont-elles explicites ? (ii) la comparaison individu/groupe est-elle lisible sans surcharge cognitive ? (iii) les segments discriminants sont-ils mis en évidence ? (iv) la variabilité du groupe de référence est-elle visible ? (v) les limites d'interprétation sont-elles mentionnées (résolution des splits, contexte compétitif) ?
+
+%==============================================================================
+\section{Conclusion}
+%==============================================================================
+
+Cette revue établit que le pacing est un phénomène \textbf{multidimensionnel} : il combine contraintes physiologiques et mécaniques, régulation cognitive et perceptuelle, contexte compétitif et apprentissage progressif. En natation, les profils varient selon la distance et la nage, mais certains principes sont robustes --- maintien de vitesse en sprint et moyenne distance, stabilité des profils chez l'élite, importance de segments spécifiques selon l'épreuve.
+
+Pour la visualisation, la littérature converge vers des représentations \textbf{orientées tâche}, fondées sur des encodages perceptuellement fiables, organisées selon une grammaire explicite et complétées par des indications sur les limites d'interprétation.
+
+L'application Pacing, centrée sur les couloirs de performance et la comparaison inter-pays, se situe à l'intersection de ces deux champs. Les recommandations de cette revue --- couloirs percentile, profils segmentés, indicateurs de stabilité, contextualisation et documentation grammaticale --- constituent la base scientifique pour la refonte graphique et la charte visuelle du projet, conformément à la fiche mission.
+
+\section*{Références principales mobilisées}
+\begin{itemize}[leftmargin=*]
+    \item Abbiss, C. R., \& Laursen, P. B. (2008). Describing and understanding pacing strategies during athletic competition. \textit{Sports Medicine}, 38(3), 239--252.
+    \item Mauger, A. R. (2014). Factors affecting the regulation of pacing: current perspectives. \textit{Open Access Journal of Sports Medicine}, 5, 209--214.
+    \item Konings, M. J., \& Hettinga, F. J. (2018). Pacing decision making in sport and the effects of interpersonal competition: a critical review. \textit{Sports Medicine}, 48(8), 1829--1843.
+    \item Menting, S. G. P., Elferink-Gemser, M. T., Huijgen, B. C., \& Hettinga, F. J. (2022). Pacing behaviour development and acquisition: a systematic review. \textit{Sports Medicine -- Open}, 8, 143.
+    \item McGibbon, K. E., Pyne, D. B., Shephard, M. E., \& Thompson, K. G. (2018). Pacing in swimming: a systematic review. \textit{Sports Medicine}, 48(7), 1621--1633.
+    \item Mauger, A. R., Neuloh, J., \& Castle, P. C. (2012). Analysis of pacing strategy selection in elite 400-m freestyle swimming. \textit{Medicine \& Science in Sports \& Exercise}, 44(11), 2205--2212.
+    \item Skorski, S., Faude, O., Caviezel, S., \& Meyer, T. (2014). Reproducibility of pacing profiles in elite swimmers. \textit{International Journal of Sports Physiology and Performance}, 9(2), 217--225.
+    \item Robertson, E. Y., Pyne, D. B., Hopkins, W. G., \& Anson, J. M. (2009). Analysis of lap times in international swimming competitions. \textit{Journal of Sports Sciences}, 27(4), 387--395.
+    \item Wilkinson, L. (2005). \textit{The Grammar of Graphics} (2\textsuperscript{e} éd.). Springer.
+    \item Wickham, H. (2010). A layered grammar of graphics. \textit{Journal of Computational and Graphical Statistics}, 19(1), 3--28.
+    \item Cleveland, W. S., \& McGill, R. (1984). Graphical perception: theory, experimentation, and application to the development of graphical methods. \textit{JASA}, 79(387), 531--554.
+    \item Tufte, E. R. (2001). \textit{The Visual Display of Quantitative Information} (2\textsuperscript{e} éd.). Graphics Press.
+    \item Munzner, T. (2014). \textit{Visualization Analysis and Design}. CRC Press.
+    \item Perin, C., Vuillemot, R., Stolper, C. D., Stasko, J. T., Wood, J., \& Carpendale, S. (2018). State of the art of sports data visualization. \textit{Computer Graphics Forum}, 37(3), 663--686.
+    \item Du, M., \& Yuan, X. (2021). A survey of competitive sports data visualization and visual analysis. \textit{Journal of Visualization}, 24, 47--67.
+    \item Perin, C., Vuillemot, R., \& Fekete, J.-D. (2013). SoccerStories: a kick-off for visual soccer analysis. \textit{IEEE TVCG}, 19(12), 2506--2515.
+    \item Foster, C., Hendrickson, K. J., Peyer, K., et al. (2009). Pattern of developing the performance template. \textit{British Journal of Sports Medicine}, 43(10), 765--769.
+\end{itemize}
+
+\end{document}

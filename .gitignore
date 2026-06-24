@@ -22,3 +22,8 @@ state.json
 
 # OS
 .DS_Store
+
+# fichiers de ref
+docs/References
+docs/fiche_mission_pacing.txt
+docs/fiche_mission_pacing.pdf

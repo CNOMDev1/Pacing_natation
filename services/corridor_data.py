@@ -754,6 +754,383 @@ def corridor_swimmer_missing_hint(
     return ""
 
 
+# --- Couloir percentile (bandes) et profils de pacing normalisés ---
+
+STANDARD_CORRIDOR_PERCENTILES: List[int] = [10, 25, 50, 75, 90]
+CORRIDOR_BAND_OUTER_COLOR = "#94a3b8"
+CORRIDOR_BAND_INNER_COLOR = "#64748b"
+CORRIDOR_MEDIAN_COLOR = "#334155"
+CORRIDOR_BAND_OUTER_ALPHA = 0.20
+CORRIDOR_BAND_INNER_ALPHA = 0.35
+
+
+def parse_split_distance_m(value: object) -> Optional[int]:
+    """Convertit une distance de split en mètres entiers.
+
+    Args:
+        value (object): Distance brute (ex. « 50 m », 100).
+
+    Returns:
+        Optional[int]: Distance en mètres ou None si invalide.
+    """
+    if value is None:
+        return None
+    try:
+        return int(float(str(value).lower().replace("m", "").strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_event_distance_m(event_name: object) -> Optional[int]:
+    """Extrait la distance numérique depuis le libellé d'épreuve.
+
+    Args:
+        event_name (object): Nom d'épreuve (ex. « 400 NL LCM »).
+
+    Returns:
+        Optional[int]: Distance en mètres ou None.
+    """
+    match = re.search(r"(\d+)", str(event_name))
+    return int(match.group(1)) if match else None
+
+
+def _solo_swimmer_dict(swimmers: object) -> Optional[dict]:
+    """Retourne le dict nageur si la performance est une nage solo.
+
+    Args:
+        swimmers (object): Colonne ``swimmer`` brute.
+
+    Returns:
+        Optional[dict]: Premier nageur ou None.
+    """
+    if not isinstance(swimmers, list) or len(swimmers) != 1:
+        return None
+    first = swimmers[0]
+    return first if isinstance(first, dict) else None
+
+
+def extract_event_split_speed_rows(
+    df: pd.DataFrame,
+    nom_event: str,
+    *,
+    require_complete_splits: bool = True,
+) -> pd.DataFrame:
+    """Extrait les vitesses de split (format long) pour une épreuve solo.
+
+    Chaque ligne correspond à un segment de nage. Les nages relais sont exclues.
+    Si ``require_complete_splits`` est True, seules les performances dont le
+    dernier split atteint la distance d'épreuve sont conservées.
+
+    Args:
+        df (pd.DataFrame): Performances source (Extranat, USA, Maroc).
+        nom_event (str): Libellé exact de l'épreuve.
+        require_complete_splits (bool): Exiger des splits couvrant toute la distance.
+
+    Returns:
+        pd.DataFrame: Colonnes ``swim_key``, ``Name``, ``Gender``, ``Year_of_birth``,
+            ``split_no``, ``split_distance``, ``split_speed`` ; vide si rien d'exploitable.
+    """
+    if df.empty or "Event" not in df.columns:
+        return pd.DataFrame()
+
+    event_distance = parse_event_distance_m(nom_event)
+    rows: List[dict[str, object]] = []
+    event_mask = df["Event"].astype(str).str.strip() == str(nom_event).strip()
+
+    for perf_idx, row in df.loc[event_mask].iterrows():
+        swimmer = _solo_swimmer_dict(row.get("swimmer"))
+        if swimmer is None:
+            continue
+        splits = row.get("splits")
+        if not isinstance(splits, list) or not splits:
+            continue
+
+        split_entries: List[tuple[int, int, float]] = []
+        for split in splits:
+            if not isinstance(split, dict):
+                continue
+            distance = parse_split_distance_m(split.get("split_distance"))
+            speed_raw = split.get("split_speed")
+            if distance is None or speed_raw is None:
+                continue
+            try:
+                speed = float(speed_raw)
+            except (TypeError, ValueError):
+                continue
+            if not (0 < speed < 6):
+                continue
+            split_no = max(1, int(round(distance / 50)))
+            split_entries.append((split_no, distance, speed))
+
+        if not split_entries:
+            continue
+        if require_complete_splits and event_distance is not None:
+            last_dist = max(d for _, d, _ in split_entries)
+            if last_dist != event_distance:
+                continue
+
+        swim_key = (
+            f"{perf_idx}|{swimmer.get('Name')}|{row.get('SwimDate')}|"
+            f"{row.get('SwimTimeSeconds')}"
+        )
+        for split_no, distance, speed in sorted(split_entries, key=lambda t: t[1]):
+            rows.append(
+                {
+                    "swim_key": swim_key,
+                    "Name": swimmer.get("Name"),
+                    "Gender": swimmer.get("Gender"),
+                    "Year_of_birth": swimmer.get("Year_of_birth"),
+                    "split_no": split_no,
+                    "split_distance": distance,
+                    "split_speed": speed,
+                }
+            )
+
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
+
+
+def add_within_swim_speed_pct(
+    split_df: pd.DataFrame,
+    *,
+    speed_col: str = "split_speed",
+    out_col: str = "speed_pct",
+) -> pd.DataFrame:
+    """Ajoute la vitesse normalisée en % de la vitesse moyenne de chaque nage.
+
+    La normalisation intra-nage permet de comparer la forme du profil de pacing
+    indépendamment du niveau absolu (Robertson et al., Skorski et al.).
+
+    Args:
+        split_df (pd.DataFrame): Lignes split avec ``swim_key`` et ``speed_col``.
+        speed_col (str): Colonne vitesse brute (m/s).
+        out_col (str): Nom de la colonne de sortie (%).
+
+    Returns:
+        pd.DataFrame: Copie enrichie ; lignes sans moyenne valide exclues.
+    """
+    if split_df.empty or "swim_key" not in split_df.columns:
+        return pd.DataFrame()
+    out = split_df.copy()
+    out[speed_col] = pd.to_numeric(out[speed_col], errors="coerce")
+    means = out.groupby("swim_key")[speed_col].transform("mean")
+    valid = means.notna() & (means > 0) & out[speed_col].notna()
+    out = out.loc[valid].copy()
+    out[out_col] = (out[speed_col] / means.loc[valid]) * 100.0
+    return out
+
+
+def compute_group_percentiles_df(
+    values_df: pd.DataFrame,
+    group_col: str,
+    value_col: str,
+    percentiles: Sequence[int],
+    *,
+    min_points: int = 5,
+) -> Optional[pd.DataFrame]:
+    """Calcule les percentiles d'une variable numérique par groupe.
+
+    Args:
+        values_df (pd.DataFrame): Données longues à agréger.
+        group_col (str): Colonne de regroupement (âge, split_no, etc.).
+        value_col (str): Colonne numérique (temps, vitesse %, etc.).
+        percentiles (Sequence[int]): Percentiles demandés (ex. [10, 25, 50, 75, 90]).
+        min_points (int): Effectif minimal par groupe.
+
+    Returns:
+        Optional[pd.DataFrame]: Colonnes ``p{percentile}`` indexées par ``group_col``,
+            ou None si données insuffisantes.
+    """
+    if values_df.empty or group_col not in values_df.columns:
+        return None
+    sub = values_df[
+        values_df[group_col].notna() & values_df[value_col].notna()
+    ].copy()
+    if sub.empty:
+        return None
+    counts = sub.groupby(group_col)[value_col].transform("count")
+    sub = sub.loc[counts >= min_points]
+    if sub.empty:
+        return None
+    qs = [p / 100.0 for p in percentiles]
+    wide = (
+        sub.groupby(group_col, sort=True)[value_col]
+        .quantile(qs)
+        .unstack(level=1)
+    )
+    if wide.empty:
+        return None
+    wide.columns = [f"p{int(round(c * 100))}" for c in wide.columns]
+    return wide.sort_index()
+
+
+def draw_percentile_corridor_bands(
+    ax,
+    x_values: Sequence,
+    df_percentiles: pd.DataFrame,
+    *,
+    outer_low: str = "p10",
+    outer_high: str = "p90",
+    inner_low: str = "p25",
+    inner_high: str = "p75",
+    median_col: str = "p50",
+    outer_color: str = CORRIDOR_BAND_OUTER_COLOR,
+    inner_color: str = CORRIDOR_BAND_INNER_COLOR,
+    median_color: str = CORRIDOR_MEDIAN_COLOR,
+    outer_alpha: float = CORRIDOR_BAND_OUTER_ALPHA,
+    inner_alpha: float = CORRIDOR_BAND_INNER_ALPHA,
+    outer_label: str = "Couloir P10–P90",
+    inner_label: str = "Couloir P25–P75",
+    median_label: str = "Médiane du groupe",
+    zorder_bands: int = 1,
+    zorder_median: int = 3,
+) -> None:
+    """Trace un couloir percentile : bandes P10–P90 et P25–P75 + médiane.
+
+    Encodage positionnel (bandes + ligne médiane) plutôt que lignes de couleur
+    pour chaque percentile, plus lisible pour la comparaison individu/groupe.
+
+    Args:
+        ax: Axe matplotlib cible.
+        x_values (Sequence): Abscisses alignées sur l'index de ``df_percentiles``.
+        df_percentiles (pd.DataFrame): Colonnes ``p10``…``p90`` (ou équivalent).
+        outer_low (str): Colonne borne basse externe.
+        outer_high (str): Colonne borne haute externe.
+        inner_low (str): Colonne borne basse interne.
+        inner_high (str): Colonne borne haute interne.
+        median_col (str): Colonne médiane.
+        outer_color (str): Couleur bande externe.
+        inner_color (str): Couleur bande interne.
+        median_color (str): Couleur ligne médiane.
+        outer_alpha (float): Transparence bande externe.
+        inner_alpha (float): Transparence bande interne.
+        outer_label (str): Libellé légende bande externe.
+        inner_label (str): Libellé légende bande interne.
+        median_label (str): Libellé légende médiane.
+        zorder_bands (int): Plan de dessin des bandes.
+        zorder_median (int): Plan de dessin de la médiane.
+
+    Returns:
+        None
+    """
+    if df_percentiles.empty:
+        return
+    x = list(x_values)
+    if outer_low in df_percentiles.columns and outer_high in df_percentiles.columns:
+        ax.fill_between(
+            x,
+            df_percentiles[outer_low],
+            df_percentiles[outer_high],
+            color=outer_color,
+            alpha=outer_alpha,
+            linewidth=0,
+            label=outer_label,
+            zorder=zorder_bands,
+        )
+    if inner_low in df_percentiles.columns and inner_high in df_percentiles.columns:
+        ax.fill_between(
+            x,
+            df_percentiles[inner_low],
+            df_percentiles[inner_high],
+            color=inner_color,
+            alpha=inner_alpha,
+            linewidth=0,
+            label=inner_label,
+            zorder=zorder_bands + 1,
+        )
+    if median_col in df_percentiles.columns:
+        ax.plot(
+            x,
+            df_percentiles[median_col],
+            color=median_color,
+            linewidth=2.2,
+            linestyle="-",
+            label=median_label,
+            zorder=zorder_median,
+        )
+
+
+def mean_normalized_profile_for_swimmer(
+    split_df: pd.DataFrame,
+    name: str,
+    year_of_birth: Optional[int] = None,
+) -> pd.DataFrame:
+    """Moyenne des profils normalisés d'un nageur par numéro de split.
+
+    Args:
+        split_df (pd.DataFrame): Splits avec ``speed_pct``, ``Name``, ``split_no``.
+        name (str): Nom du nageur.
+        year_of_birth (Optional[int]): Année de naissance pour désambiguïser.
+
+    Returns:
+        pd.DataFrame: Colonnes ``split_no``, ``split_distance``, ``speed_pct``,
+            ``n_swims`` ; vide si nageur introuvable.
+    """
+    if split_df.empty or "speed_pct" not in split_df.columns:
+        return pd.DataFrame()
+    target_norm = corridor_norm_name(name)
+    name_norm = split_df["Name"].astype(str).map(corridor_norm_name)
+    mask = name_norm == target_norm
+    if year_of_birth is not None:
+        yob = pd.to_numeric(split_df["Year_of_birth"], errors="coerce")
+        mask = mask & (yob == int(year_of_birth))
+    sub = split_df.loc[mask]
+    if sub.empty:
+        return pd.DataFrame()
+    return (
+        sub.groupby(["split_no", "split_distance"], as_index=False)
+        .agg(speed_pct=("speed_pct", "mean"), n_swims=("speed_pct", "count"))
+        .sort_values("split_no")
+    )
+
+
+def plot_normalized_pacing_profiles_on_ax(
+    ax,
+    split_df: pd.DataFrame,
+    specs: Sequence[CorridorSwimmerSpec],
+) -> List[str]:
+    """Trace les profils de pacing normalisés (lignes) pour des nageurs cibles.
+
+    Args:
+        ax: Axe matplotlib cible.
+        split_df (pd.DataFrame): Splits avec ``speed_pct``.
+        specs (Sequence[CorridorSwimmerSpec]): Nageurs à superposer.
+
+    Returns:
+        List[str]: Messages d'avertissement par nageur introuvable.
+    """
+    messages: List[str] = []
+    for spec in specs:
+        if not spec.name.strip():
+            continue
+        profile = mean_normalized_profile_for_swimmer(
+            split_df, spec.name, spec.year_of_birth
+        )
+        if profile.empty:
+            yob_txt = (
+                f" ({spec.year_of_birth})" if spec.year_of_birth is not None else ""
+            )
+            messages.append(
+                f"{spec.label} introuvable ou sans splits exploitables : "
+                f"{spec.name}{yob_txt}"
+            )
+            continue
+        ax.plot(
+            profile["split_no"],
+            profile["speed_pct"],
+            color=spec.color,
+            linewidth=2.8,
+            marker="o",
+            markersize=7,
+            markeredgecolor="white",
+            markeredgewidth=0.8,
+            label=spec.label,
+            zorder=6,
+        )
+    return messages
+
+
 # --- Tracé matplotlib des nageurs cibles ---
 
 
