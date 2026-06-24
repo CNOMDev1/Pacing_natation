@@ -3244,6 +3244,13 @@ class ServiceGraphe:
             if not name or yob is None:
                 return None
             return {"nom_event": nom, "nom_nageur": name, "year_of_birth": int(yob)}
+        if m == "plot_pacing_profile_normalized_corridor":
+            if not nom:
+                return None
+            name, yob = ServiceGraphe._nb_first_solo_name_yob_for_event(df_nav, nom)
+            if not name or yob is None:
+                return None
+            return {"nom_event": nom, "nom_nageur": name, "year_of_birth": int(yob)}
         if m == "plot_performance_corridor_global_plot_time":
             if not nom:
                 return None
@@ -3828,12 +3835,18 @@ Graphe30 = GraphSpec(
     category="Analyse individuelle par epreuve",
     method_name="plot_performance_corridor_global_by_agegroup",
 )
+Graphe31 = GraphSpec(
+    key="pacing_profile_normalized_corridor",
+    name=GRAPH_PACING_PROFILE_NORMALIZED,
+    category="Analyse individuelle par epreuve",
+    method_name="plot_pacing_profile_normalized_corridor",
+)
 
 GRAPHES_NOTEBOOK: List[GraphSpec] = [
     Graphe1, Graphe2, Graphe3, Graphe4, Graphe5, Graphe6, Graphe7, Graphe8, Graphe9,
     Graphe10, Graphe11, Graphe12, Graphe13, Graphe14, Graphe15, Graphe16, Graphe17,
     Graphe18, Graphe19, Graphe20, Graphe21, Graphe22, Graphe23, Graphe24, Graphe25,
-    Graphe26, Graphe27, Graphe28, Graphe29, Graphe30,
+    Graphe26, Graphe27, Graphe28, Graphe29, Graphe30, Graphe31,
 ]
 GRAPHES_PAR_KEY: Dict[str, GraphSpec] = {g.key: g for g in GRAPHES_NOTEBOOK}
 

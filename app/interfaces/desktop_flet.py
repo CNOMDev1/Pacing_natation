@@ -56,6 +56,7 @@ from desktop_helpers import (
 from services.graph_service import (
     GRAPH_CATEGORIES,
     GRAPH_CHRONOS_PAR_NAGE,
+    GRAPH_PACING_PROFILE_NORMALIZED,
     GRAPHES_NOTEBOOK,
     GRAPHES_PAR_KEY,
     SCOPE_NO_FILTER_GRAPHS,
@@ -93,9 +94,14 @@ CORRIDOR_GLOBAL_GRAPH_NAME = "Couloir de performance global (âge)"
 CORRIDOR_GLOBAL_DECILES_GRAPH_NAME = "Couloir de performance global (déciles 10-90)"
 CORRIDOR_CATEGORY = "Couloirs de performance"
 CORRIDOR_SWIMMER_UI_GRAPHS: Tuple[str, ...] = (
+    GRAPH_PACING_PROFILE_NORMALIZED,
     CORRIDOR_GRAPH_NAME,
     CORRIDOR_GLOBAL_GRAPH_NAME,
     CORRIDOR_GLOBAL_DECILES_GRAPH_NAME,
+)
+CORRIDOR_FR_TARGET_SWIMMER_GRAPHS: Tuple[str, ...] = (
+    GRAPH_PACING_PROFILE_NORMALIZED,
+    CORRIDOR_GRAPH_NAME,
 )
 CHART_UPDATE_AFTER_FILTER_DEBOUNCE_SEC = 0.1
 SCOPE_PERFORMANCES_CACHE_MAX_ENTRIES = 64
@@ -108,6 +114,7 @@ CORRIDOR_CHART_PREFETCH_LIMIT = int(
     os.environ.get("PACING_CORRIDOR_CHART_PREFETCH_LIMIT", "96")
 )
 CORRIDOR_CHART_PREFETCH_GRAPH_NAMES: Tuple[str, ...] = (
+    GRAPH_PACING_PROFILE_NORMALIZED,
     CORRIDOR_GLOBAL_GRAPH_NAME,
     CORRIDOR_GRAPH_NAME,
 )
@@ -2703,7 +2710,7 @@ class PacingDesktopApp:
         if self.selected_graph != CORRIDOR_GLOBAL_DECILES_GRAPH_NAME:
             self.corridor_deciles_confirmed_name = None
             self.corridor_deciles_confirmed_yob = None
-        if self.selected_graph != CORRIDOR_GRAPH_NAME:
+        if self.selected_graph not in CORRIDOR_FR_TARGET_SWIMMER_GRAPHS:
             self.corridor_fr_confirmed_name = None
             self.corridor_fr_confirmed_yob = None
         self._sync_corridor_mode_switch(update_ui=False)
@@ -3044,7 +3051,7 @@ class PacingDesktopApp:
         self.selected_corridor_swimmer_yob = yob
         if self._is_usa_corridor_mode() or (
             self.selected_country == COUNTRY_FRANCE
-            and self.selected_graph == CORRIDOR_GRAPH_NAME
+            and self.selected_graph in CORRIDOR_FR_TARGET_SWIMMER_GRAPHS
         ):
             self._refresh_filters_from_data()
             return
@@ -3090,7 +3097,7 @@ class PacingDesktopApp:
         self.selected_corridor_swimmer_yob = yob
         if (
             self.selected_country == COUNTRY_FRANCE
-            and self.selected_graph == CORRIDOR_GRAPH_NAME
+            and self.selected_graph in CORRIDOR_FR_TARGET_SWIMMER_GRAPHS
         ):
             self.corridor_fr_confirmed_name = name
             self.corridor_fr_confirmed_yob = yob
@@ -3763,7 +3770,7 @@ class PacingDesktopApp:
             corridor_yob = self.selected_corridor_swimmer_yob
         elif (
             self.selected_country == COUNTRY_FRANCE
-            and graph == CORRIDOR_GRAPH_NAME
+            and graph in CORRIDOR_FR_TARGET_SWIMMER_GRAPHS
         ):
             corridor_name = (
                 self.corridor_fr_confirmed_name
