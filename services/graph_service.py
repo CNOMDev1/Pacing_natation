@@ -3477,6 +3477,42 @@ class ServiceGraphe:
                     if err:
                         chart_title = err
 
+        elif selected_graph == GRAPH_PACING_PROFILE_NORMALIZED:
+            if distance and stroke and pool:
+                nom_event = f"{distance} {stroke} {pool}"
+                chart_title = (
+                    f"Profil de pacing normalisé - "
+                    f"{format_event_label(distance, stroke, pool)}"
+                )
+                plot_kwargs = dict(overlay_kwargs)
+                if plot_kwargs.get("swimmer_specs"):
+                    plot_kwargs.pop("overlay_nageur", None)
+                    plot_kwargs.pop("overlay_year_of_birth", None)
+                fig, meta = svc.plot_pacing_profile_normalized_corridor(
+                    corridor_df,
+                    nom_event=nom_event,
+                    nom_nageur=None
+                    if plot_kwargs.get("swimmer_specs")
+                    else selected_corridor_swimmer_name,
+                    year_of_birth=None
+                    if plot_kwargs.get("swimmer_specs")
+                    else selected_corridor_swimmer_yob,
+                    **plot_kwargs,
+                )
+                if isinstance(meta, dict):
+                    warn_parts: List[str] = []
+                    if meta.get("overlay_swimmer_message"):
+                        warn_parts.append(str(meta["overlay_swimmer_message"]))
+                    elif meta.get("swimmer_trace_messages"):
+                        msgs = meta.get("swimmer_trace_messages")
+                        if isinstance(msgs, list) and msgs:
+                            warn_parts.append("; ".join(str(m) for m in msgs))
+                    if fig is None:
+                        err = str(meta.get("message", ""))
+                        chart_title = err or (warn_parts[0] if warn_parts else chart_title)
+                    elif warn_parts:
+                        chart_title = f"{chart_title} — {warn_parts[0]}"
+
         elif selected_graph == "Couloir de performance (âge) - nageur cible":
             if distance and stroke and pool:
                 nom_event = f"{distance} {stroke} {pool}"
