@@ -30,7 +30,7 @@ from project_path import PROJECT_DIR, ensure_project_imports
 ensure_project_imports()
 
 from loading_progress import TriplePrefetchProgress
-from services.corridor_data import build_corridor_chart_plot_kwargs
+from services.corridor_data import build_corridor_chart_plot_kwargs, distance_supports_pacing_profile, CORRIDOR_CHART_STYLE_VERSION
 from services.frmnatation_html_results_data_loader import (
     DEFAULT_FRMNATATION_HTML_RESULTS_DIR,
     FrmnatationHtmlResultsDataLoader,
@@ -106,6 +106,7 @@ CORRIDOR_FR_TARGET_SWIMMER_GRAPHS: Tuple[str, ...] = (
 CHART_UPDATE_AFTER_FILTER_DEBOUNCE_SEC = 0.1
 SCOPE_PERFORMANCES_CACHE_MAX_ENTRIES = 64
 SCOPE_PERFORMANCES_PREFETCH_GRAPHS: Tuple[str, ...] = (
+    GRAPH_PACING_PROFILE_NORMALIZED,
     CORRIDOR_GRAPH_NAME,
     CORRIDOR_GLOBAL_GRAPH_NAME,
 )
@@ -1016,7 +1017,7 @@ class PacingDesktopApp:
         if not self._needs_moroccan_corridor_swimmer_dd():
             moroccan_name = None
             moroccan_yob = None
-        return {
+        options: Dict[str, Any] = {
             "stroke": stroke,
             "distance": int(distance) if distance is not None else None,
             "pool": pool,
@@ -1028,6 +1029,9 @@ class PacingDesktopApp:
             "pacing_swimmers": pacing,
             "chronos_sample_size": int(self.selected_chronos_sample_size),
         }
+        if graph_name in CORRIDOR_SWIMMER_UI_GRAPHS:
+            options["chart_style_version"] = CORRIDOR_CHART_STYLE_VERSION
+        return options
 
     @staticmethod
     def _is_corridor_registry_item(item: Dict[str, Any]) -> bool:
@@ -3860,6 +3864,8 @@ class PacingDesktopApp:
             "pacing_swimmers": pacing,
             "chronos_sample_size": int(snapshot.get("chronos_sample_size", 5000)),
         }
+        if graph_name in CORRIDOR_SWIMMER_UI_GRAPHS:
+            options["chart_style_version"] = CORRIDOR_CHART_STYLE_VERSION
         chart_id, render_key = self._render_key_for_category_graph_options(
             str(snapshot["category"]),
             graph_name,
@@ -3868,20 +3874,23 @@ class PacingDesktopApp:
         return chart_id, options, render_key
 
     def _corridor_fallback_render_keys(self, snapshot: Dict[str, Any]) -> List[str]:
-        """Clés cache du couloir global (même épreuve, sans nageur) pour affichage immédiat."""
-        keys: List[str] = []
-        for graph_name in CORRIDOR_CHART_PREFETCH_GRAPH_NAMES:
-            fallback = {
-                **snapshot,
-                "graph": graph_name,
-                "corridor_name": None,
-                "corridor_yob": None,
-                "deciles_name": None,
-                "deciles_yob": None,
-            }
-            _, _, render_key = self._build_render_key_from_snapshot(fallback)
-            keys.append(render_key)
-        return keys
+        """Clés cache du même graphique sans nageur (stale-while-revalidate).
+
+        Ne propose qu'une variante du graphique courant (même épreuve, sans
+        nageur cible) pour éviter d'afficher brièvement un autre type de couloir
+        puis de le masquer au recalcul.
+        """
+        fallback = {
+            **snapshot,
+            "corridor_name": None,
+            "corridor_yob": None,
+            "moroccan_corridor_name": None,
+            "moroccan_corridor_yob": None,
+            "deciles_name": None,
+            "deciles_yob": None,
+        }
+        _, _, render_key = self._build_render_key_from_snapshot(fallback)
+        return [render_key]
 
     def _try_show_stale_corridor_chart(self, *, update_ui: bool) -> bool:
         """Affiche une image couloir déjà en cache pendant le recalcul (stale-while-revalidate)."""
@@ -4355,11 +4364,17 @@ class PacingDesktopApp:
             elif status == "no_figure":
                 if update_ui:
                     self.image.visible = False
-                    self.chart_title_text.value = str(payload.get("chart_title", ""))
-                    self.row_count_text.value = (
-                        "Graphique non encore implémenté dans la version PyFlet "
-                        "ou aucune donnée exploitable pour ces filtres."
+                    chart_title = str(payload.get("chart_title", ""))
+                    self.chart_title_text.value = chart_title or str(
+                        payload.get("graph_name", self.selected_graph)
                     )
+                    if chart_title and chart_title != payload.get("graph_name"):
+                        self.row_count_text.value = chart_title
+                    else:
+                        self.row_count_text.value = (
+                            "Graphique non encore implémenté dans la version PyFlet "
+                            "ou aucune donnée exploitable pour ces filtres."
+                        )
             elif status == "ok" and payload.get("image_base64"):
                 if update_ui:
                     self.image.visible = True
@@ -4746,6 +4761,23 @@ class PacingDesktopApp:
                 if self.selected_stroke
                 else []
             )
+        if (
+            self.selected_graph == GRAPH_PACING_PROFILE_NORMALIZED
+            and self.selected_stroke
+            and dist_vals
+            and not self.df.empty
+        ):
+            stroke_pools = combos.get(self.selected_stroke, {})
+            dist_vals = [
+                int(d)
+                for d in dist_vals
+                if distance_supports_pacing_profile(
+                    self.df,
+                    self.selected_stroke,
+                    int(d),
+                    list(stroke_pools.get(int(d), [])),
+                )
+            ]
         if self.selected_distance not in dist_vals:
             self.selected_distance = dist_vals[0] if dist_vals else None
         dist_keys = tuple(str(d) for d in dist_vals)
