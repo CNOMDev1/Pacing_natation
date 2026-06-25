@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from matplotlib.colors import to_hex
+from matplotlib.ticker import FixedLocator, FuncFormatter, MaxNLocator, MultipleLocator
 
 from services.stroke_labels import (
     format_event_label,
@@ -55,6 +56,150 @@ from services.corridor_data import (
 
 CORRIDOR_OVERLAY_SWIMMER_COLOR = CORRIDOR_MA_SWIMMER_COLOR
 CORRIDOR_OVERLAY_SWIMMER_LABEL = "Nageur marocain (MAR)"
+
+# Palette non-couloir (basée sur Munzner/Cleveland/Tufte)
+# - Catégoriel: teintes distinctes et daltonisme-friendly (Okabe-Ito)
+# - Ordonné: luminance (séquentiel) ou double extrémité + neutre (divergent)
+NON_CORRIDOR_COLOR_MALE = "#0072B2"
+NON_CORRIDOR_COLOR_FEMALE = "#CC79A7"
+NON_CORRIDOR_COLOR_NEUTRAL = "#374151"
+NON_CORRIDOR_COLOR_PRIMARY = "#2E5EAA"
+NON_CORRIDOR_COLOR_SECONDARY = "#E69F00"
+NON_CORRIDOR_COLOR_ACCENT = "#6A3D9A"
+NON_CORRIDOR_COLOR_TARGET = "#D55E00"
+NON_CORRIDOR_CMAP_SEQUENTIAL = "viridis"
+NON_CORRIDOR_CMAP_DIVERGING = "PuOr"
+
+
+def _adaptive_histogram_bin_count(
+    n_perf: int,
+    data_min: float,
+    data_max: float,
+    iqr: float,
+) -> int:
+    """Calcule un nombre de classes d'histogramme adapté à l'échantillon.
+
+    Petits échantillons : peu de bacs pour éviter un rendu en bâtons isolés.
+    Grands échantillons : règle de Freedman-Diaconis, plafonnée pour la lisibilité.
+
+    Args:
+        n_perf (int): Nombre de performances valides.
+        data_min (float): Temps minimum observé (secondes).
+        data_max (float): Temps maximum observé (secondes).
+        iqr (float): Écart interquartile (Q3 - Q1).
+
+    Returns:
+        int: Nombre de classes à utiliser pour l'histogramme.
+    """
+    if n_perf <= 40:
+        return max(6, min(10, int(np.ceil(np.sqrt(n_perf))) + 2))
+    if n_perf > 1 and iqr > 0:
+        bin_width = 2.0 * iqr / np.cbrt(n_perf)
+        if bin_width > 0:
+            nbins = int(np.ceil((data_max - data_min) / bin_width))
+        else:
+            nbins = 16
+        return max(10, min(40, nbins))
+    return max(8, min(24, int(np.sqrt(n_perf)) + 2))
+
+
+def _histogram_time_tick_label(value: float, _: int) -> str:
+    """Formate une graduation de l'axe temps selon l'ampleur de la valeur.
+
+    Args:
+        value (float): Position en secondes sur l'axe X.
+        _ (int): Position de la graduation (ignorée, requise par Matplotlib).
+
+    Returns:
+        str: Libellé formaté pour l'axe des temps.
+    """
+    if value >= 100 or abs(value - round(value)) < 0.05:
+        return f"{value:.0f}"
+    if value >= 10:
+        return f"{value:.1f}"
+    return f"{value:.2f}"
+
+
+def _apply_histogram_bin_xaxis(
+    ax: plt.Axes,
+    bin_edges: np.ndarray,
+    nbins: int,
+) -> float:
+    """Aligne l'axe X sur les bords réels des classes d'histogramme.
+
+    Pour peu de classes, toutes les bornes sont étiquetées. Pour davantage de
+    classes (ex. 1500 m libre), les graduations majeures restent alignées sur
+    des bords de bins et des repères mineurs marquent chaque classe.
+
+    Args:
+        ax (plt.Axes): Axe matplotlib à configurer.
+        bin_edges (np.ndarray): Bornes des classes (longueur ``nbins + 1``).
+        nbins (int): Nombre de classes.
+
+    Returns:
+        float: Largeur moyenne d'une classe en secondes.
+    """
+    edges = np.asarray(bin_edges, dtype=float)
+    ax.set_xlim(float(edges[0]), float(edges[-1]))
+    bin_width = float(edges[1] - edges[0]) if len(edges) > 1 else 0.0
+
+    if nbins <= 12:
+        major_ticks = edges
+    else:
+        max_labels = 12
+        step = max(1, int(np.ceil((len(edges) - 1) / max_labels)))
+        major_ticks = edges[::step]
+        if major_ticks[-1] != edges[-1]:
+            major_ticks = np.append(major_ticks, edges[-1])
+        ax.xaxis.set_minor_locator(FixedLocator(edges))
+        ax.grid(axis="x", which="minor", alpha=0.24, linestyle=":", linewidth=0.7)
+
+    ax.set_xticks(major_ticks)
+    ax.xaxis.set_major_formatter(FuncFormatter(_histogram_time_tick_label))
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+    return bin_width
+
+
+_HISTOGRAM_STATS_BBOX = {
+    "boxstyle": "round,pad=0.35",
+    "facecolor": "white",
+    "alpha": 0.92,
+    "edgecolor": "#cbd5e1",
+}
+
+
+def _place_histogram_stats_footnote(fig: plt.Figure, stats_text: str) -> None:
+    """Place les statistiques descriptives sous la zone de tracé de l'histogramme.
+
+    Le texte est centré sous l'axe des temps afin de libérer la zone de données
+    (barres, KDE, repères verticaux) tout en conservant un encadré lisible.
+
+    Args:
+        fig (plt.Figure): Figure matplotlib contenant l'histogramme.
+        stats_text (str): Statistiques à afficher (une ou plusieurs lignes).
+
+    Returns:
+        None
+    """
+    line_count = stats_text.count("\n") + 1
+    if line_count <= 1:
+        bottom_margin = 0.11
+    elif line_count == 2:
+        bottom_margin = 0.13
+    else:
+        bottom_margin = 0.15
+
+    fig.tight_layout(rect=[0, bottom_margin, 1, 0.98])
+    fig.text(
+        0.5,
+        0.018,
+        stats_text.replace("\n", "   "),
+        ha="center",
+        va="bottom",
+        fontsize=9.5,
+        color="#0f172a",
+        bbox=_HISTOGRAM_STATS_BBOX,
+    )
 
 
 def _corridor_swimmer_specs_from_kwargs(
@@ -145,7 +290,6 @@ DESKTOP_GRAPH_MENU: Tuple[DesktopGraphCategory, ...] = (
         "Distributions de temps",
         (
             "Histogramme simple",
-            "Histogramme + densité",
             "Histogramme cumulatif",
         ),
     ),
@@ -237,27 +381,130 @@ SCOPE_NO_STROKE_GRAPHS = frozenset({"Distribution des temps par type de nage (bo
 class ServiceGraphe:
     """Service central pour construire les graphes."""
     def plot_histogramme_simple(self, df: pd.DataFrame, swim_col: str = "SwimTimeSeconds") -> plt.Figure:
-        """Histogramme des temps de nage avec lignes de moyenne et médiane.
+        """Trace un histogramme robuste des temps de nage.
+
+        Le tracé applique un nombre de classes (bins) adapté à la taille de
+        l'échantillon afin d'améliorer la lisibilité (petits n) et la stabilité
+        visuelle (grands n). Le graphique affiche aussi des repères descriptifs
+        (moyenne, médiane, intervalle interquartile) et une tendance KDE.
 
         Args:
             df (pd.DataFrame): Données de performances.
-            swim_col (str): Colonne des temps en secondes.
+            swim_col (str): Nom de la colonne contenant les temps en secondes.
 
         Returns:
-            plt.Figure: Figure matplotlib de l'histogramme simple.
+            plt.Figure: Figure matplotlib de l'histogramme.
+
+        Raises:
+            ValueError: Si ``swim_col`` est introuvable dans ``df``.
         """
-        values = pd.to_numeric(df.get(swim_col), errors="coerce").dropna()
+        if swim_col not in df.columns:
+            raise ValueError(f"Colonne introuvable pour l'histogramme: {swim_col}")
+
+        values = pd.to_numeric(df[swim_col], errors="coerce")
+        values = values[np.isfinite(values)].astype(float)
+        values = values[values > 0]
+
         fig, ax = plt.subplots(figsize=(12, 8))
-        ax.hist(values, bins=50, color="#004080", edgecolor="#004080", alpha=0.7)
-        if not values.empty:
-            ax.axvline(float(np.mean(values)), color="red", linestyle="dashed", linewidth=2, label="Moyenne")
-            ax.axvline(float(np.median(values)), color="orange", linestyle="dashed", linewidth=2, label="Mediane")
-            ax.legend()
+        ax.set_facecolor("#f8fafc")
+
+        if values.empty:
+            ax.text(
+                0.5,
+                0.5,
+                "Aucune performance disponible pour cet histogramme.",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=12,
+                color="#334155",
+            )
+            ax.set_axis_off()
+            fig.tight_layout()
+            return fig
+
+        q1, median, q3 = np.percentile(values, [25, 50, 75])
+        mean_val = float(np.mean(values))
+        std_val = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
+        data_min = float(np.min(values))
+        data_max = float(np.max(values))
+        iqr = float(q3 - q1)
+        n_perf = int(len(values))
+        nbins = _adaptive_histogram_bin_count(n_perf, data_min, data_max, iqr)
+
+        hist_counts, bin_edges, _ = ax.hist(
+            values,
+            bins=nbins,
+            color=NON_CORRIDOR_COLOR_PRIMARY,
+            edgecolor="#ffffff",
+            linewidth=0.9,
+            alpha=0.78,
+            rwidth=0.96,
+        )
+        bin_width = _apply_histogram_bin_xaxis(ax, bin_edges, nbins)
+
+        ax.axvspan(
+            q1,
+            q3,
+            color=NON_CORRIDOR_COLOR_SECONDARY,
+            alpha=0.12,
+            label="Intervalle interquartile (Q1-Q3)",
+        )
+        ax.axvline(
+            mean_val,
+            color=NON_CORRIDOR_COLOR_TARGET,
+            linestyle="dashed",
+            linewidth=2.4,
+            label="Moyenne",
+            zorder=7,
+        )
+        ax.axvline(
+            float(median),
+            color=NON_CORRIDOR_COLOR_SECONDARY,
+            linestyle=(0, (3, 2)),
+            linewidth=2.6,
+            label="Médiane",
+            zorder=8,
+        )
+        if len(values) >= 5 and np.unique(values).size > 1:
+            ax_kde = ax.twinx()
+            sns.kdeplot(
+                values,
+                ax=ax_kde,
+                color=NON_CORRIDOR_COLOR_NEUTRAL,
+                linewidth=2.0,
+                alpha=0.9,
+                clip=(data_min, data_max),
+                bw_adjust=1.1,
+                label="Tendance (KDE)",
+            )
+            ax_kde.set_yticks([])
+            ax_kde.set_ylabel("")
+            ax_kde.grid(False)
+
+        stats_text = (
+            f"n={n_perf}  |  classes={nbins}  Δ≈{bin_width:.2f}s  |  "
+            f"min={data_min:.2f}s  max={data_max:.2f}s  "
+            f"moy={mean_val:.2f}s  méd={median:.2f}s  σ={std_val:.2f}s"
+        )
+
+        hist_handles, hist_labels = ax.get_legend_handles_labels()
+        if len(values) >= 5 and np.unique(values).size > 1:
+            kde_handles, kde_labels = ax_kde.get_legend_handles_labels()
+            ax.legend(hist_handles + kde_handles, hist_labels + kde_labels, loc="upper right")
+        else:
+            ax.legend(loc="upper right")
         ax.set_xlabel("Temps (secondes)")
         ax.set_ylabel("Nombre de performances")
         ax.set_title("Histogramme simple des temps de nage")
-        ax.grid(axis="y", alpha=0.3)
-        fig.tight_layout()
+        max_count = int(np.max(hist_counts)) if hist_counts.size > 0 else 0
+        if max_count <= 12:
+            ax.yaxis.set_major_locator(MultipleLocator(1))
+        else:
+            ax.yaxis.set_major_locator(MaxNLocator(integer=True, min_n_ticks=5))
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda tick, _: f"{int(tick)}" if tick >= 0 else ""))
+        ax.grid(axis="y", alpha=0.22, linestyle="--", linewidth=0.7)
+        _place_histogram_stats_footnote(fig, stats_text)
         return fig
 
     def plot_camembert_sexe_global(self, df: pd.DataFrame, gender_col: str = "Gender") -> plt.Figure:
@@ -289,72 +536,148 @@ class ServiceGraphe:
             counts,
             labels=[f"{g} ({n})" for g, n in zip(counts.index, counts)],
             autopct="%1.1f%%",
-            colors=["#4FA2F6", "#F585BD"],
+            colors=[NON_CORRIDOR_COLOR_MALE, NON_CORRIDOR_COLOR_FEMALE],
             startangle=90,
         )
         ax.set_title("Camembert par sexe (global)")
         fig.tight_layout()
         return fig
 
-    def plot_histogramme_densite(self, df: pd.DataFrame, swim_col: str = "SwimTimeSeconds") -> plt.Figure:
-        """Histogramme des temps de nage avec courbe de densité KDE.
-        
-        Args:
-            df (pd.DataFrame): Données de performances.
-            swim_col (str): Colonne des temps en secondes.
-        
-        Returns:
-            plt.Figure: Figure matplotlib de l'histogramme densité.
-        """
-        values = pd.to_numeric(df.get(swim_col), errors="coerce")
-        values = values[(values.notna()) & (values < 500)]
-        fig, ax = plt.subplots(figsize=(10, 6))
-        sns.histplot(
-            values,
-            bins=30,
-            kde=True,
-            color="#004080",
-            edgecolor="#004080",
-            alpha=0.6,
-            ax=ax,
-        )
-        ax.set_title("Distribution des temps de natation avec densite")
-        ax.set_xlabel("Temps (secondes)")
-        ax.set_ylabel("Nombre de performances")
-        ax.set_xticks(np.arange(0, 501, 25))
-        plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
-        ax.grid(axis="x", alpha=0.3)
-        fig.tight_layout()
-        return fig
-
     def plot_histogramme_cumulatif(self, df: pd.DataFrame, swim_col: str = "SwimTimeSeconds") -> plt.Figure:
-        """Histogramme cumulatif des temps de nage (< 500 s).
-        
+        """Trace un histogramme cumulatif lisible des temps de nage.
+
+        Le tracé adapte les bornes de l'axe des temps aux données observées
+        (évite un axe 0–500 s trompeur), utilise un nombre de classes cohérent
+        avec la taille d'échantillon et affiche des comptages cumulés entiers.
+        Des repères (moyenne, médiane, intervalle interquartile) facilitent la
+        lecture de la distribution cumulative, conformément aux principes de
+        perception graphique (position sur axe commun, intégrité des échelles).
+
         Args:
             df (pd.DataFrame): Données de performances.
             swim_col (str): Colonne des temps en secondes.
-        
+
         Returns:
             plt.Figure: Figure matplotlib de l'histogramme cumulatif.
+
+        Raises:
+            ValueError: Si ``swim_col`` est introuvable dans ``df``.
         """
-        values = pd.to_numeric(df.get(swim_col), errors="coerce")
-        values = values[(values.notna()) & (values < 500)]
-        fig, ax = plt.subplots(figsize=(10, 6))
+        if swim_col not in df.columns:
+            raise ValueError(f"Colonne introuvable pour l'histogramme cumulatif: {swim_col}")
+
+        values = pd.to_numeric(df[swim_col], errors="coerce")
+        values = values[np.isfinite(values)].astype(float)
+        values = values[values > 0]
+
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.set_facecolor("#f8fafc")
+
+        if values.empty:
+            ax.text(
+                0.5,
+                0.5,
+                "Aucune performance disponible pour cet histogramme cumulatif.",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=12,
+                color="#334155",
+            )
+            ax.set_axis_off()
+            fig.tight_layout()
+            return fig
+
+        q1, median, q3 = np.percentile(values, [25, 50, 75])
+        mean_val = float(np.mean(values))
+        std_val = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
+        data_min = float(np.min(values))
+        data_max = float(np.max(values))
+        iqr = float(q3 - q1)
+        n_perf = int(len(values))
+        count_at_or_below_median = int(np.sum(values <= median))
+        nbins = _adaptive_histogram_bin_count(n_perf, data_min, data_max, iqr)
+
+        span = max(data_max - data_min, 1e-6)
+        pad = max(0.25, span * 0.06)
+        x_lo = max(0.0, data_min - pad)
+        x_hi = data_max + pad
+        bin_edges = np.linspace(x_lo, x_hi, nbins + 1)
+
         ax.hist(
             values,
-            bins=30,
+            bins=bin_edges,
             cumulative=True,
-            color="#008080",
-            edgecolor="black",
-            alpha=0.7,
+            histtype="stepfilled",
+            color=NON_CORRIDOR_COLOR_PRIMARY,
+            alpha=0.28,
+            edgecolor="none",
         )
-        ax.set_title("Histogramme cumulatif des temps de natation")
+        ax.hist(
+            values,
+            bins=bin_edges,
+            cumulative=True,
+            histtype="step",
+            color=NON_CORRIDOR_COLOR_PRIMARY,
+            linewidth=2.4,
+        )
+        bin_width = _apply_histogram_bin_xaxis(ax, bin_edges, nbins)
+
+        ax.axvspan(
+            q1,
+            q3,
+            color=NON_CORRIDOR_COLOR_SECONDARY,
+            alpha=0.12,
+            label="Intervalle interquartile (Q1-Q3)",
+            zorder=1,
+        )
+        ax.axvline(
+            mean_val,
+            color=NON_CORRIDOR_COLOR_TARGET,
+            linestyle="dashed",
+            linewidth=2.4,
+            label="Moyenne",
+            zorder=7,
+        )
+        ax.axvline(
+            float(median),
+            color=NON_CORRIDOR_COLOR_SECONDARY,
+            linestyle=(0, (3, 2)),
+            linewidth=2.6,
+            label="Médiane",
+            zorder=8,
+        )
+        ax.axhline(
+            count_at_or_below_median,
+            color=NON_CORRIDOR_COLOR_NEUTRAL,
+            linestyle=":",
+            linewidth=1.4,
+            alpha=0.75,
+            label=f"Effectif ≤ médiane ({count_at_or_below_median})",
+            zorder=4,
+        )
+
+        stats_text = (
+            f"n={n_perf}  |  classes={nbins}  Δ≈{bin_width:.2f}s  |  "
+            f"min={data_min:.2f}s  max={data_max:.2f}s  "
+            f"moy={mean_val:.2f}s  méd={median:.2f}s  σ={std_val:.2f}s  |  "
+            f"≤ médiane : {count_at_or_below_median}/{n_perf} "
+            f"({100.0 * count_at_or_below_median / n_perf:.0f} %)"
+        )
+
+        ax.set_ylim(0, n_perf)
+        if n_perf <= 12:
+            ax.yaxis.set_major_locator(MultipleLocator(1))
+        else:
+            ax.yaxis.set_major_locator(MaxNLocator(integer=True, min_n_ticks=5))
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda tick, _: f"{int(tick)}" if tick >= 0 else ""))
+
         ax.set_xlabel("Temps (secondes)")
-        ax.set_ylabel("Nombre cumule de performances")
-        ax.set_xticks(np.arange(0, 501, 25))
-        plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
-        ax.grid(axis="x", alpha=0.3)
-        fig.tight_layout()
+        ax.set_ylabel("Nombre cumulé de performances")
+        ax.set_title("Histogramme cumulatif des temps de nage")
+        ax.legend(loc="lower right")
+        ax.grid(axis="y", alpha=0.22, linestyle="--", linewidth=0.7)
+        _place_histogram_stats_footnote(fig, stats_text)
         return fig
 
     def plot_boxplot_temps_par_nage(
@@ -379,7 +702,15 @@ class ServiceGraphe:
         local_df["SwimTimeMinutes"] = local_df[swim_col] / 60.0
         local_df = relabel_stroke_column(local_df, stroke_col)
         fig, ax = plt.subplots(figsize=(12, 8))
-        sns.boxplot(data=local_df, x=stroke_col, y="SwimTimeMinutes", palette="Set2", ax=ax)
+        sns.boxplot(
+            data=local_df,
+            x=stroke_col,
+            y="SwimTimeMinutes",
+            hue=stroke_col,
+            palette=NON_CORRIDOR_CMAP_SEQUENTIAL,
+            legend=False,
+            ax=ax,
+        )
         ax.set_xlabel("Type de nage")
         ax.set_ylabel("Temps (minutes)")
         ax.set_title("Distribution des temps par type de nage (boxplot)")
@@ -398,7 +729,7 @@ class ServiceGraphe:
         """
         counts = df.get(club_col, pd.Series(dtype=str)).dropna().value_counts().nlargest(10)
         fig, ax = plt.subplots(figsize=(12, 6))
-        sns.barplot(x=counts.index, y=counts.values, color="#8C5CE4", ax=ax)
+        sns.barplot(x=counts.index, y=counts.values, color=NON_CORRIDOR_COLOR_ACCENT, ax=ax)
         ax.set_title("Top 10 clubs par participation")
         ax.set_xlabel("Club")
         ax.set_ylabel("Nombre de participations")
@@ -431,7 +762,13 @@ class ServiceGraphe:
         local_df = relabel_stroke_column(local_df, stroke_col)
         pivot = local_df.pivot_table(values=speed_col, index=distance_col, columns=stroke_col, aggfunc="mean")
         fig, ax = plt.subplots(figsize=(12, 7))
-        sns.heatmap(pivot, annot=True, fmt=".2f", cmap="coolwarm", ax=ax)
+        sns.heatmap(
+            pivot,
+            annot=True,
+            fmt=".2f",
+            cmap=NON_CORRIDOR_CMAP_SEQUENTIAL,
+            ax=ax,
+        )
         ax.set_title("Heatmap vitesse moyenne (distance x nage)")
         ax.set_xlabel("Nage")
         ax.set_ylabel("Distance (m)")
@@ -777,8 +1114,20 @@ class ServiceGraphe:
         x = np.arange(len(events))
         width = 0.35
         fig, ax = plt.subplots(figsize=(16, 6))
-        bars1 = ax.bar(x - width / 2, female_counts, width, label="Female", color="#F585BD")
-        bars2 = ax.bar(x + width / 2, male_counts, width, label="Male", color="#4FA2F6")
+        bars1 = ax.bar(
+            x - width / 2,
+            female_counts,
+            width,
+            label="Female",
+            color=NON_CORRIDOR_COLOR_FEMALE,
+        )
+        bars2 = ax.bar(
+            x + width / 2,
+            male_counts,
+            width,
+            label="Male",
+            color=NON_CORRIDOR_COLOR_MALE,
+        )
 
         for bars in [bars1, bars2]:
             for bar in bars:
@@ -834,8 +1183,20 @@ class ServiceGraphe:
         x = np.arange(len(events))
         width = 0.35
         fig, ax = plt.subplots(figsize=(16, 6))
-        bars1 = ax.bar(x - width / 2, female_counts, width, label="Female", color="#F585BD")
-        bars2 = ax.bar(x + width / 2, male_counts, width, label="Male", color="#4FA2F6")
+        bars1 = ax.bar(
+            x - width / 2,
+            female_counts,
+            width,
+            label="Female",
+            color=NON_CORRIDOR_COLOR_FEMALE,
+        )
+        bars2 = ax.bar(
+            x + width / 2,
+            male_counts,
+            width,
+            label="Male",
+            color=NON_CORRIDOR_COLOR_MALE,
+        )
 
         for bars in [bars1, bars2]:
             for bar in bars:
@@ -859,7 +1220,7 @@ class ServiceGraphe:
             transform=ax.transAxes,
             fontsize=14,
             fontweight="bold",
-            color="#333333",
+            color=NON_CORRIDOR_COLOR_NEUTRAL,
         )
         ax.set_xlabel("Épreuve")
         ax.set_ylabel("Nombre de performances")
@@ -885,8 +1246,15 @@ class ServiceGraphe:
         )
 
         fig, ax = plt.subplots(figsize=(6, 4))
-        palette_colors = {"F": "#F585BD", "M": "#4FA2F6"}
-        sns.countplot(x="Gender", data=local_df, palette=palette_colors, ax=ax)
+        palette_colors = {"F": NON_CORRIDOR_COLOR_FEMALE, "M": NON_CORRIDOR_COLOR_MALE}
+        sns.countplot(
+            x="Gender",
+            hue="Gender",
+            data=local_df,
+            palette=palette_colors,
+            legend=False,
+            ax=ax,
+        )
 
         ax.set_title("Nombre de performances par sexe")
         ax.set_xlabel("Sexe")
@@ -918,7 +1286,7 @@ class ServiceGraphe:
             gender_counts,
             labels=[f"{g} ({n})" for g, n in zip(gender_counts.index, gender_counts)],
             autopct="%1.1f%%",
-            colors=["#4FA2F6", "#F585BD"],
+            colors=[NON_CORRIDOR_COLOR_MALE, NON_CORRIDOR_COLOR_FEMALE],
             startangle=90,
         )
         ax.set_title(f"Répartition des performances par sexe pour {localize_event_string(nom_event)}")
@@ -958,7 +1326,7 @@ class ServiceGraphe:
             x="Club",
             y="SwimTimeMinutes",
             marker="o",
-            color="#8C5CE4",
+            color=NON_CORRIDOR_COLOR_ACCENT,
             ax=ax,
         )
         ax.set_title(f"Temps médian des 10 meilleurs clubs - {localize_event_string(nom_event)}")
@@ -1065,7 +1433,7 @@ class ServiceGraphe:
             x="SwimTimeSeconds",
             y="SwimmerName",
             data=top10,
-            palette="coolwarm_r",
+            palette=NON_CORRIDOR_CMAP_DIVERGING,
             orient="h",
             errorbar=None,
             ax=ax,
@@ -1103,8 +1471,16 @@ class ServiceGraphe:
         """
         target_colors = target_colors or {}
         style_by_gender = {
-            "F": {"fill": "#F9D9D7", "median": "#F5D7F9", "mean": "#F5D7F9"},
-            "M": {"fill": "#82C9D1", "median": "#AAEEF6", "mean": "#AAEEF6"},
+            "F": {
+                "fill": "#F6D5E8",
+                "median": NON_CORRIDOR_COLOR_FEMALE,
+                "mean": "#9D4B85",
+            },
+            "M": {
+                "fill": "#D2E8F8",
+                "median": NON_CORRIDOR_COLOR_MALE,
+                "mean": "#1B4F8A",
+            },
         }
         fill_alpha = 0.22
         line_width_med = 2.8
@@ -1350,7 +1726,7 @@ class ServiceGraphe:
                 if data_sw.empty:
                     continue
                 gender = data_sw.iloc[0]["Gender"]
-                color_sw = target_colors.get(swimmer, "#222222")
+                color_sw = target_colors.get(swimmer, NON_CORRIDOR_COLOR_NEUTRAL)
                 ax.plot(
                     data_sw["split_no"],
                     data_sw["target_mean"],
@@ -1431,11 +1807,11 @@ class ServiceGraphe:
 
         df_splits = df_splits.sort_values("split_distance")
         if gender_nageur == "M":
-            color_line = "#003E80"
+            color_line = NON_CORRIDOR_COLOR_MALE
         elif gender_nageur == "F":
-            color_line = "#FF69B4"
+            color_line = NON_CORRIDOR_COLOR_FEMALE
         else:
-            color_line = "#008080"
+            color_line = NON_CORRIDOR_COLOR_NEUTRAL
 
         fig, ax = plt.subplots(figsize=(10, 6))
         sns.lineplot(
@@ -1566,7 +1942,7 @@ class ServiceGraphe:
             }
 
         df_splits = df_splits.sort_values("split_distance")
-        color = "#003E80" if best_gender == "M" else "#FF69B4"
+        color = NON_CORRIDOR_COLOR_MALE if best_gender == "M" else NON_CORRIDOR_COLOR_FEMALE
         fig, ax = plt.subplots(figsize=(10, 6))
         sns.lineplot(
             x="split_distance",
@@ -1679,10 +2055,10 @@ class ServiceGraphe:
             return None, pd.DataFrame(), {"message": "Aucun split valide trouve pour les top nageurs."}
 
         df_splits["swimmer_label"] = df_splits["swimmer"] + " (" + df_splits["gender"] + ")"
-        palette_colors = {"M": "#003E80", "F": "#FF69B4"}
+        palette_colors = {"M": NON_CORRIDOR_COLOR_MALE, "F": NON_CORRIDOR_COLOR_FEMALE}
         labels_gender = df_splits[["swimmer_label", "gender"]].drop_duplicates()
         palette_for_plot = {
-            row["swimmer_label"]: palette_colors.get(row["gender"], "#777777")
+            row["swimmer_label"]: palette_colors.get(row["gender"], NON_CORRIDOR_COLOR_NEUTRAL)
             for _, row in labels_gender.iterrows()
         }
 
@@ -1846,10 +2222,10 @@ class ServiceGraphe:
             return None, pd.DataFrame(), pd.DataFrame(), {"message": "Aucun split valide trouve pour les top nageurs."}
 
         df_splits["swimmer_label"] = df_splits["swimmer"] + " (" + df_splits["gender"].fillna("?") + ")"
-        palette_colors = {"M": "#003E80", "F": "#FF69B4"}
+        palette_colors = {"M": NON_CORRIDOR_COLOR_MALE, "F": NON_CORRIDOR_COLOR_FEMALE}
         labels_gender = df_splits[["swimmer_label", "gender"]].drop_duplicates()
         palette_for_plot = {
-            row["swimmer_label"]: palette_colors.get(row["gender"], "#777777")
+            row["swimmer_label"]: palette_colors.get(row["gender"], NON_CORRIDOR_COLOR_NEUTRAL)
             for _, row in labels_gender.iterrows()
         }
 
@@ -1978,7 +2354,7 @@ class ServiceGraphe:
                 pivot,
                 annot=True,
                 fmt=".2f",
-                cmap="coolwarm",
+                cmap=NON_CORRIDOR_CMAP_SEQUENTIAL,
                 ax=ax,
                 cbar=cbar,
                 vmin=vmin,
@@ -2062,11 +2438,11 @@ class ServiceGraphe:
             y="split_seconds",
             data=df_median_splits,
             marker="o",
-            color="#EA800F",
+            color=NON_CORRIDOR_COLOR_SECONDARY,
             label="Temps median de tous les nageurs",
             ax=ax,
         )
-        color_best = "#003E80" if best_gender == "M" else "#FF69B4"
+        color_best = NON_CORRIDOR_COLOR_MALE if best_gender == "M" else NON_CORRIDOR_COLOR_FEMALE
         sns.lineplot(
             x="split_distance",
             y="split_seconds",
@@ -2152,7 +2528,7 @@ class ServiceGraphe:
             y="split_seconds",
             data=df_median_splits,
             marker="o",
-            color="#EA800F",
+            color=NON_CORRIDOR_COLOR_SECONDARY,
             label="Temps median de tous les nageurs",
             ax=ax,
         )
@@ -2161,7 +2537,7 @@ class ServiceGraphe:
             y="split_seconds",
             data=df_top10_median,
             marker="o",
-            color="#003E80",
+            color=NON_CORRIDOR_COLOR_MALE,
             label="Temps median des 10 meilleurs nageurs",
             ax=ax,
         )
@@ -2244,7 +2620,7 @@ class ServiceGraphe:
             hue="gender",
             data=df_med,
             marker="o",
-            palette={"M": "#003E80", "F": "#FF69B4"},
+            palette={"M": NON_CORRIDOR_COLOR_MALE, "F": NON_CORRIDOR_COLOR_FEMALE},
             linewidth=2.5,
             ax=ax,
         )
@@ -2356,7 +2732,7 @@ class ServiceGraphe:
         ax.plot(
             mean_by_dist["split_distance_m"],
             mean_by_dist["split_speed"],
-            color="#DA7B27",
+            color=NON_CORRIDOR_COLOR_SECONDARY,
             linewidth=2.7,
             marker="o",
             label="Moyenne par split_distance_m",
@@ -2364,7 +2740,7 @@ class ServiceGraphe:
         ax.plot(
             median_by_dist["split_distance_m"],
             median_by_dist["split_speed"],
-            color="#1F77B4",
+            color=NON_CORRIDOR_COLOR_MALE,
             linewidth=2.4,
             linestyle="--",
             marker="s",
@@ -3218,7 +3594,6 @@ class ServiceGraphe:
         m = spec.method_name
         if m in (
             "plot_histogramme_simple",
-            "plot_histogramme_densite",
             "plot_histogramme_cumulatif",
             "plot_camembert_sexe_global",
             "plot_boxplot_temps_par_nage",
@@ -3381,15 +3756,12 @@ class ServiceGraphe:
 
         if selected_graph in {
             "Histogramme simple",
-            "Histogramme + densité",
             "Histogramme cumulatif",
         }:
             chart_title = "Distribution des temps de nage"
             if not df_filtered.empty:
                 if selected_graph == "Histogramme simple":
                     fig = svc.plot_histogramme_simple(df_filtered)
-                elif selected_graph == "Histogramme + densité":
-                    fig = svc.plot_histogramme_densite(df_filtered)
                 else:
                     fig = svc.plot_histogramme_cumulatif(df_filtered)
 
@@ -3737,12 +4109,6 @@ Graphe5 = GraphSpec(
     category="Synthese des vitesses par distance et nage",
     method_name="plot_heatmap_vitesse_moyenne",
 )
-Graphe6 = GraphSpec(
-    key="histogramme_densite",
-    name="Histogramme + densite",
-    category="Distributions de temps",
-    method_name="plot_histogramme_densite",
-)
 Graphe7 = GraphSpec(
     key="histogramme_cumulatif",
     name="Histogramme cumulatif",
@@ -3895,7 +4261,7 @@ Graphe31 = GraphSpec(
 )
 
 GRAPHES_NOTEBOOK: List[GraphSpec] = [
-    Graphe1, Graphe2, Graphe3, Graphe4, Graphe5, Graphe6, Graphe7, Graphe8, Graphe9,
+    Graphe1, Graphe2, Graphe3, Graphe4, Graphe5, Graphe7, Graphe8, Graphe9,
     Graphe10, Graphe11, Graphe12, Graphe13, Graphe14, Graphe15, Graphe16, Graphe17,
     Graphe18, Graphe19, Graphe20, Graphe21, Graphe22, Graphe23, Graphe24, Graphe25,
     Graphe26, Graphe27, Graphe28, Graphe29, Graphe30, Graphe31,

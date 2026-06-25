@@ -419,13 +419,6 @@ class PacingDesktopApp:
                 fit=ft.BoxFit.CONTAIN,
                 border_radius=ft.BorderRadius.all(4),
             )
-            self.chart_title_text = ft.Text(
-                "",
-                size=16,
-                weight=ft.FontWeight.BOLD,
-                color="#e5e7eb",
-                text_align=ft.TextAlign.CENTER,
-            )
             self.row_count_text = ft.Text(
                 "",
                 size=12,
@@ -1352,7 +1345,6 @@ class PacingDesktopApp:
             sidebar_bg = "#ffffff"
             main_bg = "#f8fafc"
             nav_title = "#0f172a"
-            chart_title = "#0f172a"
             row_muted = "#475569"
             err = "#b91c1c"
         else:
@@ -1360,7 +1352,6 @@ class PacingDesktopApp:
             sidebar_bg = "#020617"
             main_bg = "#020617"
             nav_title = "#f8fafc"
-            chart_title = "#e5e7eb"
             row_muted = "#9ca3af"
             err = "#f97373"
 
@@ -1381,7 +1372,6 @@ class PacingDesktopApp:
                 self._theme_toggle_btn.icon = ft.icons.Icons.LIGHT_MODE
                 self._theme_toggle_btn.icon_color = "#facc15"
 
-        self.chart_title_text.color = chart_title
         self.row_count_text.color = row_muted
         self.status_text.color = err
 
@@ -1671,7 +1661,6 @@ class PacingDesktopApp:
                     ft.Container(
                         content=ft.Column(
                             [
-                                self.chart_title_text,
                                 self.row_count_text,
                                 self.status_text,
                             ],
@@ -3947,6 +3936,19 @@ class PacingDesktopApp:
                     self.chart_image_cache[render_key] = img
         return cached, cached_image
 
+    def _format_performance_count_text(self, row_count: int) -> str:
+        """Formate le libellé d'effectif affiché sous chaque graphique.
+
+        Args:
+            row_count (int): Nombre de performances disponibles pour les filtres actifs.
+
+        Returns:
+            str: Texte localisé du type « Nombre de performances disponibles : N ».
+        """
+        return (
+            f"Nombre de performances disponibles : {int(row_count):,}".replace(",", " ")
+        )
+
     def _try_apply_chart_from_cache(self, render_key: str, *, update_ui: bool) -> bool:
         cached, cached_image = self._lookup_chart_cache(render_key)
         if (
@@ -3959,13 +3961,8 @@ class PacingDesktopApp:
                 self.status_text.value = ""
                 self.image.visible = True
                 self.image.src = cached_image
-                self.chart_title_text.value = str(
-                    cached.get("chart_title", self.selected_graph)
-                )
                 row_count = int(cached.get("row_count", 0))
-                self.row_count_text.value = (
-                    f"Nombre de performances disponibles : {row_count:,}".replace(",", " ")
-                )
+                self.row_count_text.value = self._format_performance_count_text(row_count)
                 self.page.update()
             return True
         return False
@@ -4359,19 +4356,21 @@ class PacingDesktopApp:
             if status == "empty_scope":
                 if update_ui:
                     self.image.visible = False
-                    self.chart_title_text.value = str(payload.get("chart_title", ""))
-                    self.row_count_text.value = "Aucune donnée pour les filtres sélectionnés."
+                    self.row_count_text.value = self._format_performance_count_text(
+                        int(payload.get("row_count", 0))
+                    )
+                    self.status_text.value = "Aucune donnée pour les filtres sélectionnés."
             elif status == "no_figure":
                 if update_ui:
                     self.image.visible = False
                     chart_title = str(payload.get("chart_title", ""))
-                    self.chart_title_text.value = chart_title or str(
-                        payload.get("graph_name", self.selected_graph)
+                    self.row_count_text.value = self._format_performance_count_text(
+                        int(payload.get("row_count", 0))
                     )
                     if chart_title and chart_title != payload.get("graph_name"):
-                        self.row_count_text.value = chart_title
+                        self.status_text.value = chart_title
                     else:
-                        self.row_count_text.value = (
+                        self.status_text.value = (
                             "Graphique non encore implémenté dans la version PyFlet "
                             "ou aucune donnée exploitable pour ces filtres."
                         )
@@ -4379,19 +4378,18 @@ class PacingDesktopApp:
                 if update_ui:
                     self.image.visible = True
                     self.image.src = payload["image_base64"]
-                    self.chart_title_text.value = str(payload.get("chart_title", ""))
-                    self.row_count_text.value = (
-                        f"Nombre de performances disponibles : {int(payload.get('row_count', 0)):,}".replace(
-                            ",", " "
-                        )
+                    self.status_text.value = ""
+                    self.row_count_text.value = self._format_performance_count_text(
+                        int(payload.get("row_count", 0))
                     )
             if status not in ("cached",):
                 self._register_chart_payload(payload)
         except Exception as exc:  # type: ignore[bare-except]
             if update_ui:
                 self.image.visible = False
-                self.chart_title_text.value = self.selected_graph
-                self.row_count_text.value = ""
+                self.row_count_text.value = self._format_performance_count_text(
+                    int(payload.get("row_count", 0))
+                )
                 self.status_text.value = f"Erreur lors de la génération du graphique: {exc}"
         finally:
             if update_ui:
