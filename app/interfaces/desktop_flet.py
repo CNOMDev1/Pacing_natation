@@ -30,7 +30,7 @@ from project_path import PROJECT_DIR, ensure_project_imports
 ensure_project_imports()
 
 from loading_progress import TriplePrefetchProgress
-from services.corridor_data import build_corridor_chart_plot_kwargs
+from services.corridor_data import build_corridor_chart_plot_kwargs, distance_supports_pacing_profile, CORRIDOR_CHART_STYLE_VERSION
 from services.frmnatation_html_results_data_loader import (
     DEFAULT_FRMNATATION_HTML_RESULTS_DIR,
     FrmnatationHtmlResultsDataLoader,
@@ -56,6 +56,7 @@ from desktop_helpers import (
 from services.graph_service import (
     GRAPH_CATEGORIES,
     GRAPH_CHRONOS_PAR_NAGE,
+    GRAPH_PACING_PROFILE_NORMALIZED,
     GRAPHES_NOTEBOOK,
     GRAPHES_PAR_KEY,
     SCOPE_NO_FILTER_GRAPHS,
@@ -93,13 +94,19 @@ CORRIDOR_GLOBAL_GRAPH_NAME = "Couloir de performance global (âge)"
 CORRIDOR_GLOBAL_DECILES_GRAPH_NAME = "Couloir de performance global (déciles 10-90)"
 CORRIDOR_CATEGORY = "Couloirs de performance"
 CORRIDOR_SWIMMER_UI_GRAPHS: Tuple[str, ...] = (
+    GRAPH_PACING_PROFILE_NORMALIZED,
     CORRIDOR_GRAPH_NAME,
     CORRIDOR_GLOBAL_GRAPH_NAME,
     CORRIDOR_GLOBAL_DECILES_GRAPH_NAME,
 )
+CORRIDOR_FR_TARGET_SWIMMER_GRAPHS: Tuple[str, ...] = (
+    GRAPH_PACING_PROFILE_NORMALIZED,
+    CORRIDOR_GRAPH_NAME,
+)
 CHART_UPDATE_AFTER_FILTER_DEBOUNCE_SEC = 0.1
 SCOPE_PERFORMANCES_CACHE_MAX_ENTRIES = 64
 SCOPE_PERFORMANCES_PREFETCH_GRAPHS: Tuple[str, ...] = (
+    GRAPH_PACING_PROFILE_NORMALIZED,
     CORRIDOR_GRAPH_NAME,
     CORRIDOR_GLOBAL_GRAPH_NAME,
 )
@@ -108,6 +115,7 @@ CORRIDOR_CHART_PREFETCH_LIMIT = int(
     os.environ.get("PACING_CORRIDOR_CHART_PREFETCH_LIMIT", "96")
 )
 CORRIDOR_CHART_PREFETCH_GRAPH_NAMES: Tuple[str, ...] = (
+    GRAPH_PACING_PROFILE_NORMALIZED,
     CORRIDOR_GLOBAL_GRAPH_NAME,
     CORRIDOR_GRAPH_NAME,
 )
@@ -410,13 +418,6 @@ class PacingDesktopApp:
                 expand=True, 
                 fit=ft.BoxFit.CONTAIN,
                 border_radius=ft.BorderRadius.all(4),
-            )
-            self.chart_title_text = ft.Text(
-                "",
-                size=16,
-                weight=ft.FontWeight.BOLD,
-                color="#e5e7eb",
-                text_align=ft.TextAlign.CENTER,
             )
             self.row_count_text = ft.Text(
                 "",
@@ -1009,7 +1010,7 @@ class PacingDesktopApp:
         if not self._needs_moroccan_corridor_swimmer_dd():
             moroccan_name = None
             moroccan_yob = None
-        return {
+        options: Dict[str, Any] = {
             "stroke": stroke,
             "distance": int(distance) if distance is not None else None,
             "pool": pool,
@@ -1021,6 +1022,9 @@ class PacingDesktopApp:
             "pacing_swimmers": pacing,
             "chronos_sample_size": int(self.selected_chronos_sample_size),
         }
+        if graph_name in CORRIDOR_SWIMMER_UI_GRAPHS:
+            options["chart_style_version"] = CORRIDOR_CHART_STYLE_VERSION
+        return options
 
     @staticmethod
     def _is_corridor_registry_item(item: Dict[str, Any]) -> bool:
@@ -1341,7 +1345,6 @@ class PacingDesktopApp:
             sidebar_bg = "#ffffff"
             main_bg = "#f8fafc"
             nav_title = "#0f172a"
-            chart_title = "#0f172a"
             row_muted = "#475569"
             err = "#b91c1c"
         else:
@@ -1349,7 +1352,6 @@ class PacingDesktopApp:
             sidebar_bg = "#020617"
             main_bg = "#020617"
             nav_title = "#f8fafc"
-            chart_title = "#e5e7eb"
             row_muted = "#9ca3af"
             err = "#f97373"
 
@@ -1370,7 +1372,6 @@ class PacingDesktopApp:
                 self._theme_toggle_btn.icon = ft.icons.Icons.LIGHT_MODE
                 self._theme_toggle_btn.icon_color = "#facc15"
 
-        self.chart_title_text.color = chart_title
         self.row_count_text.color = row_muted
         self.status_text.color = err
 
@@ -1660,7 +1661,6 @@ class PacingDesktopApp:
                     ft.Container(
                         content=ft.Column(
                             [
-                                self.chart_title_text,
                                 self.row_count_text,
                                 self.status_text,
                             ],
@@ -2703,7 +2703,7 @@ class PacingDesktopApp:
         if self.selected_graph != CORRIDOR_GLOBAL_DECILES_GRAPH_NAME:
             self.corridor_deciles_confirmed_name = None
             self.corridor_deciles_confirmed_yob = None
-        if self.selected_graph != CORRIDOR_GRAPH_NAME:
+        if self.selected_graph not in CORRIDOR_FR_TARGET_SWIMMER_GRAPHS:
             self.corridor_fr_confirmed_name = None
             self.corridor_fr_confirmed_yob = None
         self._sync_corridor_mode_switch(update_ui=False)
@@ -3044,7 +3044,7 @@ class PacingDesktopApp:
         self.selected_corridor_swimmer_yob = yob
         if self._is_usa_corridor_mode() or (
             self.selected_country == COUNTRY_FRANCE
-            and self.selected_graph == CORRIDOR_GRAPH_NAME
+            and self.selected_graph in CORRIDOR_FR_TARGET_SWIMMER_GRAPHS
         ):
             self._refresh_filters_from_data()
             return
@@ -3090,7 +3090,7 @@ class PacingDesktopApp:
         self.selected_corridor_swimmer_yob = yob
         if (
             self.selected_country == COUNTRY_FRANCE
-            and self.selected_graph == CORRIDOR_GRAPH_NAME
+            and self.selected_graph in CORRIDOR_FR_TARGET_SWIMMER_GRAPHS
         ):
             self.corridor_fr_confirmed_name = name
             self.corridor_fr_confirmed_yob = yob
@@ -3763,7 +3763,7 @@ class PacingDesktopApp:
             corridor_yob = self.selected_corridor_swimmer_yob
         elif (
             self.selected_country == COUNTRY_FRANCE
-            and graph == CORRIDOR_GRAPH_NAME
+            and graph in CORRIDOR_FR_TARGET_SWIMMER_GRAPHS
         ):
             corridor_name = (
                 self.corridor_fr_confirmed_name
@@ -3853,6 +3853,8 @@ class PacingDesktopApp:
             "pacing_swimmers": pacing,
             "chronos_sample_size": int(snapshot.get("chronos_sample_size", 5000)),
         }
+        if graph_name in CORRIDOR_SWIMMER_UI_GRAPHS:
+            options["chart_style_version"] = CORRIDOR_CHART_STYLE_VERSION
         chart_id, render_key = self._render_key_for_category_graph_options(
             str(snapshot["category"]),
             graph_name,
@@ -3861,20 +3863,23 @@ class PacingDesktopApp:
         return chart_id, options, render_key
 
     def _corridor_fallback_render_keys(self, snapshot: Dict[str, Any]) -> List[str]:
-        """Clés cache du couloir global (même épreuve, sans nageur) pour affichage immédiat."""
-        keys: List[str] = []
-        for graph_name in CORRIDOR_CHART_PREFETCH_GRAPH_NAMES:
-            fallback = {
-                **snapshot,
-                "graph": graph_name,
-                "corridor_name": None,
-                "corridor_yob": None,
-                "deciles_name": None,
-                "deciles_yob": None,
-            }
-            _, _, render_key = self._build_render_key_from_snapshot(fallback)
-            keys.append(render_key)
-        return keys
+        """Clés cache du même graphique sans nageur (stale-while-revalidate).
+
+        Ne propose qu'une variante du graphique courant (même épreuve, sans
+        nageur cible) pour éviter d'afficher brièvement un autre type de couloir
+        puis de le masquer au recalcul.
+        """
+        fallback = {
+            **snapshot,
+            "corridor_name": None,
+            "corridor_yob": None,
+            "moroccan_corridor_name": None,
+            "moroccan_corridor_yob": None,
+            "deciles_name": None,
+            "deciles_yob": None,
+        }
+        _, _, render_key = self._build_render_key_from_snapshot(fallback)
+        return [render_key]
 
     def _try_show_stale_corridor_chart(self, *, update_ui: bool) -> bool:
         """Affiche une image couloir déjà en cache pendant le recalcul (stale-while-revalidate)."""
@@ -3931,6 +3936,19 @@ class PacingDesktopApp:
                     self.chart_image_cache[render_key] = img
         return cached, cached_image
 
+    def _format_performance_count_text(self, row_count: int) -> str:
+        """Formate le libellé d'effectif affiché sous chaque graphique.
+
+        Args:
+            row_count (int): Nombre de performances disponibles pour les filtres actifs.
+
+        Returns:
+            str: Texte localisé du type « Nombre de performances disponibles : N ».
+        """
+        return (
+            f"Nombre de performances disponibles : {int(row_count):,}".replace(",", " ")
+        )
+
     def _try_apply_chart_from_cache(self, render_key: str, *, update_ui: bool) -> bool:
         cached, cached_image = self._lookup_chart_cache(render_key)
         if (
@@ -3943,13 +3961,8 @@ class PacingDesktopApp:
                 self.status_text.value = ""
                 self.image.visible = True
                 self.image.src = cached_image
-                self.chart_title_text.value = str(
-                    cached.get("chart_title", self.selected_graph)
-                )
                 row_count = int(cached.get("row_count", 0))
-                self.row_count_text.value = (
-                    f"Nombre de performances disponibles : {row_count:,}".replace(",", " ")
-                )
+                self.row_count_text.value = self._format_performance_count_text(row_count)
                 self.page.update()
             return True
         return False
@@ -4343,33 +4356,40 @@ class PacingDesktopApp:
             if status == "empty_scope":
                 if update_ui:
                     self.image.visible = False
-                    self.chart_title_text.value = str(payload.get("chart_title", ""))
-                    self.row_count_text.value = "Aucune donnée pour les filtres sélectionnés."
+                    self.row_count_text.value = self._format_performance_count_text(
+                        int(payload.get("row_count", 0))
+                    )
+                    self.status_text.value = "Aucune donnée pour les filtres sélectionnés."
             elif status == "no_figure":
                 if update_ui:
                     self.image.visible = False
-                    self.chart_title_text.value = str(payload.get("chart_title", ""))
-                    self.row_count_text.value = (
-                        "Graphique non encore implémenté dans la version PyFlet "
-                        "ou aucune donnée exploitable pour ces filtres."
+                    chart_title = str(payload.get("chart_title", ""))
+                    self.row_count_text.value = self._format_performance_count_text(
+                        int(payload.get("row_count", 0))
                     )
+                    if chart_title and chart_title != payload.get("graph_name"):
+                        self.status_text.value = chart_title
+                    else:
+                        self.status_text.value = (
+                            "Graphique non encore implémenté dans la version PyFlet "
+                            "ou aucune donnée exploitable pour ces filtres."
+                        )
             elif status == "ok" and payload.get("image_base64"):
                 if update_ui:
                     self.image.visible = True
                     self.image.src = payload["image_base64"]
-                    self.chart_title_text.value = str(payload.get("chart_title", ""))
-                    self.row_count_text.value = (
-                        f"Nombre de performances disponibles : {int(payload.get('row_count', 0)):,}".replace(
-                            ",", " "
-                        )
+                    self.status_text.value = ""
+                    self.row_count_text.value = self._format_performance_count_text(
+                        int(payload.get("row_count", 0))
                     )
             if status not in ("cached",):
                 self._register_chart_payload(payload)
         except Exception as exc:  # type: ignore[bare-except]
             if update_ui:
                 self.image.visible = False
-                self.chart_title_text.value = self.selected_graph
-                self.row_count_text.value = ""
+                self.row_count_text.value = self._format_performance_count_text(
+                    int(payload.get("row_count", 0))
+                )
                 self.status_text.value = f"Erreur lors de la génération du graphique: {exc}"
         finally:
             if update_ui:
@@ -4739,6 +4759,23 @@ class PacingDesktopApp:
                 if self.selected_stroke
                 else []
             )
+        if (
+            self.selected_graph == GRAPH_PACING_PROFILE_NORMALIZED
+            and self.selected_stroke
+            and dist_vals
+            and not self.df.empty
+        ):
+            stroke_pools = combos.get(self.selected_stroke, {})
+            dist_vals = [
+                int(d)
+                for d in dist_vals
+                if distance_supports_pacing_profile(
+                    self.df,
+                    self.selected_stroke,
+                    int(d),
+                    list(stroke_pools.get(int(d), [])),
+                )
+            ]
         if self.selected_distance not in dist_vals:
             self.selected_distance = dist_vals[0] if dist_vals else None
         dist_keys = tuple(str(d) for d in dist_vals)
