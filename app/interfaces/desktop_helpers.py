@@ -30,6 +30,8 @@ from services.graph_service import (
     SCOPE_NO_FILTER_GRAPHS,
     SCOPE_NO_STROKE_GRAPHS,
     SCOPE_POOL_ONLY_GRAPHS,
+    SCOPE_POOL_STROKE_GRAPHS,
+    SCOPE_STROKE_ONLY_GRAPHS,
 )
 
 # --- Chemins et constantes d'affichage ---
@@ -232,6 +234,28 @@ def _resolve_scope_filters(
             selected_pool = pool_options[0]
         return None, None, selected_pool
 
+    if selected_graph in SCOPE_POOL_STROKE_GRAPHS:
+        stroke_options = sorted(df_nav["Stroke"].dropna().unique().tolist())
+        if not stroke_options:
+            return None, None, None
+        if selected_stroke not in stroke_options:
+            selected_stroke = stroke_options[0]
+        stroke_mask = df_nav["Stroke"] == selected_stroke
+        pool_options = sorted(df_nav.loc[stroke_mask, "Course"].dropna().unique().tolist())
+        if not pool_options:
+            return selected_stroke, None, None
+        if selected_pool not in pool_options:
+            selected_pool = pool_options[0]
+        return selected_stroke, None, selected_pool
+
+    if selected_graph in SCOPE_STROKE_ONLY_GRAPHS:
+        stroke_options = sorted(df_nav["Stroke"].dropna().unique().tolist())
+        if not stroke_options:
+            return None, None, None
+        if selected_stroke not in stroke_options:
+            selected_stroke = stroke_options[0]
+        return selected_stroke, None, None
+
     if selected_graph in SCOPE_NO_STROKE_GRAPHS:
         distance_options = sorted(df_nav["Distance"].dropna().unique().tolist())
         if not distance_options:
@@ -302,6 +326,23 @@ def _materialize_df_scope(
         if pool is None:
             return pd.DataFrame()
         return df_nav[df_nav["Course"] == pool].copy()
+
+    if selected_graph in SCOPE_POOL_STROKE_GRAPHS:
+        if stroke is None or pool is None:
+            return pd.DataFrame()
+        stroke_key = str(stroke).strip()
+        pool_key = str(pool).strip()
+        mask = (
+            (df_nav["Stroke"].astype(str).str.strip() == stroke_key)
+            & (df_nav["Course"].astype(str).str.strip() == pool_key)
+        )
+        return df_nav.loc[mask].copy()
+
+    if selected_graph in SCOPE_STROKE_ONLY_GRAPHS:
+        if stroke is None:
+            return pd.DataFrame()
+        stroke_key = str(stroke).strip()
+        return df_nav[df_nav["Stroke"].astype(str).str.strip() == stroke_key].copy()
 
     if selected_graph in SCOPE_NO_STROKE_GRAPHS:
         if distance is None or pool is None:

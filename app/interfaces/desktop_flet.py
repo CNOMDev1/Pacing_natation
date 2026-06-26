@@ -54,14 +54,19 @@ from desktop_helpers import (
     load_data,
 )
 from services.graph_service import (
+    EVENT_COUNTS_SORT_OPTIONS,
+    EVENT_COUNTS_SORT_STROKE_DISTANCE,
     GRAPH_CATEGORIES,
     GRAPH_CHRONOS_PAR_NAGE,
     GRAPH_PACING_PROFILE_NORMALIZED,
     GRAPHES_NOTEBOOK,
     GRAPHES_PAR_KEY,
+    SCOPE_EVENT_COUNTS_GRAPHS,
     SCOPE_NO_FILTER_GRAPHS,
     SCOPE_NO_STROKE_GRAPHS,
     SCOPE_POOL_ONLY_GRAPHS,
+    SCOPE_POOL_STROKE_GRAPHS,
+    SCOPE_STROKE_ONLY_GRAPHS,
     GraphSpec,
     ServiceGraphe,
     unwrap_matplotlib_figure,
@@ -312,6 +317,7 @@ class PacingDesktopApp:
             self.selected_stroke: Optional[str] = None
             self.selected_distance: Optional[int] = None
             self.selected_pool: Optional[str] = None
+            self.selected_event_counts_sort: str = EVENT_COUNTS_SORT_STROKE_DISTANCE
             self.selected_corridor_gender: str = "all"
             self.selected_heatmap_swimmer: Optional[str] = None
             self.selected_corridor_swimmer_name: Optional[str] = None
@@ -1481,6 +1487,20 @@ class PacingDesktopApp:
             width=dropdown_width,
             menu_width=dropdown_menu_width,
         )
+        self.event_counts_sort_dd = ft.Dropdown(
+            label="Tri des épreuves",
+            options=[
+                ft.dropdown.Option(key=key, text=label)
+                for key, label in EVENT_COUNTS_SORT_OPTIONS.items()
+            ],
+            value=self.selected_event_counts_sort,
+            on_select=self._on_filter_change,
+            filled=True,
+            menu_height=220,
+            width=dropdown_width,
+            menu_width=dropdown_menu_width,
+            visible=False,
+        )
         self.corridor_gender_dd = ft.Dropdown(
             label="Sexe (couloir)",
             options=[
@@ -1628,6 +1648,7 @@ class PacingDesktopApp:
                     self.stroke_dd,
                     self.distance_dd,
                     self.pool_dd,
+                    self.event_counts_sort_dd,
                     self.corridor_gender_dd,
                     self.pacing_swimmer_dd_1,
                     self.pacing_swimmer_dd_2,
@@ -2772,6 +2793,8 @@ class PacingDesktopApp:
         self.selected_stroke = self.stroke_dd.value
         self.selected_distance = int(self.distance_dd.value) if self.distance_dd.value else None
         self.selected_pool = self.pool_dd.value
+        if self.event_counts_sort_dd.value in EVENT_COUNTS_SORT_OPTIONS:
+            self.selected_event_counts_sort = str(self.event_counts_sort_dd.value)
         self.selected_corridor_gender = self._normalize_gender_value(
             self.corridor_gender_dd.value
         )
@@ -3801,6 +3824,7 @@ class PacingDesktopApp:
             "heatmap": self.selected_heatmap_swimmer,
             "pacing": self.selected_pacing_swimmers[:3],
             "chronos_sample_size": int(self.selected_chronos_sample_size),
+            "event_counts_sort": self.selected_event_counts_sort,
         }
 
     def _build_render_key_from_snapshot(self, snapshot: Dict[str, Any]) -> Tuple[str, Dict[str, Any], str]:
@@ -3853,6 +3877,10 @@ class PacingDesktopApp:
             "pacing_swimmers": pacing,
             "chronos_sample_size": int(snapshot.get("chronos_sample_size", 5000)),
         }
+        if graph_name in SCOPE_EVENT_COUNTS_GRAPHS:
+            options["event_counts_sort"] = snapshot.get(
+                "event_counts_sort", EVENT_COUNTS_SORT_STROKE_DISTANCE
+            )
         if graph_name in CORRIDOR_SWIMMER_UI_GRAPHS:
             options["chart_style_version"] = CORRIDOR_CHART_STYLE_VERSION
         chart_id, render_key = self._render_key_for_category_graph_options(
@@ -4243,6 +4271,9 @@ class PacingDesktopApp:
             moroccan_corridor_df=ma_plot_df if not ma_plot_df.empty else None,
             corridor_plot_kwargs=corridor_plot_kwargs,
             corridor_reference_df=corridor_ref_df,
+            event_counts_sort=str(
+                snap.get("event_counts_sort", EVENT_COUNTS_SORT_STROKE_DISTANCE)
+            ),
         )
         if fig is None:
             return {
@@ -4525,6 +4556,7 @@ class PacingDesktopApp:
             (self.stroke_dd, False),
             (self.distance_dd, False),
             (self.pool_dd, False),
+            (self.event_counts_sort_dd, False),
         ):
             if self._sync_dropdown(
                 dd,
@@ -4700,6 +4732,8 @@ class PacingDesktopApp:
             use_swimmers_file_for_triplet = (
                 self.selected_graph not in SCOPE_NO_STROKE_GRAPHS
                 and self.selected_graph not in SCOPE_POOL_ONLY_GRAPHS
+                and self.selected_graph not in SCOPE_POOL_STROKE_GRAPHS
+                and self.selected_graph not in SCOPE_STROKE_ONLY_GRAPHS
                 and bool(self._event_swimmers_cache)
                 and not (
                     self.selected_graph in CORRIDOR_SWIMMER_UI_GRAPHS
@@ -4740,11 +4774,19 @@ class PacingDesktopApp:
             value=self.selected_stroke,
             visible=self.selected_graph
             not in (
-                SCOPE_NO_FILTER_GRAPHS | SCOPE_POOL_ONLY_GRAPHS | SCOPE_NO_STROKE_GRAPHS
+                SCOPE_NO_FILTER_GRAPHS
+                | SCOPE_POOL_ONLY_GRAPHS
+                | SCOPE_NO_STROKE_GRAPHS
             ),
         ):
             dirty = True
 
+        hide_distance_for_graph = (
+            SCOPE_NO_FILTER_GRAPHS
+            | SCOPE_POOL_ONLY_GRAPHS
+            | SCOPE_POOL_STROKE_GRAPHS
+            | SCOPE_STROKE_ONLY_GRAPHS
+        )
         if self.selected_graph in SCOPE_NO_STROKE_GRAPHS:
             dist_vals = sorted(
                 pd.to_numeric(df_nav["Distance"], errors="coerce")
@@ -4787,12 +4829,17 @@ class PacingDesktopApp:
             new_option_keys=dist_keys,
             build_options=lambda dv=dist_vals: [ft.dropdown.Option(str(d)) for d in dv],
             value=dist_value,
-            visible=self.selected_graph
-            not in (SCOPE_NO_FILTER_GRAPHS | SCOPE_POOL_ONLY_GRAPHS),
+            visible=self.selected_graph not in hide_distance_for_graph,
         ):
             dirty = True
 
-        if self.selected_graph in SCOPE_POOL_ONLY_GRAPHS:
+        if self.selected_graph in SCOPE_POOL_STROKE_GRAPHS:
+            if self.selected_stroke:
+                smask = df_nav["Stroke"] == self.selected_stroke
+                pool_vals = sorted(df_nav.loc[smask, "Course"].dropna().unique().tolist())
+            else:
+                pool_vals = []
+        elif self.selected_graph in SCOPE_POOL_ONLY_GRAPHS:
             pool_vals = sorted(df_nav["Course"].dropna().unique().tolist())
         elif self.selected_graph in SCOPE_NO_STROKE_GRAPHS:
             if self.selected_distance is not None:
@@ -4816,7 +4863,23 @@ class PacingDesktopApp:
                 ft.dropdown.Option(key=str(p), text=str(p)) for p in pv
             ],
             value=self.selected_pool,
-            visible=self.selected_graph not in SCOPE_NO_FILTER_GRAPHS,
+            visible=self.selected_graph
+            not in (SCOPE_NO_FILTER_GRAPHS | SCOPE_STROKE_ONLY_GRAPHS),
+        ):
+            dirty = True
+
+        sort_keys = tuple(EVENT_COUNTS_SORT_OPTIONS.keys())
+        if self.selected_event_counts_sort not in EVENT_COUNTS_SORT_OPTIONS:
+            self.selected_event_counts_sort = EVENT_COUNTS_SORT_STROKE_DISTANCE
+        if self._sync_dropdown(
+            self.event_counts_sort_dd,
+            new_option_keys=sort_keys,
+            build_options=lambda: [
+                ft.dropdown.Option(key=key, text=label)
+                for key, label in EVENT_COUNTS_SORT_OPTIONS.items()
+            ],
+            value=self.selected_event_counts_sort,
+            visible=self.selected_graph in SCOPE_EVENT_COUNTS_GRAPHS,
         ):
             dirty = True
 
