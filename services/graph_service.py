@@ -18,6 +18,7 @@ from services.stroke_labels import (
     localize_event_string,
     relabel_stroke_column,
     stroke_code_to_label,
+    stroke_label_to_code,
 )
 from services.corridor_data import (
     CorridorSwimmerSpec,
@@ -69,6 +70,1169 @@ NON_CORRIDOR_COLOR_ACCENT = "#6A3D9A"
 NON_CORRIDOR_COLOR_TARGET = "#D55E00"
 NON_CORRIDOR_CMAP_SEQUENTIAL = "viridis"
 NON_CORRIDOR_CMAP_DIVERGING = "PuOr"
+
+_GENDER_LABEL_FEMALE = "Féminin"
+_GENDER_LABEL_MALE = "Masculin"
+_STROKE_SORT_ORDER: Dict[str, int] = {
+    "FR": 0,
+    "BK": 1,
+    "BR": 2,
+    "FL": 3,
+    "IM": 4,
+    "MD": 5,
+}
+_STROKE_CATEGORY_COLORS: Dict[str, str] = {
+    stroke_code_to_label("FR"): "#0072B2",
+    stroke_code_to_label("BK"): "#56B4E9",
+    stroke_code_to_label("BR"): "#E69F00",
+    stroke_code_to_label("FL"): "#009E73",
+    stroke_code_to_label("IM"): "#CC79A7",
+    stroke_code_to_label("MD"): "#D55E00",
+}
+
+
+def _stroke_label_sort_key(label: str) -> Tuple[int, str]:
+    """Construit une clé de tri pour un libellé français de nage.
+
+    Args:
+        label (str): Libellé affiché (ex. ``Nage libre``).
+
+    Returns:
+        Tuple[int, str]: Rang natation standard puis libellé brut.
+    """
+    code = stroke_label_to_code(label)
+    return (_STROKE_SORT_ORDER.get(code, 99), str(label))
+
+
+def _ordered_stroke_labels(labels: List[str]) -> List[str]:
+    """Trie les libellés de nage selon l'ordre compétition (FR, dos, brasse…).
+
+    Args:
+        labels (List[str]): Libellés français présents dans les données.
+
+    Returns:
+        List[str]: Libellés uniques triés.
+    """
+    unique = {str(label).strip() for label in labels if str(label).strip()}
+    return sorted(unique, key=_stroke_label_sort_key)
+
+
+def _stroke_palette_for_labels(labels: List[str]) -> Dict[str, str]:
+    """Associe chaque nage à une couleur Okabe-Ito stable.
+
+    Args:
+        labels (List[str]): Libellés de nage à colorer.
+
+    Returns:
+        Dict[str, str]: Dictionnaire libellé → couleur hexadécimale.
+    """
+    return {
+        label: _STROKE_CATEGORY_COLORS.get(label, NON_CORRIDOR_COLOR_NEUTRAL)
+        for label in labels
+    }
+
+
+def _format_swim_time_display(total_seconds: float, *, precision: int = 1) -> str:
+    """Formate une durée de nage pour axe ou annotation.
+
+    Sous 60 s : affichage en secondes (``52.3s``). Au-delà : ``M:SS`` ou
+    ``M:SS.cc`` selon la précision demandée, sans zéros décimaux superflus
+    sur l'axe.
+
+    Args:
+        total_seconds (float): Durée en secondes.
+        precision (int): Nombre de décimales (1 pour l'axe, 2 pour les médianes).
+
+    Returns:
+        str: Libellé formaté pour affichage.
+    """
+    if total_seconds < 0:
+        return ""
+    if total_seconds < 60:
+        text = f"{total_seconds:.{precision}f}"
+        if precision > 0:
+            text = text.rstrip("0").rstrip(".")
+        return f"{text}s"
+    minutes = int(total_seconds // 60)
+    seconds = total_seconds % 60
+    if precision >= 2:
+        return f"{minutes}:{seconds:05.2f}"
+    sec_text = f"{seconds:04.1f}"
+    if sec_text.endswith(".0"):
+        sec_text = sec_text[:-2]
+    return f"{minutes}:{sec_text}"
+
+
+def _format_swim_time_tick(value: float, _: int) -> str:
+    """Formate une graduation d'axe temps en secondes lisibles.
+
+    Args:
+        value (float): Durée en secondes.
+        _ (int): Index de graduation (ignoré, requis par Matplotlib).
+
+    Returns:
+        str: Libellé court pour l'axe Y (ex. ``15.2s``, ``1:40``).
+    """
+    return _format_swim_time_display(value, precision=1)
+
+
+def _format_swim_time_annotation(seconds: float) -> str:
+    """Formate un temps de nage pour annotation sur le graphique.
+
+    Args:
+        seconds (float): Durée en secondes.
+
+    Returns:
+        str: Libellé compact (ex. ``52.34s`` ou ``2:00.06``).
+    """
+    return _format_swim_time_display(seconds, precision=2)
+
+
+_MEDIAN_LABEL_BBOX = {
+    "boxstyle": "round,pad=0.28",
+    "facecolor": "white",
+    "alpha": 0.9,
+    "edgecolor": "#e2e8f0",
+    "linewidth": 0.6,
+}
+
+
+def _boxplot_category_center_x(ax: plt.Axes, n_categories: int) -> List[float]:
+    """Retourne les abscisses centrales des boîtes d'un boxplot Seaborn.
+
+    Lit la position réelle des moustaches ou des lignes médianes dans les
+    conteneurs Seaborn, plus fiable que des indices entiers lorsque ``hue``
+    et ``x`` partagent la même variable catégorielle.
+
+    Args:
+        ax (plt.Axes): Axe contenant le boxplot déjà tracé.
+        n_categories (int): Nombre de catégories attendues sur l'axe X.
+
+    Returns:
+        List[float]: Centres horizontaux de chaque boîte, dans l'ordre de tracé.
+    """
+    centers: List[float] = []
+    containers = list(ax.containers[:n_categories]) if ax.containers else []
+    for container in containers:
+        whiskers = getattr(container, "whiskers", None)
+        if whiskers and len(whiskers) >= 2:
+            x_data = whiskers[1].get_xdata()
+            centers.append(float(x_data[0]))
+            continue
+        medians = getattr(container, "medians", None)
+        if medians:
+            x_data = medians[0].get_xdata()
+            centers.append(float((x_data[0] + x_data[1]) / 2.0))
+            continue
+    if len(centers) == n_categories:
+        return centers
+    tick_positions = ax.get_xticks()
+    if len(tick_positions) >= n_categories:
+        return [float(pos) for pos in tick_positions[:n_categories]]
+    return [float(index) for index in range(n_categories)]
+
+
+def _ranked_sequential_bar_colors(n_bars: int) -> List[str]:
+    """Construit un dégradé séquentiel pour des barres classées par rang.
+
+    Du plus foncé (1er) au plus clair (dernier), adapté aux données ordonnées
+    (Munzner : luminance pour l'ordre, position pour la comparaison).
+
+    Args:
+        n_bars (int): Nombre de barres à colorer.
+
+    Returns:
+        List[str]: Couleurs hexadécimales, une par barre.
+    """
+    if n_bars <= 0:
+        return []
+    if n_bars == 1:
+        return [NON_CORRIDOR_COLOR_PRIMARY]
+    palette = sns.color_palette(
+        [NON_CORRIDOR_COLOR_PRIMARY, "#b8cce8"],
+        n_colors=n_bars,
+    )
+    return [to_hex(color) for color in palette]
+
+
+def _plot_ranked_horizontal_counts(
+    counts: pd.Series,
+    *,
+    title: str,
+    y_label: str,
+    x_label: str = "Nombre de participations",
+    total_count: Optional[int] = None,
+) -> plt.Figure:
+    """Trace un classement horizontal par effectif décroissant.
+
+    Barres horizontales (Cleveland & McGill) : les libellés longs restent lisibles
+    sans rotation. Palette séquentielle, thème Pacing et annotations de valeur.
+
+    Args:
+        counts (pd.Series): Effectifs indexés par catégorie, tri décroissant attendu.
+        title (str): Titre affiché au-dessus du graphique.
+        y_label (str): Libellé de l'axe des catégories.
+        x_label (str): Libellé de l'axe des effectifs.
+        total_count (Optional[int]): Dénominateur pour les parts en % ; par défaut
+            la somme des barres affichées.
+
+    Returns:
+        plt.Figure: Figure matplotlib du classement.
+    """
+    ordered = counts.sort_values(ascending=False)
+    categories = [str(label) for label in ordered.index.tolist()]
+    values = [int(value) for value in ordered.values]
+    n_items = len(categories)
+    bar_total = int(sum(values)) if values else 0
+    denominator = int(total_count) if total_count is not None else bar_total
+
+    fig_height = max(5.0, min(12.0, n_items * 0.62 + 1.8))
+    fig, ax = plt.subplots(figsize=(12, fig_height))
+    _apply_standard_chart_theme(fig, ax)
+
+    if n_items == 0 or bar_total == 0:
+        ax.text(
+            0.5,
+            0.5,
+            "Aucune performance disponible pour ce périmètre.",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=12,
+            color="#334155",
+        )
+        ax.set_axis_off()
+        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+        fig.tight_layout()
+        return fig
+
+    colors = _ranked_sequential_bar_colors(n_items)
+    y_pos = np.arange(n_items)
+    bars = ax.barh(
+        y_pos,
+        values,
+        height=0.62,
+        color=colors,
+        edgecolor="#ffffff",
+        linewidth=0.8,
+        zorder=3,
+    )
+    xmax = max(values)
+    label_offset = xmax * 0.02 if xmax > 0 else 0.5
+    for bar, value in zip(bars, values):
+        share_pct = (100.0 * value / denominator) if denominator > 0 else 0.0
+        ax.text(
+            value + label_offset,
+            bar.get_y() + bar.get_height() / 2,
+            f"{_format_count_display(value)} ({share_pct:.0f} %)",
+            ha="left",
+            va="center",
+            fontsize=10.5,
+            color="#334155",
+            fontweight="medium",
+            zorder=4,
+        )
+
+    y_labelsize = 11 if n_items <= 6 else 10
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(categories)
+    ax.tick_params(axis="y", labelsize=y_labelsize)
+    ax.invert_yaxis()
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+    ax.set_xlim(0, xmax * 1.22 if xmax > 0 else 1)
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True, min_n_ticks=5))
+    ax.xaxis.set_major_formatter(FuncFormatter(_format_performance_count_tick))
+    ax.grid(
+        axis="x",
+        alpha=CORRIDOR_GRID_ALPHA,
+        color="#94a3b8",
+        linestyle="-",
+        linewidth=0.6,
+        zorder=0,
+    )
+    fig.tight_layout()
+    return fig
+
+
+def _plot_ranked_horizontal_median_times(
+    stats: pd.DataFrame,
+    *,
+    title: str,
+    club_col: str = "Club",
+    median_col: str = "median_seconds",
+    count_col: str = "n_performances",
+    y_label: str = "Club",
+    x_label: str = "Temps médian (secondes)",
+) -> plt.Figure:
+    """Trace un classement horizontal de temps médians croissants.
+
+    Barres horizontales (Cleveland & McGill) : comparaison de chronos sur un
+    axe commun, libellés de clubs lisibles, palette séquentielle et fenêtre
+    d'axe resserrée autour des valeurs observées (Tufte).
+
+    Args:
+        stats (pd.DataFrame): Stats par club, triées par temps médian croissant.
+        title (str): Titre affiché au-dessus du graphique.
+        club_col (str): Colonne des noms de club.
+        median_col (str): Colonne du temps médian en secondes.
+        count_col (str): Colonne du nombre de performances par club.
+        y_label (str): Libellé de l'axe des catégories.
+        x_label (str): Libellé de l'axe des temps.
+
+    Returns:
+        plt.Figure: Figure matplotlib du classement par temps médian.
+
+    Raises:
+        ValueError: Si une colonne requise est absente de ``stats``.
+    """
+    for column in (club_col, median_col, count_col):
+        if column not in stats.columns:
+            raise ValueError(f"Colonne introuvable pour le classement médian: {column}")
+
+    ordered = stats.sort_values(median_col, ascending=True).copy()
+    categories = [str(label) for label in ordered[club_col].tolist()]
+    values = [float(value) for value in ordered[median_col].tolist()]
+    counts = [int(value) for value in ordered[count_col].tolist()]
+    n_items = len(categories)
+
+    fig_height = max(5.0, min(12.0, n_items * 0.62 + 1.8))
+    fig, ax = plt.subplots(figsize=(12, fig_height))
+    _apply_standard_chart_theme(fig, ax)
+
+    if n_items == 0:
+        ax.text(
+            0.5,
+            0.5,
+            "Aucune performance disponible pour ce périmètre.",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=12,
+            color="#334155",
+        )
+        ax.set_axis_off()
+        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+        fig.tight_layout()
+        return fig
+
+    xmin = float(min(values))
+    xmax = float(max(values))
+    x_span = max(xmax - xmin, 0.5)
+    x_floor = max(0.0, xmin - x_span * 0.35)
+    colors = _ranked_sequential_bar_colors(n_items)
+    y_pos = np.arange(n_items)
+    bars = ax.barh(
+        y_pos,
+        [value - x_floor for value in values],
+        left=x_floor,
+        height=0.62,
+        color=colors,
+        edgecolor="#ffffff",
+        linewidth=0.8,
+        zorder=3,
+    )
+    label_offset = x_span * 0.03 if x_span > 0 else 0.1
+    for bar, median_value, perf_count in zip(bars, values, counts):
+        ax.text(
+            median_value + label_offset,
+            bar.get_y() + bar.get_height() / 2,
+            f"{_format_swim_time_annotation(median_value)} (n={perf_count})",
+            ha="left",
+            va="center",
+            fontsize=10.5,
+            color="#334155",
+            fontweight="medium",
+            zorder=4,
+        )
+
+    y_labelsize = 11 if n_items <= 6 else 10
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(categories)
+    ax.tick_params(axis="y", labelsize=y_labelsize)
+    ax.invert_yaxis()
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+    ax.set_xlim(x_floor, xmax + x_span * 0.34)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
+    ax.xaxis.set_major_formatter(FuncFormatter(_format_swim_time_tick))
+    ax.grid(
+        axis="x",
+        alpha=CORRIDOR_GRID_ALPHA,
+        color="#94a3b8",
+        linestyle="-",
+        linewidth=0.6,
+        zorder=0,
+    )
+    fig.tight_layout()
+    return fig
+
+
+def _filter_stroke_swim_time_outliers(
+    df: pd.DataFrame,
+    stroke_col: str,
+    swim_col: str,
+) -> pd.DataFrame:
+    """Exclut les temps extrêmes par nage selon la règle IQR.
+
+    Réduit l'impact des valeurs aberrantes ou d'épreuves très longues mélangées
+    avant l'agrégation annuelle (Tufte : honnêteté et lisibilité des tendances).
+
+    Args:
+        df (pd.DataFrame): Performances avec nage et temps en secondes.
+        stroke_col (str): Colonne du type de nage.
+        swim_col (str): Colonne des temps en secondes.
+
+    Returns:
+        pd.DataFrame: Sous-ensemble filtré, ou copie d'origine si filtre vide.
+    """
+    if df.empty:
+        return df.copy()
+    filtered_parts: List[pd.DataFrame] = []
+    for _, group in df.groupby(stroke_col):
+        values = pd.to_numeric(group[swim_col], errors="coerce").dropna()
+        if values.empty:
+            continue
+        q1, q3 = values.quantile([0.25, 0.75])
+        iqr = float(q3 - q1)
+        if iqr <= 0:
+            filtered_parts.append(group.copy())
+            continue
+        low = max(0.0, float(q1 - 1.5 * iqr))
+        high = float(q3 + 1.5 * iqr)
+        mask = (pd.to_numeric(group[swim_col], errors="coerce") >= low) & (
+            pd.to_numeric(group[swim_col], errors="coerce") <= high
+        )
+        kept = group.loc[mask].copy()
+        filtered_parts.append(kept if not kept.empty else group.copy())
+    if not filtered_parts:
+        return df.copy()
+    return pd.concat(filtered_parts, ignore_index=True)
+
+
+def _compute_yearly_stroke_median_times(
+    df: pd.DataFrame,
+    stroke_col: str,
+    swim_col: str,
+    year_col: str,
+) -> pd.DataFrame:
+    """Calcule la médiane annuelle des temps par type de nage.
+
+    Args:
+        df (pd.DataFrame): Performances échantillonnées avec année et nage.
+        stroke_col (str): Colonne du type de nage (libellés français).
+        swim_col (str): Colonne des temps en secondes.
+        year_col (str): Colonne de l'année civile.
+
+    Returns:
+        pd.DataFrame: Colonnes ``year``, ``stroke_col``, ``median_seconds``, ``n``.
+    """
+    if df.empty:
+        return pd.DataFrame(columns=[year_col, stroke_col, "median_seconds", "n"])
+
+    cleaned = _filter_stroke_swim_time_outliers(df, stroke_col, swim_col)
+    yearly_parts: List[pd.DataFrame] = []
+    for stroke_label, group in cleaned.groupby(stroke_col):
+        yearly = (
+            group.groupby(year_col, as_index=False)
+            .agg(
+                median_seconds=(swim_col, "median"),
+                n=(swim_col, "size"),
+            )
+            .sort_values(year_col)
+        )
+        if yearly.empty:
+            continue
+        yearly[stroke_col] = stroke_label
+        yearly_parts.append(yearly)
+
+    if not yearly_parts:
+        return pd.DataFrame(columns=[year_col, stroke_col, "median_seconds", "n"])
+    return pd.concat(yearly_parts, ignore_index=True)
+
+
+_CHRONOS_YEARLY_MIN_PERFORMANCES = 5
+_CHRONOS_ROLLING_WINDOW_YEARS = 3
+
+
+def _smooth_centered_rolling(values: List[float], window: int) -> List[float]:
+    """Applique une moyenne mobile centrée pour lisser une série annuelle.
+
+    Args:
+        values (List[float]): Valeurs ordonnées chronologiquement.
+        window (int): Largeur de la fenêtre (années).
+
+    Returns:
+        List[float]: Série lissée de même longueur.
+    """
+    if not values:
+        return []
+    if window <= 1 or len(values) < 2:
+        return [float(value) for value in values]
+    series = pd.Series([float(value) for value in values])
+    smoothed = series.rolling(window=window, center=True, min_periods=1).mean()
+    return [float(value) for value in smoothed.tolist()]
+
+
+def _filter_yearly_stats_by_min_count(
+    yearly_stats: pd.DataFrame,
+    *,
+    year_col: str,
+    min_performances: int,
+) -> pd.DataFrame:
+    """Exclut les années avec trop peu de performances (biais de composition).
+
+    Args:
+        yearly_stats (pd.DataFrame): Agrégats annuels avec colonne ``n``.
+        year_col (str): Colonne de l'année (conservée pour cohérence d'API).
+        min_performances (int): Seuil minimal d'effectif annuel.
+
+    Returns:
+        pd.DataFrame: Sous-ensemble des années suffisamment représentées.
+    """
+    if yearly_stats.empty or "n" not in yearly_stats.columns:
+        return yearly_stats.copy()
+    if min_performances <= 1:
+        return yearly_stats.copy()
+    return yearly_stats.loc[yearly_stats["n"] >= min_performances].copy()
+
+
+def _plot_yearly_stroke_time_evolution(
+    yearly_stats: pd.DataFrame,
+    *,
+    title: str,
+    stroke_col: str = "Stroke",
+    year_col: str = "year",
+    median_col: str = "median_seconds",
+    min_yearly_performances: int = _CHRONOS_YEARLY_MIN_PERFORMANCES,
+    rolling_window_years: int = _CHRONOS_ROLLING_WINDOW_YEARS,
+) -> plt.Figure:
+    """Trace l'évolution annuelle des temps médians en petits multiples par nage.
+
+    Chaque panneau possède sa propre échelle Y (les nages ne sont pas comparables
+    sur un même axe lorsque les distances sont mélangées). Les courbes affichées
+    sont lissées par moyenne mobile ; la médiane brute reste visible en filigrane.
+
+    Args:
+        yearly_stats (pd.DataFrame): Médianes annuelles par nage.
+        title (str): Titre principal de la figure.
+        stroke_col (str): Colonne des libellés de nage.
+        year_col (str): Colonne de l'année.
+        median_col (str): Colonne du temps médian en secondes.
+        min_yearly_performances (int): Effectif annuel minimal pour tracer un point.
+        rolling_window_years (int): Fenêtre de lissage (années) de la tendance.
+
+    Returns:
+        plt.Figure: Figure matplotlib de l'évolution temporelle.
+
+    Raises:
+        ValueError: Si une colonne requise est absente de ``yearly_stats``.
+    """
+    for column in (stroke_col, year_col, median_col):
+        if column not in yearly_stats.columns:
+            raise ValueError(f"Colonne introuvable pour l'évolution annuelle: {column}")
+
+    stroke_order = _ordered_stroke_labels(yearly_stats[stroke_col].astype(str).tolist())
+    n_strokes = len(stroke_order)
+    if n_strokes == 0:
+        fig, ax = plt.subplots(figsize=(12, 5))
+        _apply_standard_chart_theme(fig, ax)
+        ax.text(
+            0.5,
+            0.5,
+            "Aucune performance disponible pour ce périmètre.",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=12,
+            color="#334155",
+        )
+        ax.set_axis_off()
+        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+        fig.tight_layout()
+        return fig
+
+    ncols = 2 if n_strokes > 1 else 1
+    nrows = int(np.ceil(n_strokes / ncols))
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(14, 3.9 * nrows + 1.2),
+        squeeze=False,
+        sharex=False,
+    )
+    fig.patch.set_facecolor("#ffffff")
+    global_year_min: Optional[int] = None
+    global_year_max: Optional[int] = None
+
+    for index, stroke_label in enumerate(stroke_order):
+        ax = axes[index // ncols][index % ncols]
+        _apply_standard_chart_theme(fig, ax)
+        stroke_data = yearly_stats.loc[
+            yearly_stats[stroke_col].astype(str) == stroke_label
+        ].sort_values(year_col)
+        stroke_data = _filter_yearly_stats_by_min_count(
+            stroke_data,
+            year_col=year_col,
+            min_performances=min_yearly_performances,
+        )
+        color = _STROKE_CATEGORY_COLORS.get(stroke_label, NON_CORRIDOR_COLOR_NEUTRAL)
+        if stroke_data.empty:
+            ax.text(
+                0.5,
+                0.5,
+                "Données insuffisantes\n(effectif annuel trop faible).",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=10,
+                color="#64748b",
+            )
+            ax.set_title(stroke_label, fontsize=12, fontweight="semibold", color=color, pad=8)
+            ax.set_xlabel("Année", fontsize=10, labelpad=6)
+            ax.tick_params(axis="x", labelbottom=True, labelsize=9)
+            continue
+
+        years = stroke_data[year_col].astype(int).tolist()
+        medians = stroke_data[median_col].astype(float).tolist()
+        smoothed = _smooth_centered_rolling(medians, rolling_window_years)
+        global_year_min = years[0] if global_year_min is None else min(global_year_min, years[0])
+        global_year_max = years[-1] if global_year_max is None else max(global_year_max, years[-1])
+
+        ax.plot(
+            years,
+            medians,
+            color=color,
+            linewidth=1.2,
+            linestyle="--",
+            alpha=0.35,
+            marker="o",
+            markersize=3.5,
+            markerfacecolor="#ffffff",
+            markeredgecolor=color,
+            markeredgewidth=1.0,
+            zorder=2,
+        )
+        ax.plot(
+            years,
+            smoothed,
+            color=color,
+            linewidth=2.6,
+            marker="o",
+            markersize=5.5,
+            markerfacecolor="#ffffff",
+            markeredgecolor=color,
+            markeredgewidth=1.6,
+            zorder=3,
+        )
+        ax.set_title(stroke_label, fontsize=12, fontweight="semibold", color=color, pad=8)
+        ax.set_ylabel("Médiane", fontsize=10, labelpad=6)
+        ax.set_xlabel("Année", fontsize=10, labelpad=6)
+        ax.yaxis.set_major_formatter(FuncFormatter(_format_swim_time_tick))
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=7))
+        ax.tick_params(axis="x", labelbottom=True, labelsize=9)
+        ax.grid(
+            axis="y",
+            alpha=CORRIDOR_GRID_ALPHA,
+            color="#94a3b8",
+            linestyle="-",
+            linewidth=0.6,
+            zorder=0,
+        )
+        plot_values = medians + smoothed
+        ymin = float(min(plot_values))
+        ymax = float(max(plot_values))
+        y_span = max(ymax - ymin, 0.5)
+        ax.set_ylim(ymin - y_span * 0.12, ymax + y_span * 0.18)
+        y_top = ymax + y_span * 0.12
+        ax.text(
+            0.98,
+            0.97,
+            f"échelle locale\nmax {_format_swim_time_annotation(ymax)}",
+            transform=ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=8,
+            color="#64748b",
+            bbox={
+                "boxstyle": "round,pad=0.2",
+                "facecolor": "white",
+                "alpha": 0.85,
+                "edgecolor": "#e2e8f0",
+            },
+            zorder=5,
+        )
+
+    for index in range(n_strokes, nrows * ncols):
+        axes[index // ncols][index % ncols].set_axis_off()
+
+    if global_year_min is not None and global_year_max is not None:
+        for index in range(n_strokes):
+            ax = axes[index // ncols][index % ncols]
+            if ax.has_data():
+                ax.set_xlim(global_year_min - 0.6, global_year_max + 0.6)
+
+    subtitle = (
+        f"Moyenne mobile {rolling_window_years} ans (trait plein) · "
+        f"médiane brute (pointillés) · "
+        f"années avec < {min_yearly_performances} perf. exclues · "
+        "échelle Y propre à chaque nage"
+    )
+    fig.suptitle(
+        f"{title}\n{subtitle}",
+        fontsize=13,
+        fontweight="bold",
+        color="#1e293b",
+        y=1.02,
+    )
+    fig.tight_layout()
+    return fig
+
+
+def _event_display_sort_key(event: str) -> Tuple[int, int, str]:
+    """Construit une clé de tri natation (nage, distance, libellé).
+
+    Args:
+        event (str): Libellé d'épreuve (ex. ``100 FR SCM``).
+
+    Returns:
+        Tuple[int, int, str]: Tri par nage, distance croissante puis libellé brut.
+    """
+    text = str(event).strip()
+    parts = text.split()
+    stroke = parts[1].upper() if len(parts) > 1 else ""
+    stroke_rank = _STROKE_SORT_ORDER.get(stroke, 99)
+    distance = parse_event_distance_m(text) or 9999
+    return (stroke_rank, distance, text)
+
+
+def _apply_standard_chart_theme(fig: plt.Figure, ax: plt.Axes) -> None:
+    """Applique le thème graphique commun Pacing (effectifs et couloirs).
+
+    Réutilise ``apply_corridor_chart_theme`` pour un fond et une grille cohérents,
+    puis allège les bordures pour maximiser le ratio données/encre (Tufte).
+
+    Args:
+        fig (plt.Figure): Figure matplotlib.
+        ax (plt.Axes): Axe principal.
+
+    Returns:
+        None
+    """
+    apply_corridor_chart_theme(fig, ax)
+    for spine_name in ("top", "right"):
+        ax.spines[spine_name].set_visible(False)
+    ax.spines["left"].set_color("#94a3b8")
+    ax.spines["bottom"].set_color("#94a3b8")
+    ax.tick_params(colors="#334155", labelsize=10)
+    ax.xaxis.label.set_color("#334155")
+    ax.yaxis.label.set_color("#334155")
+    ax.title.set_color("#1e293b")
+
+
+def _drop_zero_count_events(df_counts: pd.DataFrame) -> pd.DataFrame:
+    """Exclut les épreuves sans aucune performance enregistrée.
+
+    Args:
+        df_counts (pd.DataFrame): Effectifs par épreuve et genre.
+
+    Returns:
+        pd.DataFrame: Sous-ensemble sans lignes à effectif total nul.
+    """
+    if df_counts.empty:
+        return df_counts
+    totals = df_counts.sum(axis=1)
+    return df_counts.loc[totals > 0].copy()
+
+
+def _sort_event_counts_df(
+    df_counts: pd.DataFrame,
+    *,
+    by_total: bool = False,
+) -> pd.DataFrame:
+    """Trie les effectifs F/M par épreuve selon l'ordre natation ou l'effectif.
+
+    Args:
+        df_counts (pd.DataFrame): Colonnes de genre indexées par épreuve.
+        by_total (bool): Si True, tri décroissant par effectif total.
+
+    Returns:
+        pd.DataFrame: Copie triée des effectifs par épreuve.
+    """
+    out = df_counts.copy()
+    if out.empty:
+        return out
+    if by_total:
+        totals = out.sum(axis=1)
+        return out.loc[totals.sort_values(ascending=False).index]
+    order = sorted(out.index, key=lambda event: _event_display_sort_key(str(event)))
+    return out.loc[order]
+
+
+def _plot_gender_grouped_counts_by_event(
+    df_counts: pd.DataFrame,
+    *,
+    title: str,
+    by_total: bool = False,
+) -> plt.Figure:
+    """Trace des barres horizontales groupées F/M par épreuve.
+
+    Encodage positionnel (Cleveland & McGill) : comparaison F/M sur un axe commun,
+    libellés localisés, palette Okabe-Ito et thème aligné sur les couloirs.
+
+    Args:
+        df_counts (pd.DataFrame): Effectifs par épreuve et genre (colonnes ``F``, ``M``).
+        title (str): Titre de la figure.
+        by_total (bool): Tri par effectif total décroissant si True.
+
+    Returns:
+        plt.Figure: Figure matplotlib des effectifs par épreuve.
+    """
+    gender_cols = [col for col in ("F", "M") if col in df_counts.columns]
+    df_nonzero = _drop_zero_count_events(df_counts[gender_cols])
+    df_sorted = _sort_event_counts_df(df_nonzero, by_total=by_total)
+    events = df_sorted.index.tolist()
+    n_events = len(events)
+
+    if n_events == 0:
+        fig, ax = plt.subplots(figsize=(12, 6))
+        _apply_standard_chart_theme(fig, ax)
+        ax.text(
+            0.5,
+            0.5,
+            "Aucune performance disponible pour ce bassin.",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=12,
+            color="#334155",
+        )
+        ax.set_axis_off()
+        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+        fig.tight_layout()
+        return fig
+
+    female_counts = df_sorted["F"] if "F" in df_sorted.columns else pd.Series(0, index=events)
+    male_counts = df_sorted["M"] if "M" in df_sorted.columns else pd.Series(0, index=events)
+    labels = [localize_event_string(str(event)) for event in events]
+
+    fig_height = max(7.0, min(22.0, n_events * 0.38 + 1.8))
+    fig, ax = plt.subplots(figsize=(14, fig_height))
+    _apply_standard_chart_theme(fig, ax)
+
+    y_pos = np.arange(n_events)
+    bar_height = 0.36
+    ax.barh(
+        y_pos - bar_height / 2,
+        female_counts.values,
+        height=bar_height,
+        label=_GENDER_LABEL_FEMALE,
+        color=NON_CORRIDOR_COLOR_FEMALE,
+        edgecolor="#ffffff",
+        linewidth=0.6,
+        zorder=3,
+    )
+    ax.barh(
+        y_pos + bar_height / 2,
+        male_counts.values,
+        height=bar_height,
+        label=_GENDER_LABEL_MALE,
+        color=NON_CORRIDOR_COLOR_MALE,
+        edgecolor="#ffffff",
+        linewidth=0.6,
+        zorder=3,
+    )
+
+    y_labelsize = 12 if n_events <= 8 else (11 if n_events <= 14 else 10)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(labels)
+    ax.tick_params(axis="y", labelsize=y_labelsize)
+    ax.invert_yaxis()
+    ax.set_xlabel("Nombre de performances")
+    ax.set_ylabel("Épreuve")
+    ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True, min_n_ticks=5))
+    ax.grid(
+        axis="x",
+        alpha=CORRIDOR_GRID_ALPHA,
+        color="#94a3b8",
+        linestyle="-",
+        linewidth=0.6,
+        zorder=0,
+    )
+    ax.legend(
+        loc="lower right",
+        framealpha=0.92,
+        edgecolor="#cbd5e1",
+        fontsize=10,
+    )
+    fig.tight_layout()
+    return fig
+
+
+def _format_count_display(value: int) -> str:
+    """Formate un effectif avec des espaces ASCII comme séparateurs de milliers.
+
+    Évite les caractères typographiques (espace insécable, fine space) non
+    présents dans les polices Matplotlib par défaut (ex. Arial).
+
+    Args:
+        value (int): Nombre de performances à afficher.
+
+    Returns:
+        str: Chaîne lisible (ex. ``390 000``).
+    """
+    negative = value < 0
+    digits = str(abs(int(value)))
+    if len(digits) <= 3:
+        formatted = digits
+    else:
+        groups: List[str] = []
+        while digits:
+            groups.append(digits[-3:])
+            digits = digits[:-3]
+        formatted = " ".join(reversed(groups))
+    return f"-{formatted}" if negative else formatted
+
+
+def _format_performance_count_tick(value: float, _: int) -> str:
+    """Formate une graduation de l'axe des effectifs.
+
+    Args:
+        value (float): Valeur de la graduation.
+        _ (int): Index de la graduation (ignoré, requis par Matplotlib).
+
+    Returns:
+        str: Libellé ASCII sûr pour l'axe Y.
+    """
+    if value < 0:
+        return ""
+    return _format_count_display(int(value))
+
+
+def _plot_gender_performance_counts(
+    counts_by_gender: Dict[str, int],
+    *,
+    title: str,
+) -> plt.Figure:
+    """Trace un diagramme en barres verticales F/M pour les effectifs globaux.
+
+    Deux catégories seulement : encodage par longueur sur axe commun (Cleveland &
+    McGill), palette Okabe-Ito, thème Pacing et libellés français.
+
+    Args:
+        counts_by_gender (Dict[str, int]): Effectifs indexés par code genre (``F``, ``M``).
+        title (str): Titre affiché au-dessus du graphique.
+
+    Returns:
+        plt.Figure: Figure matplotlib du décompte par sexe.
+    """
+    gender_order = ("F", "M")
+    labels = [_GENDER_LABEL_FEMALE, _GENDER_LABEL_MALE]
+    values = [int(counts_by_gender.get(gender, 0)) for gender in gender_order]
+    colors = [NON_CORRIDOR_COLOR_FEMALE, NON_CORRIDOR_COLOR_MALE]
+    total = sum(values)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    _apply_standard_chart_theme(fig, ax)
+
+    if total == 0:
+        ax.text(
+            0.5,
+            0.5,
+            "Aucune performance disponible pour ce périmètre.",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=12,
+            color="#334155",
+        )
+        ax.set_axis_off()
+        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+        fig.tight_layout()
+        return fig
+
+    x_pos = np.arange(len(gender_order))
+    bars = ax.bar(
+        x_pos,
+        values,
+        width=0.55,
+        color=colors,
+        edgecolor="#ffffff",
+        linewidth=0.8,
+        zorder=3,
+    )
+    ymax = max(values)
+    label_offset = ymax * 0.015 if ymax > 0 else 0.5
+    for bar, value in zip(bars, values):
+        share_pct = (100.0 * value / total) if total > 0 else 0.0
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            value + label_offset,
+            f"{_format_count_display(value)} ({share_pct:.1f}%)",
+            ha="center",
+            va="bottom",
+            fontsize=11,
+            color="#334155",
+            fontweight="medium",
+            zorder=4,
+        )
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(labels)
+    ax.set_xlabel("Sexe")
+    ax.set_ylabel("Nombre de performances")
+    ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+    ax.set_ylim(0, ymax * 1.14 if ymax > 0 else 1)
+    ax.yaxis.set_major_locator(MaxNLocator(integer=True, min_n_ticks=5))
+    ax.yaxis.set_major_formatter(FuncFormatter(_format_performance_count_tick))
+    ax.grid(
+        axis="y",
+        alpha=CORRIDOR_GRID_ALPHA,
+        color="#94a3b8",
+        linestyle="-",
+        linewidth=0.6,
+        zorder=0,
+    )
+    fig.tight_layout()
+    return fig
+
+
+_GENDER_PIE_COLORS: Dict[str, str] = {
+    "F": NON_CORRIDOR_COLOR_FEMALE,
+    "M": NON_CORRIDOR_COLOR_MALE,
+}
+
+
+def _gender_label_for_code(code: str) -> str:
+    """Convertit un code genre interne en libellé français d'affichage.
+
+    Args:
+        code (str): Code genre (``F`` ou ``M``).
+
+    Returns:
+        str: Libellé français ou la valeur d'origine si inconnue.
+    """
+    if code == "F":
+        return _GENDER_LABEL_FEMALE
+    if code == "M":
+        return _GENDER_LABEL_MALE
+    return str(code)
+
+
+def _plot_gender_pie_chart(
+    counts_by_gender: Dict[str, int],
+    *,
+    title: str,
+) -> plt.Figure:
+    """Trace un diagramme en anneau F/M pour la répartition part-to-whole.
+
+    Donut chart : palette Okabe-Ito, thème Pacing, effectif total au centre,
+    pourcentages sur l'anneau et légende détaillée (libellés français).
+
+    Args:
+        counts_by_gender (Dict[str, int]): Effectifs indexés par code genre (``F``, ``M``).
+        title (str): Titre affiché au-dessus du graphique.
+
+    Returns:
+        plt.Figure: Figure matplotlib de la répartition par sexe.
+    """
+    gender_order = ("F", "M")
+    slices: List[Tuple[str, int, str, str]] = []
+    for gender in gender_order:
+        count = int(counts_by_gender.get(gender, 0))
+        if count <= 0:
+            continue
+        slices.append(
+            (
+                gender,
+                count,
+                _gender_label_for_code(gender),
+                _GENDER_PIE_COLORS.get(gender, NON_CORRIDOR_COLOR_NEUTRAL),
+            )
+        )
+    total = sum(count for _, count, _, _ in slices)
+
+    fig, ax = plt.subplots(figsize=(10, 7))
+    _apply_standard_chart_theme(fig, ax)
+
+    if total == 0:
+        ax.text(
+            0.5,
+            0.5,
+            "Aucune performance disponible pour ce périmètre.",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=12,
+            color="#334155",
+        )
+        ax.set_axis_off()
+        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+        fig.tight_layout()
+        return fig
+
+    values = [count for _, count, _, _ in slices]
+    colors = [color for _, _, _, color in slices]
+    donut_width = 0.42
+
+    wedges, _, autotexts = ax.pie(
+        values,
+        labels=None,
+        autopct="%1.1f%%",
+        colors=colors,
+        startangle=90,
+        counterclock=False,
+        wedgeprops={
+            "width": donut_width,
+            "edgecolor": "#ffffff",
+            "linewidth": 1.4,
+        },
+        pctdistance=0.79,
+        textprops={"fontsize": 11},
+    )
+    for autotext in autotexts:
+        autotext.set_color("#ffffff")
+        autotext.set_fontweight("bold")
+
+    ax.text(
+        0,
+        0.06,
+        _format_count_display(total),
+        ha="center",
+        va="center",
+        fontsize=15,
+        fontweight="bold",
+        color="#1e293b",
+    )
+    ax.text(
+        0,
+        -0.1,
+        "performances",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="#64748b",
+    )
+
+    legend_labels = [
+        f"{label} — {_format_count_display(count)} ({100.0 * count / total:.1f}%)"
+        for _, count, label, _ in slices
+    ]
+    ax.legend(
+        wedges,
+        legend_labels,
+        loc="center left",
+        bbox_to_anchor=(1.02, 0.5),
+        framealpha=0.92,
+        edgecolor="#cbd5e1",
+        fontsize=10,
+    )
+    ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+    ax.set_aspect("equal")
+    fig.tight_layout()
+    return fig
 
 
 def _adaptive_histogram_bin_count(
@@ -363,9 +1527,23 @@ GRAPH_CATEGORIES: Dict[str, List[str]] = {
     block.title: list[str](block.graph_names) for block in DESKTOP_GRAPH_MENU
 }
 
+EVENT_COUNTS_SORT_STROKE_DISTANCE = "stroke_distance"
+EVENT_COUNTS_SORT_TOTAL_DESC = "total_desc"
+EVENT_COUNTS_SORT_OPTIONS: Dict[str, str] = {
+    EVENT_COUNTS_SORT_STROKE_DISTANCE: "Par distance (croissant)",
+    EVENT_COUNTS_SORT_TOTAL_DESC: "Par effectif décroissant",
+}
+GRAPH_NOMBRE_PERF_EPREUVE = "Nombre de performances par épreuve"
+GRAPH_NOMBRE_PERF_EPREUVE_LCM_SCM = "Nombre de performances par épreuve (LCM + SCM)"
+SCOPE_EVENT_COUNTS_GRAPHS = frozenset(
+    {
+        GRAPH_NOMBRE_PERF_EPREUVE,
+        GRAPH_NOMBRE_PERF_EPREUVE_LCM_SCM,
+    }
+)
+
 SCOPE_NO_FILTER_GRAPHS = frozenset(
     {
-        "Nombre de performances par épreuve (LCM + SCM)",
         "Comptage par sexe (global)",
         "Camembert par sexe (global)",
         GRAPH_CHRONOS_PAR_NAGE,
@@ -374,7 +1552,9 @@ SCOPE_NO_FILTER_GRAPHS = frozenset(
         "Heatmap vitesse moyenne (distance x nage)",
     }
 )
-SCOPE_POOL_ONLY_GRAPHS = frozenset({"Nombre de performances par épreuve"})
+SCOPE_POOL_ONLY_GRAPHS: frozenset[str] = frozenset()
+SCOPE_POOL_STROKE_GRAPHS = frozenset({GRAPH_NOMBRE_PERF_EPREUVE})
+SCOPE_STROKE_ONLY_GRAPHS = frozenset({GRAPH_NOMBRE_PERF_EPREUVE_LCM_SCM})
 SCOPE_NO_STROKE_GRAPHS = frozenset({"Distribution des temps par type de nage (boxplot)"})
 
 
@@ -507,41 +1687,38 @@ class ServiceGraphe:
         _place_histogram_stats_footnote(fig, stats_text)
         return fig
 
-    def plot_camembert_sexe_global(self, df: pd.DataFrame, gender_col: str = "Gender") -> plt.Figure:
-        """Trace un camembert de la répartition globale F/M.
-        
+    def plot_camembert_sexe_global(
+        self,
+        df: pd.DataFrame,
+        gender_col: str = "Gender",
+        *,
+        title: str = "Répartition globale par sexe",
+    ) -> plt.Figure:
+        """Trace un diagramme en anneau de la répartition globale F/M.
+
         Args:
             df (pd.DataFrame): Performances avec colonne Gender ou swimmer imbriqué.
             gender_col (str): Nom de la colonne genre (défaut ``Gender``).
-        
+            title (str): Titre affiché sur la figure.
+
         Returns:
             plt.Figure: Figure matplotlib du camembert.
         """
         local_df = df.copy()
         if gender_col not in local_df.columns:
             local_df[gender_col] = local_df.get("swimmer", pd.Series(dtype=object)).apply(
-                lambda x: x[0].get("Gender") if isinstance(x, list) and len(x) > 0 and isinstance(x[0], dict) else None
+                lambda x: x[0].get("Gender")
+                if isinstance(x, list) and len(x) > 0 and isinstance(x[0], dict)
+                else None
             )
 
-        counts = local_df.get(gender_col, pd.Series(dtype=str)).dropna().value_counts()
-        fig, ax = plt.subplots(figsize=(6, 6))
-        if counts.empty:
-            ax.text(0.5, 0.5, "Aucune donnée de sexe disponible", ha="center", va="center")
-            ax.set_axis_off()
-            ax.set_title("Camembert par sexe (global)")
-            fig.tight_layout()
-            return fig
-
-        ax.pie(
-            counts,
-            labels=[f"{g} ({n})" for g, n in zip(counts.index, counts)],
-            autopct="%1.1f%%",
-            colors=[NON_CORRIDOR_COLOR_MALE, NON_CORRIDOR_COLOR_FEMALE],
-            startangle=90,
+        counts = (
+            local_df.get(gender_col, pd.Series(dtype=str))
+            .dropna()
+            .value_counts()
+            .to_dict()
         )
-        ax.set_title("Camembert par sexe (global)")
-        fig.tight_layout()
-        return fig
+        return _plot_gender_pie_chart(counts, title=title)
 
     def plot_histogramme_cumulatif(self, df: pd.DataFrame, swim_col: str = "SwimTimeSeconds") -> plt.Figure:
         """Trace un histogramme cumulatif lisible des temps de nage.
@@ -685,57 +1862,182 @@ class ServiceGraphe:
         df: pd.DataFrame,
         stroke_col: str = "Stroke",
         swim_col: str = "SwimTimeSeconds",
+        *,
+        title: str = "Distribution des temps par type de nage (boxplot)",
     ) -> plt.Figure:
-        """Boxplot des temps (minutes) par type de nage.
-        
+        """Boxplot des temps par type de nage avec thème Pacing unifié.
+
+        Compare les distributions sur un axe commun (Cleveland & McGill) :
+        palette catégorielle Okabe-Ito par nage, points individuels en
+        superposition (jitter) et médiane annotée au-dessus de chaque boîte.
+
         Args:
             df (pd.DataFrame): Données de performances.
             stroke_col (str): Colonne du type de nage.
             swim_col (str): Colonne des temps en secondes.
-        
+            title (str): Titre affiché au-dessus du graphique.
+
         Returns:
             plt.Figure: Figure matplotlib du boxplot.
+
+        Raises:
+            ValueError: Si ``swim_col`` est absent du DataFrame.
         """
+        if swim_col not in df.columns:
+            raise ValueError(f"Colonne introuvable pour le boxplot: {swim_col}")
+
         local_df = df.copy()
         local_df[swim_col] = pd.to_numeric(local_df.get(swim_col), errors="coerce")
         local_df = local_df.dropna(subset=[stroke_col, swim_col])
-        local_df["SwimTimeMinutes"] = local_df[swim_col] / 60.0
+        local_df = local_df.loc[local_df[swim_col] > 0].copy()
         local_df = relabel_stroke_column(local_df, stroke_col)
+
         fig, ax = plt.subplots(figsize=(12, 8))
+        _apply_standard_chart_theme(fig, ax)
+
+        if local_df.empty:
+            ax.text(
+                0.5,
+                0.5,
+                "Aucune performance disponible pour ce périmètre.",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=12,
+                color="#334155",
+            )
+            ax.set_axis_off()
+            ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+            fig.tight_layout()
+            return fig
+
+        stroke_order = _ordered_stroke_labels(local_df[stroke_col].tolist())
+        palette = _stroke_palette_for_labels(stroke_order)
+
         sns.boxplot(
             data=local_df,
             x=stroke_col,
-            y="SwimTimeMinutes",
+            y=swim_col,
+            order=stroke_order,
             hue=stroke_col,
-            palette=NON_CORRIDOR_CMAP_SEQUENTIAL,
+            palette=palette,
+            dodge=False,
+            width=0.52,
+            linewidth=1.4,
+            fliersize=0,
+            boxprops={"facecolor": "white", "alpha": 0.88, "edgecolor": "#475569", "linewidth": 1.4},
+            medianprops={"color": NON_CORRIDOR_COLOR_NEUTRAL, "linewidth": 2.4},
+            whiskerprops={"color": "#64748b", "linewidth": 1.2, "linestyle": "-"},
+            capprops={"color": "#64748b", "linewidth": 1.2},
             legend=False,
             ax=ax,
+            zorder=3,
         )
-        ax.set_xlabel("Type de nage")
-        ax.set_ylabel("Temps (minutes)")
-        ax.set_title("Distribution des temps par type de nage (boxplot)")
+        for stroke_label in stroke_order:
+            stroke_subset = local_df.loc[local_df[stroke_col] == stroke_label]
+            sns.stripplot(
+                data=stroke_subset,
+                x=stroke_col,
+                y=swim_col,
+                order=stroke_order,
+                color=palette[stroke_label],
+                size=4.0,
+                alpha=0.35,
+                jitter=0.24,
+                linewidth=0.4,
+                edgecolor="#ffffff",
+                ax=ax,
+                zorder=2,
+            )
+
+        box_center_x = _boxplot_category_center_x(ax, len(stroke_order))
+        y_max = float(local_df[swim_col].max())
+        y_min = float(local_df[swim_col].min())
+        y_span = max(y_max - y_min, 0.01)
+        label_offset = y_span * 0.03
+        median_label_ymax = y_min
+
+        for x_center, stroke_label in zip(box_center_x, stroke_order):
+            stroke_values = local_df.loc[
+                local_df[stroke_col] == stroke_label, swim_col
+            ].astype(float)
+            if stroke_values.empty:
+                continue
+            median_val = float(stroke_values.median())
+            q1_val = float(stroke_values.quantile(0.25))
+            q3_val = float(stroke_values.quantile(0.75))
+            iqr = max(q3_val - q1_val, 0.01)
+            whisker_top = min(float(stroke_values.max()), q3_val + 1.5 * iqr)
+            label_y = whisker_top + label_offset
+            median_label_ymax = max(median_label_ymax, label_y)
+            ax.text(
+                x_center,
+                label_y,
+                _format_swim_time_annotation(median_val),
+                ha="center",
+                va="bottom",
+                fontsize=9.5,
+                color="#0f172a",
+                fontweight="semibold",
+                bbox=_MEDIAN_LABEL_BBOX,
+                zorder=6,
+            )
+
+        tick_labels = [
+            f"{label}\n(n={int((local_df[stroke_col] == label).sum())})"
+            for label in stroke_order
+        ]
+        ax.set_xticks(box_center_x)
+        ax.set_xticklabels(tick_labels)
+
+        ax.set_ylabel("Temps (secondes)")
+        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+        ax.yaxis.set_major_formatter(FuncFormatter(_format_swim_time_tick))
+        y_top = max(y_max + y_span * 0.12, median_label_ymax + y_span * 0.04)
+        ax.set_ylim(y_min - y_span * 0.06, y_top)
+        ax.grid(
+            axis="y",
+            alpha=CORRIDOR_GRID_ALPHA,
+            color="#94a3b8",
+            linestyle="-",
+            linewidth=0.6,
+            zorder=0,
+        )
         fig.tight_layout()
+        ax.set_xlabel("Type de nage", fontsize=11, labelpad=18)
+        ax.xaxis.set_label_coords(0.5, -0.11)
         return fig
 
-    def plot_top10_clubs(self, df: pd.DataFrame, club_col: str = "Club") -> plt.Figure:
-        """Barres des 10 clubs les plus représentés.
-        
+    def plot_top10_clubs(
+        self,
+        df: pd.DataFrame,
+        club_col: str = "Club",
+        *,
+        title: str = "Top 10 clubs par participation",
+    ) -> plt.Figure:
+        """Classement horizontal des clubs les plus représentés.
+
+        Barres horizontales triées par effectif décroissant, palette séquentielle
+        Pacing et libellés de clubs lisibles sans rotation (Cleveland & McGill).
+
         Args:
             df (pd.DataFrame): Données de performances.
             club_col (str): Colonne du nom de club.
-        
+            title (str): Titre affiché au-dessus du graphique.
+
         Returns:
             plt.Figure: Figure matplotlib du top 10 clubs.
         """
-        counts = df.get(club_col, pd.Series(dtype=str)).dropna().value_counts().nlargest(10)
-        fig, ax = plt.subplots(figsize=(12, 6))
-        sns.barplot(x=counts.index, y=counts.values, color=NON_CORRIDOR_COLOR_ACCENT, ax=ax)
-        ax.set_title("Top 10 clubs par participation")
-        ax.set_xlabel("Club")
-        ax.set_ylabel("Nombre de participations")
-        plt.setp(ax.get_xticklabels(), rotation=90)
-        fig.tight_layout()
-        return fig
+        club_series = df.get(club_col, pd.Series(dtype=str)).dropna().astype(str).str.strip()
+        club_series = club_series.loc[club_series != ""]
+        counts = club_series.value_counts().nlargest(10)
+        return _plot_ranked_horizontal_counts(
+            counts,
+            title=title,
+            y_label="Club",
+            x_label="Nombre de participations",
+            total_count=int(len(club_series)),
+        )
 
     def plot_heatmap_vitesse_moyenne(
         self,
@@ -1080,13 +2382,16 @@ class ServiceGraphe:
         self,
         df: pd.DataFrame,
         course_type: str = "LCM",
+        *,
+        sort_by_total: bool = False,
     ) -> plt.Figure:
-        """Barres empilées F/M du nombre de performances par épreuve.
-        
+        """Barres horizontales groupées F/M du nombre de performances par épreuve.
+
         Args:
             df (pd.DataFrame): Données de performances.
             course_type (str): Filtre bassin (« LCM » ou « SCM »).
-        
+            sort_by_total (bool): Si True, tri par effectif total décroissant.
+
         Returns:
             plt.Figure: Figure matplotlib des effectifs par épreuve.
         """
@@ -1105,58 +2410,25 @@ class ServiceGraphe:
             .groupby(["Event", "Gender"])["swimmer_name"]
             .count()
             .unstack(fill_value=0)
-            .sort_index()
         )
-        events = df_counts.index
-        female_counts = df_counts["F"] if "F" in df_counts else pd.Series(0, index=events)
-        male_counts = df_counts["M"] if "M" in df_counts else pd.Series(0, index=events)
-
-        x = np.arange(len(events))
-        width = 0.35
-        fig, ax = plt.subplots(figsize=(16, 6))
-        bars1 = ax.bar(
-            x - width / 2,
-            female_counts,
-            width,
-            label="Female",
-            color=NON_CORRIDOR_COLOR_FEMALE,
-        )
-        bars2 = ax.bar(
-            x + width / 2,
-            male_counts,
-            width,
-            label="Male",
-            color=NON_CORRIDOR_COLOR_MALE,
+        return _plot_gender_grouped_counts_by_event(
+            df_counts,
+            title=f"Nombre de performances par épreuve ({course_type})",
+            by_total=sort_by_total,
         )
 
-        for bars in [bars1, bars2]:
-            for bar in bars:
-                height = bar.get_height()
-                ax.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    height + 0.1,
-                    f"{int(height)}",
-                    ha="center",
-                    va="bottom",
-                    fontsize=10,
-                )
+    def plot_nombre_performances_par_epreuve_lcm_scm(
+        self,
+        df: pd.DataFrame,
+        *,
+        sort_by_total: bool = False,
+    ) -> plt.Figure:
+        """Barres horizontales groupées F/M par épreuve, LCM et SCM fusionnés.
 
-        ax.set_title(f"Nombre de performances par epreuve ({course_type})", fontsize=16, fontweight="bold")
-        ax.set_xlabel("Epreuve")
-        ax.set_ylabel("Nombre de performances")
-        ax.set_xticks(x)
-        ax.set_xticklabels(events, rotation=45)
-        ax.legend()
-        ax.grid(axis="y", linestyle="--", alpha=0.4)
-        fig.tight_layout()
-        return fig
-
-    def plot_nombre_performances_par_epreuve_lcm_scm(self, df: pd.DataFrame) -> plt.Figure:
-        """Barres empilées F/M par épreuve, LCM et SCM fusionnés.
-        
         Args:
             df (pd.DataFrame): Données de performances.
-        
+            sort_by_total (bool): Si True, tri par effectif total décroissant.
+
         Returns:
             plt.Figure: Figure matplotlib des effectifs combinés.
         """
@@ -1172,71 +2444,24 @@ class ServiceGraphe:
         local_df = local_df.dropna(subset=["Gender", "Event_clean"])
 
         df_counts = local_df.groupby(["Event_clean", "Gender"]).size().unstack(fill_value=0)
-        df_counts["Total"] = df_counts.sum(axis=1)
-        df_counts = df_counts.sort_values("Total", ascending=False).drop(columns="Total")
-
-        total_performances = int(df_counts.sum().sum())
-        events = df_counts.index
-        female_counts = df_counts["F"] if "F" in df_counts else pd.Series(0, index=events)
-        male_counts = df_counts["M"] if "M" in df_counts else pd.Series(0, index=events)
-
-        x = np.arange(len(events))
-        width = 0.35
-        fig, ax = plt.subplots(figsize=(16, 6))
-        bars1 = ax.bar(
-            x - width / 2,
-            female_counts,
-            width,
-            label="Female",
-            color=NON_CORRIDOR_COLOR_FEMALE,
-        )
-        bars2 = ax.bar(
-            x + width / 2,
-            male_counts,
-            width,
-            label="Male",
-            color=NON_CORRIDOR_COLOR_MALE,
+        return _plot_gender_grouped_counts_by_event(
+            df_counts,
+            title="Nombre de performances par épreuve (LCM + SCM)",
+            by_total=sort_by_total,
         )
 
-        for bars in [bars1, bars2]:
-            for bar in bars:
-                height = bar.get_height()
-                ax.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    height + 0.1,
-                    f"{int(height)}",
-                    ha="center",
-                    va="bottom",
-                    fontsize=10,
-                )
-
-        ax.set_title("Nombre de performances par épreuve (LCM + SCM)", fontsize=16, fontweight="bold")
-        ax.text(
-            0.5,
-            1.08,
-            f"Total des performances : {total_performances}",
-            ha="center",
-            va="center",
-            transform=ax.transAxes,
-            fontsize=14,
-            fontweight="bold",
-            color=NON_CORRIDOR_COLOR_NEUTRAL,
-        )
-        ax.set_xlabel("Épreuve")
-        ax.set_ylabel("Nombre de performances")
-        ax.set_xticks(x)
-        ax.set_xticklabels(events, rotation=45)
-        ax.legend()
-        ax.grid(axis="y", linestyle="--", alpha=0.4)
-        fig.tight_layout()
-        return fig
-
-    def plot_nombre_performances_par_sexe(self, df: pd.DataFrame) -> plt.Figure:
+    def plot_nombre_performances_par_sexe(
+        self,
+        df: pd.DataFrame,
+        *,
+        title: str = "Nombre de performances par sexe",
+    ) -> plt.Figure:
         """Diagramme en barres du nombre de performances par sexe.
-        
+
         Args:
             df (pd.DataFrame): Données de performances.
-        
+            title (str): Titre affiché sur la figure.
+
         Returns:
             plt.Figure: Figure matplotlib du décompte par sexe.
         """
@@ -1244,31 +2469,28 @@ class ServiceGraphe:
         local_df["Gender"] = local_df["swimmer"].apply(
             lambda x: x[0]["Gender"] if isinstance(x, list) and len(x) > 0 else None
         )
-
-        fig, ax = plt.subplots(figsize=(6, 4))
-        palette_colors = {"F": NON_CORRIDOR_COLOR_FEMALE, "M": NON_CORRIDOR_COLOR_MALE}
-        sns.countplot(
-            x="Gender",
-            hue="Gender",
-            data=local_df,
-            palette=palette_colors,
-            legend=False,
-            ax=ax,
+        counts = (
+            local_df["Gender"]
+            .dropna()
+            .value_counts()
+            .to_dict()
         )
+        return _plot_gender_performance_counts(counts, title=title)
 
-        ax.set_title("Nombre de performances par sexe")
-        ax.set_xlabel("Sexe")
-        ax.set_ylabel("Nombre de performances")
-        fig.tight_layout()
-        return fig
-
-    def plot_camembert_sexe_par_event(self, df: pd.DataFrame, nom_event: str) -> Optional[plt.Figure]:
+    def plot_camembert_sexe_par_event(
+        self,
+        df: pd.DataFrame,
+        nom_event: str,
+        *,
+        title: Optional[str] = None,
+    ) -> Optional[plt.Figure]:
         """Camembert de la répartition F/M pour une épreuve donnée.
-        
+
         Args:
             df (pd.DataFrame): Données de performances.
             nom_event (str): Libellé de l'épreuve.
-        
+            title (Optional[str]): Titre personnalisé ; sinon libellé localisé.
+
         Returns:
             Optional[plt.Figure]: Figure ou None si aucune donnée de sexe.
         """
@@ -1277,64 +2499,73 @@ class ServiceGraphe:
             lambda x: x[0]["Gender"] if isinstance(x, list) and len(x) > 0 else None
         )
 
-        gender_counts = df_event["Gender"].value_counts()
-        if gender_counts.empty:
+        gender_counts = df_event["Gender"].value_counts().to_dict()
+        if not gender_counts:
             return None
 
-        fig, ax = plt.subplots(figsize=(6, 6))
-        ax.pie(
-            gender_counts,
-            labels=[f"{g} ({n})" for g, n in zip(gender_counts.index, gender_counts)],
-            autopct="%1.1f%%",
-            colors=[NON_CORRIDOR_COLOR_MALE, NON_CORRIDOR_COLOR_FEMALE],
-            startangle=90,
+        chart_title = title or (
+            f"Proportion des performances par sexe — {localize_event_string(nom_event)}"
         )
-        ax.set_title(f"Répartition des performances par sexe pour {localize_event_string(nom_event)}")
-        fig.tight_layout()
-        return fig
+        return _plot_gender_pie_chart(gender_counts, title=chart_title)
 
     def plot_temps_median_top10_clubs_par_event(
         self,
         df: pd.DataFrame,
         nom_event: str,
+        *,
+        title: Optional[str] = None,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame]:
-        """Courbe des temps médians des 10 meilleurs clubs sur une épreuve.
-        
+        """Classement horizontal des temps médians des meilleurs clubs sur une épreuve.
+
+        Sélectionne les clubs au temps médian le plus bas (meilleure performance),
+        puis trace des barres horizontales avec thème Pacing et temps en secondes.
+
         Args:
             df (pd.DataFrame): Données de performances.
             nom_event (str): Libellé de l'épreuve.
-        
+            title (Optional[str]): Titre personnalisé ; sinon libellé localisé par défaut.
+
         Returns:
             tuple[Optional[plt.Figure], pd.DataFrame]: Figure et stats médianes par club.
         """
-        df_time = df[(df["Event"] == nom_event) & (df["SwimTimeSeconds"].notna())].copy()
+        df_time = df[
+            (df["Event"] == nom_event)
+            & (df["SwimTimeSeconds"].notna())
+            & (pd.to_numeric(df["SwimTimeSeconds"], errors="coerce") > 0)
+        ].copy()
         if df_time.empty:
             return None, pd.DataFrame()
 
-        df_time["SwimTimeMinutes"] = df_time["SwimTimeSeconds"] / 60
-        median_time_club = (
-            df_time.groupby("Club", dropna=False)["SwimTimeMinutes"]
-            .median()
-            .reset_index()
-            .sort_values("SwimTimeMinutes")
-        )
-        top10_clubs = median_time_club.head(10)
+        df_time["Club"] = df_time.get("Club", pd.Series(dtype=str)).astype(str).str.strip()
+        df_time = df_time.loc[df_time["Club"] != ""].copy()
+        if df_time.empty:
+            return None, pd.DataFrame()
 
-        fig, ax = plt.subplots(figsize=(12, 6))
-        sns.lineplot(
-            data=top10_clubs,
-            x="Club",
-            y="SwimTimeMinutes",
-            marker="o",
-            color=NON_CORRIDOR_COLOR_ACCENT,
-            ax=ax,
+        top10_clubs = (
+            df_time.groupby("Club", as_index=False)
+            .agg(
+                median_seconds=("SwimTimeSeconds", "median"),
+                n_performances=("SwimTimeSeconds", "size"),
+            )
+            .sort_values("median_seconds", ascending=True)
+            .head(10)
+            .reset_index(drop=True)
         )
-        ax.set_title(f"Temps médian des 10 meilleurs clubs - {localize_event_string(nom_event)}")
-        ax.set_xlabel("Club")
-        ax.set_ylabel("Temps médian (minutes)")
-        plt.setp(ax.get_xticklabels(), rotation=90)
-        ax.grid(True, linestyle="--", alpha=0.5)
-        fig.tight_layout()
+        if top10_clubs.empty:
+            return None, pd.DataFrame()
+
+        chart_title = title or (
+            f"Temps médian des 10 meilleurs clubs - {localize_event_string(nom_event)}"
+        )
+        fig = _plot_ranked_horizontal_median_times(
+            top10_clubs,
+            title=chart_title,
+            club_col="Club",
+            median_col="median_seconds",
+            count_col="n_performances",
+            y_label="Club",
+            x_label="Temps médian (secondes)",
+        )
         return fig, top10_clubs
 
     def plot_evolution_temps_nage(
@@ -1342,48 +2573,67 @@ class ServiceGraphe:
         df: pd.DataFrame,
         start_year: int = 2000,
         sample_size: int = 5000,
+        *,
+        title: Optional[str] = None,
     ) -> Optional[plt.Figure]:
-        """Évolution des temps de nage dans le temps, échantillonnée par nage.
-        
+        """Évolution des temps médians annuels par type de nage.
+
+        Agrège les performances par année et par nage (médiane), après filtrage
+        IQR des temps extrêmes. Chaque nage est tracée dans un panneau dédié
+        avec lissage par moyenne mobile, années peu représentées exclues,
+        graduations d'années sur chaque panneau et thème Pacing.
+
         Args:
             df (pd.DataFrame): Données de performances.
             start_year (int): Année minimale incluse.
-            sample_size (int): Taille d'échantillon aléatoire.
-        
+            sample_size (int): Taille d'échantillon aléatoire (0 = toutes les lignes).
+            title (Optional[str]): Titre personnalisé ; sinon libellé par défaut.
+
         Returns:
             Optional[plt.Figure]: Figure ou None si données insuffisantes.
         """
         local_df = df.copy()
         local_df["SwimDate"] = pd.to_datetime(local_df["SwimDate"], errors="coerce")
+        local_df["SwimTimeSeconds"] = pd.to_numeric(
+            local_df.get("SwimTimeSeconds"), errors="coerce"
+        )
 
         df_plot = local_df[
-            (local_df["SwimDate"].notna())
-            & (local_df["SwimTimeSeconds"].notna())
+            local_df["SwimDate"].notna()
+            & local_df["SwimTimeSeconds"].notna()
+            & (local_df["SwimTimeSeconds"] > 0)
             & (local_df["SwimDate"].dt.year >= start_year)
         ].copy()
 
         if df_plot.empty:
             return None
 
-        df_plot["SwimTimeMinutes"] = df_plot["SwimTimeSeconds"] / 60
-        df_sample = df_plot.sample(min(sample_size, len(df_plot)), random_state=42)
-        df_sample = relabel_stroke_column(df_sample, "Stroke")
+        df_plot["year"] = df_plot["SwimDate"].dt.year.astype(int)
+        if sample_size > 0:
+            df_work = df_plot.sample(min(sample_size, len(df_plot)), random_state=42)
+        else:
+            df_work = df_plot
 
-        fig, ax = plt.subplots(figsize=(20, 6))
-        sns.lineplot(
-            x="SwimDate",
-            y="SwimTimeMinutes",
-            data=df_sample,
-            hue="Stroke",
-            alpha=0.7,
-            ax=ax,
+        df_work = relabel_stroke_column(df_work, "Stroke")
+        yearly_stats = _compute_yearly_stroke_median_times(
+            df_work,
+            stroke_col="Stroke",
+            swim_col="SwimTimeSeconds",
+            year_col="year",
         )
-        ax.set_title(f"Évolution des temps de nage dans le temps (à partir de {start_year})")
-        ax.set_xlabel("Année")
-        ax.set_ylabel("Temps de nage (minutes)")
-        ax.legend(title="Nage")
-        fig.tight_layout()
-        return fig
+        if yearly_stats.empty:
+            return None
+
+        chart_title = title or (
+            f"Évolution des temps médians par nage (à partir de {start_year})"
+        )
+        return _plot_yearly_stroke_time_evolution(
+            yearly_stats,
+            title=chart_title,
+            stroke_col="Stroke",
+            year_col="year",
+            median_col="median_seconds",
+        )
 
     def plot_top10_nageurs_meilleur_temps_par_event(
         self,
@@ -3729,6 +4979,7 @@ class ServiceGraphe:
         corridor_plot_kwargs: Optional[Dict[str, Any]] = None,
         corridor_gender_filter: Optional[str] = None,
         corridor_reference_df: Optional[pd.DataFrame] = None,
+        event_counts_sort: str = EVENT_COUNTS_SORT_STROKE_DISTANCE,
     ) -> Tuple[Optional[plt.Figure], str]:
         """Construit la figure pour le menu desktop Flet (noms tels que dans ``GRAPH_CATEGORIES``)."""
         fig: Optional[plt.Figure] = None
@@ -3765,16 +5016,32 @@ class ServiceGraphe:
                 else:
                     fig = svc.plot_histogramme_cumulatif(df_filtered)
 
-        elif selected_graph == "Nombre de performances par épreuve":
-            if pool:
-                chart_title = f"Nombre de performances par épreuve ({pool})"
+        elif selected_graph == GRAPH_NOMBRE_PERF_EPREUVE:
+            sort_by_total = event_counts_sort == EVENT_COUNTS_SORT_TOTAL_DESC
+            if pool and stroke:
+                stroke_label = stroke_code_to_label(stroke)
+                chart_title = (
+                    f"Nombre de performances par épreuve — {stroke_label} ({pool})"
+                )
                 fig = svc.plot_nombre_performances_par_epreuve(
-                    df_scope, course_type=str(pool)
+                    df_scope,
+                    course_type=str(pool),
+                    sort_by_total=sort_by_total,
                 )
 
-        elif selected_graph == "Nombre de performances par épreuve (LCM + SCM)":
-            chart_title = "Nombre de performances par épreuve (LCM + SCM)"
-            fig = svc.plot_nombre_performances_par_epreuve_lcm_scm(df_scope)
+        elif selected_graph == GRAPH_NOMBRE_PERF_EPREUVE_LCM_SCM:
+            sort_by_total = event_counts_sort == EVENT_COUNTS_SORT_TOTAL_DESC
+            if stroke:
+                stroke_label = stroke_code_to_label(stroke)
+                chart_title = (
+                    f"Nombre de performances par épreuve (LCM + SCM) — {stroke_label}"
+                )
+            else:
+                chart_title = "Nombre de performances par épreuve (LCM + SCM)"
+            fig = svc.plot_nombre_performances_par_epreuve_lcm_scm(
+                df_scope,
+                sort_by_total=sort_by_total,
+            )
 
         elif selected_graph in {"Comptage par sexe (global)", "Comptage par sexe (épreuve)"}:
             chart_title = (
@@ -3782,17 +5049,21 @@ class ServiceGraphe:
                 if selected_graph == "Comptage par sexe (global)"
                 else "Nombre de performances par sexe – filtres actuels"
             )
-            fig = svc.plot_nombre_performances_par_sexe(df_filtered)
+            fig = svc.plot_nombre_performances_par_sexe(df_filtered, title=chart_title)
 
         elif selected_graph == "Camembert par sexe (global)":
-            chart_title = "Répartition des performances par sexe – global"
-            fig = svc.plot_camembert_sexe_global(df_filtered)
+            chart_title = "Répartition globale par sexe"
+            fig = svc.plot_camembert_sexe_global(df_filtered, title=chart_title)
 
         elif selected_graph == "Camembert par sexe (épreuve)":
-            chart_title = "Répartition des performances par sexe – filtres actuels"
+            chart_title = "Proportion des performances par sexe – filtres actuels"
             if distance and stroke and pool:
                 nom_event = f"{distance} {stroke} {pool}"
-                fig = svc.plot_camembert_sexe_par_event(df_filtered, nom_event=nom_event)
+                fig = svc.plot_camembert_sexe_par_event(
+                    df_filtered,
+                    nom_event=nom_event,
+                    title=chart_title,
+                )
 
         elif selected_graph == "Distribution des temps par type de nage (boxplot)":
             try:
@@ -3806,26 +5077,32 @@ class ServiceGraphe:
             chart_title = (
                 f"Distribution des temps par type de nage pour la distance {distance_label} m"
             )
-            fig = svc.plot_boxplot_temps_par_nage(df_scope)
+            fig = svc.plot_boxplot_temps_par_nage(df_scope, title=chart_title)
 
         elif selected_graph == "Top 10 clubs par participation (épreuve)":
-            chart_title = "Top 10 des clubs par nombre de participations – filtres actuels"
-            fig = svc.plot_top10_clubs(df_scope)
+            if distance and stroke and pool:
+                chart_title = (
+                    f"Top 10 des clubs – {format_event_label(distance, stroke, pool)}"
+                )
+            else:
+                chart_title = "Top 10 des clubs par nombre de participations – filtres actuels"
+            fig = svc.plot_top10_clubs(df_scope, title=chart_title)
 
         elif selected_graph == "Temps médian des 10 meilleurs clubs":
             if distance and stroke and pool:
                 nom_event = f"{distance} {stroke} {pool}"
                 chart_title = f"Temps médian des 10 meilleurs clubs - {format_event_label(distance, stroke, pool)}"
                 fig, _meta = svc.plot_temps_median_top10_clubs_par_event(
-                    df_scope, nom_event=nom_event
+                    df_scope, nom_event=nom_event, title=chart_title
                 )
 
         elif selected_graph == GRAPH_CHRONOS_PAR_NAGE:
-            chart_title = "Évolution des temps de nage dans le temps (à partir de 2000)"
+            chart_title = "Évolution des temps médians par nage (à partir de 2000)"
             fig = svc.plot_evolution_temps_nage(
                 df,
                 start_year=2000,
                 sample_size=max(0, int(selected_chronos_sample_size)),
+                title=chart_title,
             )
 
         elif selected_graph == GRAPH_VITESSE_DISTANCE_NAGE:
