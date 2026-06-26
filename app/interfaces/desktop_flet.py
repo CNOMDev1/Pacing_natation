@@ -62,6 +62,7 @@ from services.graph_service import (
     GRAPHES_NOTEBOOK,
     GRAPHES_PAR_KEY,
     SCOPE_EVENT_COUNTS_GRAPHS,
+    SCOPE_GENDER_FILTER_GRAPHS,
     SCOPE_NO_FILTER_GRAPHS,
     SCOPE_NO_STROKE_GRAPHS,
     SCOPE_POOL_ONLY_GRAPHS,
@@ -4727,6 +4728,8 @@ class PacingDesktopApp:
 
         if self.selected_graph in SCOPE_NO_FILTER_GRAPHS:
             combos: Dict[str, Dict[int, List[str]]] = {}
+        elif self.selected_graph in SCOPE_GENDER_FILTER_GRAPHS:
+            combos = {}
         else:
             nav_id = id(df_nav)
             use_swimmers_file_for_triplet = (
@@ -4775,6 +4778,7 @@ class PacingDesktopApp:
             visible=self.selected_graph
             not in (
                 SCOPE_NO_FILTER_GRAPHS
+                | SCOPE_GENDER_FILTER_GRAPHS
                 | SCOPE_POOL_ONLY_GRAPHS
                 | SCOPE_NO_STROKE_GRAPHS
             ),
@@ -4783,6 +4787,7 @@ class PacingDesktopApp:
 
         hide_distance_for_graph = (
             SCOPE_NO_FILTER_GRAPHS
+            | SCOPE_GENDER_FILTER_GRAPHS
             | SCOPE_POOL_ONLY_GRAPHS
             | SCOPE_POOL_STROKE_GRAPHS
             | SCOPE_STROKE_ONLY_GRAPHS
@@ -4840,6 +4845,8 @@ class PacingDesktopApp:
             else:
                 pool_vals = []
         elif self.selected_graph in SCOPE_POOL_ONLY_GRAPHS:
+            pool_vals = sorted(df_nav["Course"].dropna().unique().tolist())
+        elif self.selected_graph in SCOPE_GENDER_FILTER_GRAPHS:
             pool_vals = sorted(df_nav["Course"].dropna().unique().tolist())
         elif self.selected_graph in SCOPE_NO_STROKE_GRAPHS:
             if self.selected_distance is not None:
@@ -5046,6 +5053,7 @@ class PacingDesktopApp:
             if self._sync_moroccan_corridor_confirm_button():
                 dirty = True
         else:
+            gender_filter_visible = self.selected_graph in SCOPE_GENDER_FILTER_GRAPHS
             if self._sync_dropdown(
                 self.corridor_gender_dd,
                 new_option_keys=("all", "F", "M"),
@@ -5054,11 +5062,12 @@ class PacingDesktopApp:
                     ft.dropdown.Option(key="F", text="Femme"),
                     ft.dropdown.Option(key="M", text="Homme"),
                 ],
-                value="all",
-                visible=False,
+                value=self.selected_corridor_gender if gender_filter_visible else "all",
+                visible=gender_filter_visible,
             ):
                 dirty = True
-            self.selected_corridor_gender = "all"
+            if not gender_filter_visible:
+                self.selected_corridor_gender = "all"
             self._corridor_dd_options_event_key = None
             if self.corridor_swimmer_search is not None:
                 if self.corridor_swimmer_search.reset(clear_query=True):

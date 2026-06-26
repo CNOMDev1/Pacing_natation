@@ -27,6 +27,7 @@ import pandas as pd
 from project_path import PROJECT_DIR
 from services.extranat_competitions_data_loader import ExtranatCompetitionsDataLoader
 from services.graph_service import (
+    SCOPE_GENDER_FILTER_GRAPHS,
     SCOPE_NO_FILTER_GRAPHS,
     SCOPE_NO_STROKE_GRAPHS,
     SCOPE_POOL_ONLY_GRAPHS,
@@ -321,6 +322,12 @@ def _materialize_df_scope(
     """
     if selected_graph in SCOPE_NO_FILTER_GRAPHS:
         return df_nav.copy()
+
+    if selected_graph in SCOPE_GENDER_FILTER_GRAPHS:
+        if pool is None:
+            return df_nav.copy()
+        pool_key = str(pool).strip()
+        return df_nav[df_nav["Course"].astype(str).str.strip() == pool_key].copy()
 
     if selected_graph in SCOPE_POOL_ONLY_GRAPHS:
         if pool is None:
