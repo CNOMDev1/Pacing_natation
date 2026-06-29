@@ -112,6 +112,25 @@ _PREP_CACHE_MAX = 96  # nombre maximal d'entrées en mémoire
 # --- Normalisation des noms ---
 
 
+def _normalize_gender_code(value: object) -> Optional[str]:
+    """Normalise un libellé genre en code interne ``F`` ou ``M``.
+
+    Args:
+        value (object): Genre brut (Extranat, USA, libellés français, etc.).
+
+    Returns:
+        Optional[str]: ``F``, ``M`` ou None si non reconnu.
+    """
+    if value is None:
+        return None
+    s = str(value).strip().upper()
+    if s in ("F", "FEMME", "FEMALE", "W"):
+        return "F"
+    if s in ("M", "H", "HOMME", "MALE", "MAN"):
+        return "M"
+    return None
+
+
 def corridor_norm_name(value: object) -> str:
     """Normalise un nom pour la recherche (minuscules, sans accents, espaces unifiés).
 
@@ -1086,6 +1105,38 @@ def _segment_speed_mps(length_m: int, segment_seconds: float) -> Optional[float]
     return None
 
 
+def _synthetic_split_entries_from_total_time(
+    event_distance: Optional[int],
+    swim_time_seconds: object,
+) -> List[tuple[int, int, float]]:
+    """Synthétise un segment unique quand la source ne fournit aucun intermédiaire.
+
+    Pour les épreuves 25 m et 50 m, Extranat ne publie souvent aucun passage
+    intermédiaire : la vitesse moyenne sur toute la distance est dérivée du
+    temps final lorsque celui-ci est disponible.
+
+    Args:
+        event_distance (Optional[int]): Distance d'épreuve en mètres.
+        swim_time_seconds (object): Temps total de la nage en secondes.
+
+    Returns:
+        List[tuple[int, int, float]]: Un tuple ``(split_no, distance, speed)``
+            ou liste vide si la synthèse est impossible.
+    """
+    if event_distance not in (25, 50):
+        return []
+    try:
+        total_sec = float(swim_time_seconds)
+    except (TypeError, ValueError):
+        return []
+    if total_sec <= 0:
+        return []
+    speed = _segment_speed_mps(event_distance, total_sec)
+    if speed is None:
+        return []
+    return [(1, event_distance, speed)]
+
+
 def _split_entries_for_performance(
     splits: list,
     *,
@@ -1198,20 +1249,28 @@ def extract_event_split_speed_rows(
         if swimmer is None:
             continue
         splits = row.get("splits")
-        if not isinstance(splits, list) or not splits:
-            continue
-
-        split_entries = _split_entries_for_performance(
-            splits,
-            event_distance=event_distance,
-            swim_time_seconds=row.get("SwimTimeSeconds"),
-        )
+        split_entries: List[tuple[int, int, float]] = []
+        if isinstance(splits, list) and splits:
+            split_entries = _split_entries_for_performance(
+                splits,
+                event_distance=event_distance,
+                swim_time_seconds=row.get("SwimTimeSeconds"),
+            )
+        else:
+            split_entries = _synthetic_split_entries_from_total_time(
+                event_distance,
+                row.get("SwimTimeSeconds"),
+            )
         if not split_entries:
             continue
         if require_complete_splits and event_distance is not None:
             last_dist = max(d for _, d, _ in split_entries)
             if last_dist != event_distance:
                 continue
+
+        gender = _normalize_gender_code(swimmer.get("Gender"))
+        if gender not in ("F", "M"):
+            continue
 
         swim_key = (
             f"{perf_idx}|{swimmer.get('Name')}|{row.get('SwimDate')}|"
@@ -1222,7 +1281,7 @@ def extract_event_split_speed_rows(
                 {
                     "swim_key": swim_key,
                     "Name": swimmer.get("Name"),
-                    "Gender": swimmer.get("Gender"),
+                    "Gender": gender,
                     "Year_of_birth": swimmer.get("Year_of_birth"),
                     "split_no": split_no,
                     "split_distance": distance,

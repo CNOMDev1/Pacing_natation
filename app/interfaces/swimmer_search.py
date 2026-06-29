@@ -47,6 +47,7 @@ class SwimmerSearch:
         schedule_ui_refresh_callback_name: str = "_schedule_corridor_swimmer_search_ui_refresh",
         pick_callback_name: str = "_on_corridor_swimmer_search_pick",
         show_confirm_button: bool = False,
+        debounced_search: bool = False,
     ) -> None:
         """Construit le widget recherche et branche les callbacks sur ``app``.
 
@@ -62,11 +63,13 @@ class SwimmerSearch:
             schedule_ui_refresh_callback_name (str): Planifie le rafraîchissement UI.
             pick_callback_name (str): Callback quand un nageur est sélectionné.
             show_confirm_button (bool): Affiche bouton confirmer + spinner.
+            debounced_search (bool): Active le debounce (suggestions + panneau résultats).
 
         Returns:
             None
         """
         self.app = app
+        self._debounced_search = bool(debounced_search)
         self._autocomplete_event_key: Optional[Tuple[Any, ...]] = None
         self._last_suggestion_keys: Optional[Tuple[str, ...]] = None
         self._query_attr = query_attr
@@ -181,7 +184,10 @@ class SwimmerSearch:
 
     def _handle_change(self, e: ft.ControlEvent) -> None:
         setattr(self.app, self._query_attr, (e.control.value or "").strip())
-        if getattr(self.app, "selected_category", None) == "Couloirs de performance":
+        use_debounced = self._debounced_search or (
+            getattr(self.app, "selected_category", None) == "Couloirs de performance"
+        )
+        if use_debounced:
             if self._show_confirm_slot:
                 self.set_busy(True)
             self.clear_suggestions()

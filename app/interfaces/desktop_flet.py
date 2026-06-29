@@ -69,6 +69,8 @@ from services.graph_service import (
     SCOPE_POOL_STROKE_GRAPHS,
     SCOPE_STROKE_ONLY_GRAPHS,
     GraphSpec,
+    HEATMAP_CATEGORY_NAME,
+    HEATMAP_GRAPH_NAME,
     ServiceGraphe,
     unwrap_matplotlib_figure,
 )
@@ -125,6 +127,15 @@ CORRIDOR_CHART_PREFETCH_GRAPH_NAMES: Tuple[str, ...] = (
     CORRIDOR_GLOBAL_GRAPH_NAME,
     CORRIDOR_GRAPH_NAME,
 )
+ENABLE_HEATMAP_CHART_PREFETCH_ON_START = True
+HEATMAP_CHART_PREFETCH_SWIMMER_LIMIT = int(
+    os.environ.get("PACING_HEATMAP_PREFETCH_SWIMMER_LIMIT", "32")
+)
+HEATMAP_DROPDOWN_SWIMMER_LIMIT = int(
+    os.environ.get("PACING_HEATMAP_DROPDOWN_SWIMMER_LIMIT", "400")
+)
+HEATMAP_SWIMMER_SEARCH_LABEL = "Rechercher un nageur (heatmap)"
+HEATMAP_SWIMMER_SEARCH_TOOLTIP = "Nom du nageur — toutes les performances Extranat"
 CORRIDOR_SWIMMER_SUGGESTIONS_MAX = 200
 CORRIDOR_SWIMMER_DROPDOWN_OPTIONS_MAX = 100
 CORRIDOR_SEARCH_DEBOUNCE_SEC = 0.12
@@ -381,14 +392,29 @@ class PacingDesktopApp:
             self._usa_bootstrap_gen: int = 0
             self._usa_events_load_lock = threading.Lock()
             self._pacing_swimmer_options_key: Optional[Tuple[str, ...]] = None
+            self._is_syncing_pacing_dropdowns: bool = False
             self._heatmap_swimmer_names_cache_id: Optional[int] = None
             self._heatmap_swimmer_names_cache: Optional[List[str]] = None
+            self.heatmap_swimmer_search_query: str = ""
+            self._heatmap_swimmer_labels_all: List[str] = []
+            self._heatmap_swimmer_labels_set: Optional[set] = None
+            self._heatmap_swimmer_search_index_key: Optional[int] = None
+            self._heatmap_swimmer_search_index: Optional[
+                List[Tuple[str, str, Tuple[str, ...]]]
+            ] = None
+            self._heatmap_search_ui_gen: int = 0
+            self.heatmap_swimmer_search: Optional[SwimmerSearch] = None
+            self._heatmap_dropdown_options: Optional[List[str]] = None
+            self._heatmap_dropdown_options_ready: bool = False
+            self._heatmap_dropdown_df_len: Optional[int] = None
+            self._registry_swimmer_names_cache: Optional[List[str]] = None
             self._registry_swimmer_names_cache_key: Optional[Tuple[float, int]] = None
             self._scope_performances_cache: "OrderedDict[Tuple[Any, ...], pd.DataFrame]" = (
                 OrderedDict()
             )
             self._scope_performances_prefetched_on_startup: bool = False
             self._corridor_charts_prefetched_on_startup: bool = False
+            self._heatmap_charts_prefetched_on_startup: bool = False
             self._chart_render_gen: int = 0
             self._chart_executor = concurrent.futures.ThreadPoolExecutor(
                 max_workers=1,
@@ -406,6 +432,7 @@ class PacingDesktopApp:
             self.pool_dd: ft.Dropdown
             self.corridor_gender_dd: ft.Dropdown
             self.heatmap_swimmer_dd: ft.Dropdown
+            self.heatmap_swimmer_search_container: ft.Column
             self.corridor_swimmer_dd: ft.Dropdown
             self.corridor_moroccan_swimmer_dd: ft.Dropdown
             self.moroccan_corridor_swimmer_search: Optional[SwimmerSearch]
@@ -438,6 +465,18 @@ class PacingDesktopApp:
                 color="#f97373",
                 text_align=ft.TextAlign.CENTER,
             )
+            self.chart_busy_icon = ft.Icon(
+                ft.icons.Icons.AUTORENEW,
+                size=14,
+                color="#22c55e",
+                visible=False,
+            )
+            self.chart_busy_text = ft.Text(
+                "Chargement...",
+                size=11,
+                color="#9ca3af",
+                visible=False,
+            )
             self.loader = ft.ProgressRing(
                 visible=False, width=32, height=32, color="#22c55e"
             )
@@ -446,6 +485,7 @@ class PacingDesktopApp:
             if not ENABLE_EVENT_SWIMMERS_CACHE_PREFETCH_ON_START:
                 self._load_event_swimmers_cache_json()
             self._load_scope_performances_cache_json()
+            self._build_heatmap_swimmer_dropdown_options()
 
             graph_json_path = GRAPH_EXPORT_PATH.name
             event_swimmers_json_path = EVENT_SWIMMERS_EXPORT_PATH.name
@@ -514,6 +554,12 @@ class PacingDesktopApp:
                 and not self._corridor_charts_prefetched_on_startup
             ):
                 self.page.run_thread(self._prefetch_corridor_chart_images_on_startup)
+            if (
+                ENABLE_HEATMAP_CHART_PREFETCH_ON_START
+                and not self.df_nav.empty
+                and not self._heatmap_charts_prefetched_on_startup
+            ):
+                self.page.run_thread(self._prefetch_heatmap_charts_on_startup)
         except Exception as exc:
             traceback.print_exc()
             err_msg = f"Démarrage: {exc!s}"
@@ -933,9 +979,9 @@ class PacingDesktopApp:
         )
         if (
             self._registry_swimmer_names_cache_key == key
-            and self._heatmap_swimmer_names_cache is not None
+            and self._registry_swimmer_names_cache is not None
         ):
-            return self._heatmap_swimmer_names_cache
+            return self._registry_swimmer_names_cache
 
         names: set[str] = set()
         for item in self.graph_render_registry.values():
@@ -953,9 +999,71 @@ class PacingDesktopApp:
                     names.add(nm)
 
         out = sorted(names, key=lambda name: _normalize_text(name))
-        self._heatmap_swimmer_names_cache = out
+        self._registry_swimmer_names_cache = out
         self._registry_swimmer_names_cache_key = key
         return out
+
+    def _build_heatmap_swimmer_dropdown_options(self) -> List[str]:
+        """Construit la liste des nageurs proposés dans le dropdown heatmap.
+
+        Priorise les nageurs du registre couloir, puis complète avec les noms
+        les plus fréquents dans ``df_nav`` (colonne ``SwimmerName``). La liste
+        est bornée pour garder l'UI réactive.
+
+        Returns:
+            List[str]: Noms uniques prêts pour le dropdown heatmap.
+        """
+        options: List[str] = []
+        seen: set[str] = set()
+
+        def add_name(raw: object) -> None:
+            if not isinstance(raw, str):
+                return
+            cleaned = raw.strip()
+            if cleaned.startswith("- "):
+                cleaned = cleaned[2:].strip()
+            if not cleaned:
+                return
+            norm = _normalize_text(cleaned)
+            if norm in seen:
+                return
+            seen.add(norm)
+            options.append(cleaned)
+
+        for name in self._swimmer_names_from_corridor_registry():
+            add_name(name)
+
+        limit = max(1, int(HEATMAP_DROPDOWN_SWIMMER_LIMIT))
+        if (
+            len(options) < limit
+            and not self.df_nav.empty
+            and "SwimmerName" in self.df_nav.columns
+        ):
+            top_names = self.df_nav["SwimmerName"].dropna().value_counts().index
+            for name in top_names:
+                add_name(str(name))
+                if len(options) >= limit:
+                    break
+
+        options.sort(key=lambda item: _normalize_text(item))
+        self._heatmap_dropdown_options = options
+        self._heatmap_dropdown_options_ready = True
+        self._heatmap_dropdown_df_len = len(self.df_nav)
+        return options
+
+    def _heatmap_swimmer_dropdown_options(self) -> List[str]:
+        """Retourne les options du dropdown heatmap (cache mémoire).
+
+        Returns:
+            List[str]: Noms de nageurs pour le menu déroulant heatmap.
+        """
+        if (
+            self._heatmap_dropdown_options_ready
+            and self._heatmap_dropdown_options is not None
+            and self._heatmap_dropdown_df_len == len(self.df_nav)
+        ):
+            return self._heatmap_dropdown_options
+        return self._build_heatmap_swimmer_dropdown_options()
 
     def _render_key_for_category_graph_options(
         self, category: str, graph_name: str, options: Dict[str, Any]
@@ -1383,6 +1491,14 @@ class PacingDesktopApp:
         self.status_text.color = err
 
     def _build_ui(self) -> None:
+        """Construit la mise en page Flet (sidebar + zone graphique).
+
+        Args:
+            None: Cette méthode n'accepte aucun paramètre explicite.
+
+        Returns:
+            None: Instancie les contrôles UI puis les attache à la page.
+        """
         if self.df.empty:
             self._sidebar_container = None
             self._main_area_container = None
@@ -1527,6 +1643,19 @@ class PacingDesktopApp:
             menu_width=dropdown_menu_width,
             visible=False,
         )
+        self.heatmap_swimmer_search = SwimmerSearch(
+            self,
+            width=dropdown_width,
+            label_text=HEATMAP_SWIMMER_SEARCH_LABEL,
+            tooltip=HEATMAP_SWIMMER_SEARCH_TOOLTIP,
+            query_attr="heatmap_swimmer_search_query",
+            keystroke_callback_name="_on_heatmap_swimmer_search_keystroke",
+            schedule_ui_refresh_callback_name="_schedule_heatmap_swimmer_search_ui_refresh",
+            pick_callback_name="_on_heatmap_swimmer_search_pick",
+            show_confirm_button=False,
+            debounced_search=True,
+        )
+        self.heatmap_swimmer_search_container = self.heatmap_swimmer_search.container
         self.corridor_swimmer_dd = ft.Dropdown(
             label="Nageur cible (couloir de perf.)",
             options=[],
@@ -1654,6 +1783,7 @@ class PacingDesktopApp:
                     self.pacing_swimmer_dd_1,
                     self.pacing_swimmer_dd_2,
                     self.pacing_swimmer_dd_3,
+                    self.heatmap_swimmer_search_container,
                     self.heatmap_swimmer_dd,
                     self.corridor_swimmer_search_container,
                     self.corridor_swimmer_dd,
@@ -1683,6 +1813,11 @@ class PacingDesktopApp:
                     ft.Container(
                         content=ft.Column(
                             [
+                                ft.Row(
+                                    [self.chart_busy_icon, self.chart_busy_text],
+                                    alignment=ft.MainAxisAlignment.CENTER,
+                                    spacing=6,
+                                ),
                                 self.row_count_text,
                                 self.status_text,
                             ],
@@ -2442,6 +2577,12 @@ class PacingDesktopApp:
         self._event_swimmer_options_cache.clear()
         self._heatmap_swimmer_names_cache_id = None
         self._heatmap_swimmer_names_cache = None
+        self._heatmap_swimmer_labels_all = []
+        self._invalidate_heatmap_swimmer_search_index()
+        self._heatmap_dropdown_options = None
+        self._heatmap_dropdown_options_ready = False
+        self._heatmap_dropdown_df_len = None
+        self._registry_swimmer_names_cache = None
         self._scope_performances_cache.clear()
         if self.selected_country == COUNTRY_MOROCCO:
             self.df_nav = self._get_frmnatation_nav_df()
@@ -2664,6 +2805,9 @@ class PacingDesktopApp:
         if self.corridor_swimmer_search is not None:
             self.corridor_swimmer_search.reset(clear_query=True)
         self.corridor_swimmer_search_query = ""
+        if self.heatmap_swimmer_search is not None:
+            self.heatmap_swimmer_search.reset(clear_query=True)
+        self.heatmap_swimmer_search_query = ""
         defer_usa_bootstrap = False
         defer_fr_swimmers = False
         if self.selected_country == COUNTRY_USA:
@@ -2932,10 +3076,426 @@ class PacingDesktopApp:
         self.page.update()
 
     def _on_heatmap_swimmer_change(self, e: ft.ControlEvent) -> None:
-        self.selected_heatmap_swimmer = e.control.value
-        self._update_chart()
+        """Met à jour le nageur heatmap et planifie un rendu différé.
+
+        Args:
+            e (ft.ControlEvent): Événement Flet du dropdown heatmap.
+
+        Returns:
+            None: Met à jour la sélection et programme le rafraîchissement.
+        """
+        next_swimmer = e.control.value
+        if next_swimmer == self.selected_heatmap_swimmer:
+            return
+        self.selected_heatmap_swimmer = next_swimmer
+        self._schedule_deferred_chart_update()
+
+    def _invalidate_heatmap_swimmer_search_index(self) -> None:
+        """Réinitialise l'index de recherche heatmap (labels ou jeu de données changé).
+
+        Returns:
+            None: Vide les caches d'index et de labels connus.
+        """
+        self._heatmap_swimmer_search_index_key = None
+        self._heatmap_swimmer_search_index = None
+        self._heatmap_swimmer_labels_set = None
+
+    def _ensure_heatmap_swimmer_search_index(
+        self, labels: List[str]
+    ) -> List[Tuple[str, str, Tuple[str, ...]]]:
+        """Construit ou retourne l'index normalisé pour filtrer les nageurs heatmap.
+
+        Args:
+            labels (List[str]): Liste complète des noms de nageurs.
+
+        Returns:
+            List[Tuple[str, str, Tuple[str, ...]]]: Index (label, norm, mots).
+        """
+        key = id(labels)
+        if (
+            self._heatmap_swimmer_search_index is not None
+            and self._heatmap_swimmer_search_index_key == key
+        ):
+            return self._heatmap_swimmer_search_index
+        index: List[Tuple[str, str, Tuple[str, ...]]] = []
+        for label in labels:
+            norm = _normalize_text(label)
+            words = tuple(
+                w for w in norm.replace("(", " ").replace(")", " ").split() if w
+            )
+            index.append((label, norm, words))
+        self._heatmap_swimmer_search_index = index
+        self._heatmap_swimmer_search_index_key = key
+        self._heatmap_swimmer_labels_set = set(labels)
+        return index
+
+    def _filter_heatmap_swimmer_labels_with_count(
+        self,
+        labels: List[str],
+        query: str,
+        *,
+        max_results: Optional[int] = None,
+    ) -> Tuple[List[str], int]:
+        """Filtre les nageurs heatmap (préfixe mot puis contains).
+
+        Args:
+            labels (List[str]): Noms candidats.
+            query (str): Texte saisi dans la barre de recherche.
+            max_results (Optional[int]): Limite de résultats retournés.
+
+        Returns:
+            Tuple[List[str], int]: Correspondances et total estimé.
+        """
+        if not labels:
+            return [], 0
+        search_norm = _normalize_text(query)
+        if not search_norm:
+            total = len(labels)
+            if max_results is not None:
+                return labels[:max_results], total
+            return list(labels), total
+
+        index = self._ensure_heatmap_swimmer_search_index(labels)
+        prefix_matches: List[str] = []
+        for label, _norm_full, words in index:
+            if any(word.startswith(search_norm) for word in words):
+                prefix_matches.append(label)
+                if max_results is not None and len(prefix_matches) >= max_results:
+                    break
+
+        if prefix_matches:
+            if max_results is None or len(prefix_matches) < max_results:
+                return prefix_matches, len(prefix_matches)
+            total_prefix = sum(
+                1
+                for _label, _norm_full, words in index
+                if any(word.startswith(search_norm) for word in words)
+            )
+            return prefix_matches, total_prefix
+
+        contains_matches: List[str] = []
+        for label, norm_full, _words in index:
+            if search_norm in norm_full:
+                contains_matches.append(label)
+                if max_results is not None and len(contains_matches) >= max_results:
+                    break
+        if max_results is None or len(contains_matches) < max_results:
+            return contains_matches, len(contains_matches)
+        total_contains = sum(
+            1 for _label, norm_full, _words in index if search_norm in norm_full
+        )
+        return contains_matches, total_contains
+
+    def _heatmap_swimmer_labels_for_search(self) -> List[str]:
+        """Liste triée de tous les nageurs disponibles pour la heatmap.
+
+        Returns:
+            List[str]: Noms uniques issus de ``df_nav["SwimmerName"]``.
+        """
+        nav_id = id(self.df_nav)
+        if (
+            self._heatmap_swimmer_labels_all
+            and self._heatmap_swimmer_names_cache_id == nav_id
+        ):
+            return self._heatmap_swimmer_labels_all
+        if self.df_nav.empty or "SwimmerName" not in self.df_nav.columns:
+            self._heatmap_swimmer_labels_all = []
+            self._heatmap_swimmer_names_cache_id = nav_id
+            self._invalidate_heatmap_swimmer_search_index()
+            return []
+        names = sorted(
+            {
+                str(name).strip()
+                for name in self.df_nav["SwimmerName"].dropna().unique()
+                if str(name).strip()
+            },
+            key=_normalize_text,
+        )
+        self._heatmap_swimmer_labels_all = names
+        self._heatmap_swimmer_names_cache_id = nav_id
+        self._invalidate_heatmap_swimmer_search_index()
+        return names
+
+    def _heatmap_swimmer_query_is_exact_label(self, query: str) -> bool:
+        """Indique si la requête correspond exactement à un nageur connu.
+
+        Args:
+            query (str): Texte saisi.
+
+        Returns:
+            bool: ``True`` si le nom existe dans l'index heatmap.
+        """
+        q = (query or "").strip()
+        if not q:
+            return False
+        labels_set = self._heatmap_swimmer_labels_set
+        if labels_set is None:
+            labels_all = self._heatmap_swimmer_labels_all or []
+            if labels_all:
+                self._ensure_heatmap_swimmer_search_index(labels_all)
+                labels_set = self._heatmap_swimmer_labels_set
+        return bool(labels_set and q in labels_set)
+
+    def _active_heatmap_swimmer_search(self, query: Optional[str] = None) -> bool:
+        """Recherche heatmap active (requête non vide et pas de correspondance exacte).
+
+        Args:
+            query (Optional[str]): Requête à tester ; sinon celle de l'app.
+
+        Returns:
+            bool: ``True`` si le panneau de résultats doit s'afficher.
+        """
+        q = (
+            query
+            if query is not None
+            else (self.heatmap_swimmer_search_query or "")
+        ).strip()
+        return bool(q) and not self._heatmap_swimmer_query_is_exact_label(q)
+
+    def _set_heatmap_swimmer_search_query(self, value: str) -> bool:
+        """Met à jour la requête heatmap et le champ AutoComplete.
+
+        Args:
+            value (str): Nom ou fragment de recherche.
+
+        Returns:
+            bool: ``True`` si la valeur a changé.
+        """
+        if self.heatmap_swimmer_search is not None:
+            return self.heatmap_swimmer_search.set_query(value)
+        text = (value or "").strip()
+        changed = (self.heatmap_swimmer_search_query or "") != text
+        if changed:
+            self.heatmap_swimmer_search_query = text
+        return changed
+
+    def _apply_heatmap_swimmer_pick(self) -> bool:
+        """Synchronise ``selected_heatmap_swimmer`` depuis la barre de recherche.
+
+        Returns:
+            bool: ``True`` si le nageur sélectionné a changé.
+        """
+        labels_all = self._heatmap_swimmer_labels_for_search()
+        query_pick = (self.heatmap_swimmer_search_query or "").strip()
+        if not query_pick:
+            return False
+        labels_set = self._heatmap_swimmer_labels_set
+        if labels_set is None and labels_all:
+            self._ensure_heatmap_swimmer_search_index(labels_all)
+            labels_set = self._heatmap_swimmer_labels_set or set()
+        pick: Optional[str] = None
+        if labels_set and query_pick in labels_set:
+            pick = query_pick
+        else:
+            labels, _ = self._filter_heatmap_swimmer_labels_with_count(
+                labels_all, query_pick, max_results=2
+            )
+            if len(labels) == 1:
+                pick = labels[0]
+        if not pick:
+            return False
+        changed = self.selected_heatmap_swimmer != pick
+        self.selected_heatmap_swimmer = pick
+        return changed
+
+    def _on_heatmap_swimmer_search_pick(self, label: str) -> None:
+        """Sélection d'un nageur depuis la barre de recherche heatmap.
+
+        Args:
+            label (str): Nom du nageur choisi.
+
+        Returns:
+            None: Met à jour la sélection et planifie le rendu.
+        """
+        cleaned = (label or "").strip()
+        if not cleaned:
+            return
+        if self.selected_heatmap_swimmer != cleaned:
+            self.selected_heatmap_swimmer = cleaned
+            self._schedule_deferred_chart_update()
+
+    def _on_heatmap_swimmer_search_keystroke(self) -> None:
+        """Précharge la liste complète des nageurs heatmap à la première frappe."""
+
+    def _schedule_heatmap_swimmer_search_ui_refresh(self) -> None:
+        """Debounce : suggestions et panneau résultats après la frappe heatmap."""
+        self._heatmap_search_ui_gen += 1
+        token = self._heatmap_search_ui_gen
+
+        async def _runner() -> None:
+            await asyncio.sleep(CORRIDOR_SEARCH_DEBOUNCE_SEC)
+            if token != self._heatmap_search_ui_gen:
+                return
+            self._refresh_heatmap_swimmer_options_lightweight()
+            self._update_heatmap_search_sidebar_controls()
+
+        self.page.run_task(_runner)
+
+    def _push_heatmap_search_results_to_bar(self, labels_all: List[str]) -> None:
+        """Alimente le panneau de résultats sous la barre de recherche heatmap.
+
+        Args:
+            labels_all (List[str]): Noms candidats pour le filtrage.
+
+        Returns:
+            None: Met à jour le widget ``SwimmerSearch``.
+        """
+        search = self.heatmap_swimmer_search
+        if search is None:
+            return
+        search.clear_suggestions()
+        query = (self.heatmap_swimmer_search_query or "").strip()
+        if not query:
+            search.clear_search_results()
+            return
+        if self._heatmap_swimmer_query_is_exact_label(query):
+            search.clear_search_results()
+            return
+        labels, _ = self._filter_heatmap_swimmer_labels_with_count(
+            labels_all,
+            query,
+            max_results=CORRIDOR_SWIMMER_SUGGESTIONS_MAX,
+        )
+        search.set_search_results(
+            labels,
+            query=query,
+            max_rows=min(12, CORRIDOR_SWIMMER_SUGGESTIONS_MAX),
+        )
+
+    def _sync_heatmap_swimmer_autocomplete(
+        self,
+        labels_all: List[str],
+        query: str,
+        *,
+        cap_ac: int = CORRIDOR_SWIMMER_SUGGESTIONS_MAX,
+    ) -> bool:
+        """Met à jour les suggestions AutoComplete pour la heatmap.
+
+        Args:
+            labels_all (List[str]): Noms disponibles.
+            query (str): Requête courante.
+            cap_ac (int): Nombre maximal de suggestions.
+
+        Returns:
+            bool: ``True`` si l'UI a été modifiée.
+        """
+        search = self.heatmap_swimmer_search
+        if search is None or not labels_all:
+            return False
+        if query and self._heatmap_swimmer_query_is_exact_label(query):
+            return search.clear_suggestions()
+        if query:
+            labels, _ = self._filter_heatmap_swimmer_labels_with_count(
+                labels_all, query, max_results=cap_ac
+            )
+            subset = labels[:cap_ac]
+            suggestions = self._build_corridor_autocomplete_suggestions(
+                subset, query, cap=cap_ac
+            )
+            return search.apply_suggestions(suggestions)
+        search.reset_suggestion_context()
+        return search.maybe_sync_suggestions(
+            labels_all[:cap_ac],
+            ("heatmap", id(labels_all)),
+            max_suggestions=cap_ac,
+        )
+
+    def _finish_heatmap_search_ui(self) -> bool:
+        """Termine l'état « chargement » de la barre de recherche heatmap.
+
+        Returns:
+            bool: ``True`` si un contrôle a été mis à jour.
+        """
+        if self.heatmap_swimmer_search is None:
+            return False
+        return self.heatmap_swimmer_search.sync_trailing(busy=False)
+
+    def _update_heatmap_search_sidebar_controls(self) -> None:
+        """Rafraîchit suggestions et panneau résultats heatmap après debounce."""
+        self._finish_heatmap_search_ui()
+        query = (self.heatmap_swimmer_search_query or "").strip()
+        labels_all = self._heatmap_swimmer_labels_for_search()
+        search = self.heatmap_swimmer_search
+        if search is not None and labels_all and query:
+            if self._heatmap_swimmer_query_is_exact_label(query):
+                search.clear_suggestions()
+                search.clear_search_results()
+                if self._apply_heatmap_swimmer_pick():
+                    self._schedule_deferred_chart_update()
+            elif self._active_heatmap_swimmer_search(query):
+                self._push_heatmap_search_results_to_bar(labels_all)
+            else:
+                search.clear_search_results()
+        elif search is not None:
+            search.clear_suggestions()
+            search.clear_search_results()
+        controls: List[ft.Control] = []
+        if search is not None:
+            controls.extend(
+                [
+                    search.input,
+                    search.loading_btn,
+                    search.results_panel,
+                ]
+            )
+        for control in controls:
+            try:
+                control.update()
+            except Exception:
+                self.page.update()
+                return
+
+    def _refresh_heatmap_swimmer_ui_from_labels(self, labels_all: List[str]) -> None:
+        """Met à jour la barre de recherche heatmap (suggestions et compteur).
+
+        Args:
+            labels_all (List[str]): Noms disponibles pour la heatmap.
+
+        Returns:
+            None: Synchronise l'UI de recherche.
+        """
+        query = (self.heatmap_swimmer_search_query or "").strip()
+        search = self.heatmap_swimmer_search
+        if search is not None:
+            search.clear_suggestions()
+        total = len(labels_all)
+        if search is not None:
+            count_text = f"{total:,}".replace(",", " ")
+            search.label.value = (
+                f"{HEATMAP_SWIMMER_SEARCH_LABEL} — {count_text} nageurs"
+            )
+        self._sync_heatmap_swimmer_autocomplete(labels_all, query)
+        if self._active_heatmap_swimmer_search(query):
+            self._push_heatmap_search_results_to_bar(labels_all)
+        elif search is not None:
+            search.clear_search_results()
+        if query and self._heatmap_swimmer_query_is_exact_label(query):
+            self._apply_heatmap_swimmer_pick()
+
+    def _refresh_heatmap_swimmer_options_lightweight(self) -> None:
+        """Rafraîchissement léger de la recherche heatmap (après debounce)."""
+        if self.selected_graph != HEATMAP_GRAPH_NAME:
+            return
+        labels_all = self._heatmap_swimmer_labels_for_search()
+        if not labels_all:
+            return
+        self._refresh_heatmap_swimmer_ui_from_labels(labels_all)
 
     def _on_pacing_swimmer_change(self, e: ft.ControlEvent) -> None:
+        """Met à jour les nageurs pacing puis planifie un rendu différé.
+
+        Cette méthode ignore les événements déclenchés pendant une
+        synchronisation programmatique des dropdowns pour éviter les
+        boucles de rendu coûteuses.
+
+        Args:
+            e (ft.ControlEvent): Événement Flet déclenché par un dropdown pacing.
+
+        Returns:
+            None: Met à jour l'état interne puis programme le rafraîchissement.
+        """
+        if self._is_syncing_pacing_dropdowns:
+            return
         selected = [
             self.pacing_swimmer_dd_1.value,
             self.pacing_swimmer_dd_2.value,
@@ -2946,8 +3506,11 @@ class PacingDesktopApp:
         for s in selected:
             if s and s not in cleaned:
                 cleaned.append(s)
-        self.selected_pacing_swimmers = cleaned[:3]
-        self._update_chart()
+        next_swimmers = cleaned[:3]
+        if next_swimmers == self.selected_pacing_swimmers:
+            return
+        self.selected_pacing_swimmers = next_swimmers
+        self._schedule_deferred_chart_update()
 
     def _apply_moroccan_corridor_swimmer_label_pick(self, label: str) -> None:
         if isinstance(label, str) and label.strip():
@@ -3776,6 +4339,69 @@ class PacingDesktopApp:
                             return
         self._corridor_charts_prefetched_on_startup = True
 
+    def _prefetch_heatmap_charts_on_startup(self) -> None:
+        """Pré-rend les heatmaps nageur vs peloton pour affichage instantané.
+
+        Les rendus sont enregistrés dans ``prefetched_graphs.json`` avec une clé
+        incluant ``heatmap_swimmer`` pour réutilisation immédiate à la sélection.
+
+        Returns:
+            None: Met à jour le registre de rendu et le cache mémoire.
+        """
+        if (
+            not ENABLE_HEATMAP_CHART_PREFETCH_ON_START
+            or not ENABLE_PERSISTENT_GRAPH_CACHE
+            or self.df_nav.empty
+            or HEATMAP_CHART_PREFETCH_SWIMMER_LIMIT <= 0
+            or self._heatmap_charts_prefetched_on_startup
+        ):
+            return
+
+        swimmers = self._heatmap_swimmer_dropdown_options()[: int(HEATMAP_CHART_PREFETCH_SWIMMER_LIMIT)]
+        if not swimmers:
+            self._heatmap_charts_prefetched_on_startup = True
+            return
+
+        warmed = 0
+        for swimmer_name in swimmers:
+            snapshot = {
+                "country": self.selected_country,
+                "category": HEATMAP_CATEGORY_NAME,
+                "graph": HEATMAP_GRAPH_NAME,
+                "usa_event": None,
+                "stroke": None,
+                "distance": None,
+                "pool": None,
+                "corridor_gender": "all",
+                "corridor_name": None,
+                "corridor_yob": None,
+                "moroccan_corridor_name": None,
+                "moroccan_corridor_yob": None,
+                "deciles_name": None,
+                "deciles_yob": None,
+                "heatmap": swimmer_name,
+                "pacing": [],
+                "chronos_sample_size": int(self.selected_chronos_sample_size),
+            }
+            _, _, render_key = self._build_render_key_from_snapshot(snapshot)
+            with self._registry_json_lock:
+                cached = self.graph_render_registry.get(render_key)
+                img = self.chart_image_cache.get(render_key) or (
+                    (cached or {}).get("image_base64")
+                )
+            if isinstance(img, str) and len(img) > 0:
+                warmed += 1
+                continue
+
+            payload = self._compute_chart_payload(snapshot=snapshot)
+            if payload.get("status") == "ok" and payload.get("image_base64"):
+                self._register_chart_payload(payload)
+            warmed += 1
+
+        if warmed > 0:
+            self._write_graph_registry_json()
+        self._heatmap_charts_prefetched_on_startup = True
+
     def _chart_render_snapshot(self) -> Dict[str, Any]:
         corridor_name = self.selected_corridor_swimmer_name
         corridor_yob = self.selected_corridor_swimmer_yob
@@ -4378,6 +5004,15 @@ class PacingDesktopApp:
             self._write_graph_registry_json()
 
     def _apply_chart_payload(self, payload: Dict[str, Any], *, update_ui: bool) -> None:
+        """Applique le résultat de rendu sur l'UI et met à jour les caches.
+
+        Args:
+            payload (Dict[str, Any]): Résultat produit par ``_compute_chart_payload``.
+            update_ui (bool): Indique s'il faut pousser immédiatement les changements visuels.
+
+        Returns:
+            None: Met à jour l'image, les messages de statut et les caches.
+        """
         status = str(payload.get("status", ""))
         try:
             if status == "cached":
@@ -4426,9 +5061,20 @@ class PacingDesktopApp:
         finally:
             if update_ui:
                 self.loader.visible = False
+                self.chart_busy_icon.visible = False
+                self.chart_busy_text.visible = False
                 self.page.update()
 
     def _begin_chart_render(self, *, update_ui: bool, token: int) -> None:
+        """Lance le rendu asynchrone du graphique courant.
+
+        Args:
+            update_ui (bool): Indique s'il faut afficher l'état de chargement.
+            token (int): Jeton de génération pour ignorer les rendus obsolètes.
+
+        Returns:
+            None: Programme le rendu et applique le payload à la fin.
+        """
         snapshot = self._chart_render_snapshot()
         _, _, render_key = self._build_render_key_from_snapshot(snapshot)
         if self._try_apply_chart_from_cache(render_key, update_ui=update_ui):
@@ -4438,6 +5084,8 @@ class PacingDesktopApp:
             stale_shown = self._try_show_stale_corridor_chart(update_ui=update_ui)
         if update_ui and not stale_shown:
             self.loader.visible = True
+            self.chart_busy_icon.visible = True
+            self.chart_busy_text.visible = True
             self.status_text.value = ""
             self.page.update()
 
@@ -4890,42 +5538,55 @@ class PacingDesktopApp:
         ):
             dirty = True
 
-        # Options spécifiques pour heatmap
-        if self.selected_graph == "Heatmap vitesse moyenne (distance x nage)":
-            swimmer_options = self._swimmer_names_from_corridor_registry()
-            if not swimmer_options:
-                hid = id(df_nav)
+        # Options spécifiques pour heatmap (recherche nageur)
+        if self.selected_graph == HEATMAP_GRAPH_NAME:
+            labels_all = self._heatmap_swimmer_labels_for_search()
+            labels_set = self._heatmap_swimmer_labels_set
+            if labels_set is None and labels_all:
+                self._ensure_heatmap_swimmer_search_index(labels_all)
+                labels_set = self._heatmap_swimmer_labels_set or set()
+            if labels_all:
                 if (
-                    self._heatmap_swimmer_names_cache_id != hid
-                    or self._heatmap_swimmer_names_cache is None
+                    not self.selected_heatmap_swimmer
+                    or self.selected_heatmap_swimmer not in labels_set
                 ):
-                    self._heatmap_swimmer_names_cache = sorted(
-                        {
-                            name
-                            for name in df_nav["swimmer"].apply(_primary_swimmer_name).tolist()
-                            if name
-                        },
-                        key=lambda name: _normalize_text(name),
+                    registry_names = self._swimmer_names_from_corridor_registry()
+                    picked: Optional[str] = None
+                    for name in registry_names:
+                        if name in labels_set:
+                            picked = name
+                            break
+                    if picked is None:
+                        picked = labels_all[0]
+                    self.selected_heatmap_swimmer = picked
+                if (
+                    self.selected_heatmap_swimmer
+                    and not (self.heatmap_swimmer_search_query or "").strip()
+                ):
+                    self._set_heatmap_swimmer_search_query(
+                        self.selected_heatmap_swimmer
                     )
-                    self._heatmap_swimmer_names_cache_id = hid
-                swimmer_options = self._heatmap_swimmer_names_cache
-            heat_keys = tuple(swimmer_options)
-            if swimmer_options:
-                if self.selected_heatmap_swimmer not in swimmer_options:
-                    self.selected_heatmap_swimmer = swimmer_options[0]
             else:
                 self.selected_heatmap_swimmer = None
+            self._refresh_heatmap_swimmer_ui_from_labels(labels_all)
+            if self.heatmap_swimmer_search_container.visible is not True:
+                self.heatmap_swimmer_search_container.visible = True
+                dirty = True
             if self._sync_dropdown(
                 self.heatmap_swimmer_dd,
-                new_option_keys=heat_keys,
-                build_options=lambda so=swimmer_options: [
-                    ft.dropdown.Option(name) for name in so
-                ],
-                value=self.selected_heatmap_swimmer,
-                visible=True,
+                new_option_keys=tuple(),
+                build_options=lambda: [],
+                value=None,
+                visible=False,
             ):
                 dirty = True
         else:
+            if self.heatmap_swimmer_search is not None:
+                if self.heatmap_swimmer_search.reset(clear_query=True):
+                    dirty = True
+            if self.heatmap_swimmer_search_container.visible is not False:
+                self.heatmap_swimmer_search_container.visible = False
+                dirty = True
             if self._sync_dropdown(
                 self.heatmap_swimmer_dd,
                 new_option_keys=tuple(),
@@ -5171,14 +5832,18 @@ class PacingDesktopApp:
             if not any(current) and swimmer_options:
                 current = default_vals
 
-            for dd, val in (
-                (self.pacing_swimmer_dd_1, current[0]),
-                (self.pacing_swimmer_dd_2, current[1]),
-                (self.pacing_swimmer_dd_3, current[2]),
-            ):
-                if dd.value != val:
-                    dd.value = val
-                    dirty = True
+            self._is_syncing_pacing_dropdowns = True
+            try:
+                for dd, val in (
+                    (self.pacing_swimmer_dd_1, current[0]),
+                    (self.pacing_swimmer_dd_2, current[1]),
+                    (self.pacing_swimmer_dd_3, current[2]),
+                ):
+                    if dd.value != val:
+                        dd.value = val
+                        dirty = True
+            finally:
+                self._is_syncing_pacing_dropdowns = False
 
             cleaned: List[str] = []
             for s in current:
