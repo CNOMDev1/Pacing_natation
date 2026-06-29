@@ -147,6 +147,273 @@ _HEATMAP_STANDARD_DISTANCES: Tuple[int, ...] = (
 )
 HEATMAP_GRAPH_NAME = "Heatmap vitesse moyenne (distance x nage)"
 HEATMAP_CATEGORY_NAME = "Synthèse des vitesses par distance et nage"
+MEDIAN_VS_BEST_SWIMMER_GRAPH_NAME = "Temps médian vs meilleur nageur"
+MEDIAN_VS_TOP10_SWIMMER_GRAPH_NAME = "Temps médian vs Top 10 nageurs"
+SPLIT_COMPARISON_CATEGORY_NAME = (
+    "Comparaisons de pacing par splits (à partir de la médiane)"
+)
+MEDIAN_VS_BEST_CHART_STYLE_VERSION = 2
+MEDIAN_VS_TOP10_CHART_STYLE_VERSION = 2
+MEDIAN_SPEED_BY_GENDER_GRAPH_NAME = "Vitesse médiane par split selon le genre"
+MEDIAN_SPEED_BY_GENDER_CHART_STYLE_VERSION = 2
+
+
+def _split_segment_tick_labels(
+    split_nos: List[int],
+    distance_by_no: Dict[int, int],
+) -> List[str]:
+    """Construit les libellés de segments pour l'axe des splits.
+
+    Chaque segment est affiché sous la forme « début–fin m » (ex. ``0–50 m``),
+    conformément à l'analyse par lap times (Robertson et al., 2009).
+
+    Args:
+        split_nos (List[int]): Numéros de split ordonnés.
+        distance_by_no (Dict[int, int]): Distance cumulée de fin de segment par split.
+
+    Returns:
+        List[str]: Libellés prêts pour ``ax.set_xticklabels``.
+    """
+    labels: List[str] = []
+    prev_end = 0
+    for split_no in sorted(int(sn) for sn in split_nos):
+        end_dist = int(distance_by_no.get(split_no, split_no * 50))
+        labels.append(f"{prev_end}–{end_dist} m")
+        prev_end = end_dist
+    return labels
+
+
+def _solo_swim_key_from_row(perf_idx: object, row: pd.Series) -> Optional[str]:
+    """Calcule la clé ``swim_key`` alignée sur ``extract_event_split_speed_rows``.
+
+    Args:
+        perf_idx (object): Index de la performance dans le DataFrame source.
+        row (pd.Series): Ligne performance (nage solo).
+
+    Returns:
+        Optional[str]: Clé unique ou ``None`` si nageur invalide.
+    """
+    swimmers = row.get("swimmer")
+    if not isinstance(swimmers, list) or len(swimmers) != 1:
+        return None
+    swimmer = swimmers[0]
+    if not isinstance(swimmer, dict):
+        return None
+    name = swimmer.get("Name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return (
+        f"{perf_idx}|{name}|{row.get('SwimDate')}|"
+        f"{row.get('SwimTimeSeconds')}"
+    )
+
+
+def _resolve_fastest_solo_swim_for_event(
+    df: pd.DataFrame,
+    nom_event: str,
+) -> Optional[Tuple[str, str, str, float]]:
+    """Identifie la performance solo la plus rapide pour une épreuve.
+
+    Args:
+        df (pd.DataFrame): Performances source.
+        nom_event (str): Libellé exact de l'épreuve.
+
+    Returns:
+        Optional[Tuple[str, str, str, float]]: ``(swim_key, nom, genre, temps)`` ;
+            ``None`` si aucune performance exploitable.
+    """
+    if df.empty or "Event" not in df.columns:
+        return None
+    event_mask = df["Event"].astype(str).str.strip() == str(nom_event).strip()
+    candidates = df.loc[
+        event_mask
+        & df["SwimTimeSeconds"].notna()
+        & df["swimmer"].apply(lambda swimmers: isinstance(swimmers, list) and len(swimmers) == 1)
+    ].copy()
+    if candidates.empty:
+        return None
+    best_row = candidates.nsmallest(1, "SwimTimeSeconds").iloc[0]
+    perf_idx = best_row.name
+    swim_key = _solo_swim_key_from_row(perf_idx, best_row)
+    if not swim_key:
+        return None
+    swimmer = best_row["swimmer"][0]
+    name = str(swimmer.get("Name", "")).strip()
+    gender = str(swimmer.get("Gender", "")).strip().upper()
+    if gender not in ("F", "M"):
+        gender = "M" if gender.startswith("M") else "F" if gender.startswith("F") else "?"
+    swim_time = float(best_row["SwimTimeSeconds"])
+    return swim_key, name, gender, swim_time
+
+
+def _top_n_swim_keys_for_event(
+    df: pd.DataFrame,
+    nom_event: str,
+    *,
+    top_n: int = 10,
+) -> List[str]:
+    """Retourne les clés ``swim_key`` des ``top_n`` performances les plus rapides.
+
+    Args:
+        df (pd.DataFrame): Performances source.
+        nom_event (str): Libellé exact de l'épreuve.
+        top_n (int): Nombre de performances à retenir.
+
+    Returns:
+        List[str]: Clés uniques, dans l'ordre des temps croissants.
+    """
+    if df.empty or "Event" not in df.columns or top_n <= 0:
+        return []
+    event_mask = df["Event"].astype(str).str.strip() == str(nom_event).strip()
+    candidates = df.loc[
+        event_mask
+        & df["SwimTimeSeconds"].notna()
+        & df["swimmer"].apply(lambda swimmers: isinstance(swimmers, list) and len(swimmers) == 1)
+    ].copy()
+    if candidates.empty:
+        return []
+    keys: List[str] = []
+    for perf_idx, row in candidates.nsmallest(int(top_n), "SwimTimeSeconds").iterrows():
+        swim_key = _solo_swim_key_from_row(perf_idx, row)
+        if swim_key and swim_key not in keys:
+            keys.append(swim_key)
+    return keys
+
+
+def _top_n_swim_keys_for_event_by_gender(
+    df: pd.DataFrame,
+    nom_event: str,
+    *,
+    top_n: int = 10,
+) -> Dict[str, List[str]]:
+    """Retourne les ``top_n`` clés ``swim_key`` les plus rapides par genre.
+
+    Args:
+        df (pd.DataFrame): Performances source.
+        nom_event (str): Libellé exact de l'épreuve.
+        top_n (int): Nombre de performances à retenir par genre (F/M).
+
+    Returns:
+        Dict[str, List[str]]: Clés par genre, temps croissants.
+    """
+    out: Dict[str, List[str]] = {"F": [], "M": []}
+    if df.empty or "Event" not in df.columns or top_n <= 0:
+        return out
+    event_mask = df["Event"].astype(str).str.strip() == str(nom_event).strip()
+    for gender in ("F", "M"):
+        candidates = df.loc[
+            event_mask
+            & df["SwimTimeSeconds"].notna()
+            & df["swimmer"].apply(
+                lambda swimmers, g=gender: (
+                    isinstance(swimmers, list)
+                    and len(swimmers) == 1
+                    and isinstance(swimmers[0], dict)
+                    and str(swimmers[0].get("Gender", "")).strip().upper().startswith(g)
+                )
+            )
+        ].copy()
+        keys: List[str] = []
+        for perf_idx, row in candidates.nsmallest(int(top_n), "SwimTimeSeconds").iterrows():
+            swim_key = _solo_swim_key_from_row(perf_idx, row)
+            if swim_key and swim_key not in keys:
+                keys.append(swim_key)
+        out[gender] = keys
+    return out
+
+
+def _parse_split_distance_m(value: object) -> Optional[int]:
+    """Parse une distance de split Extranat en mètres entiers.
+
+    Args:
+        value (object): Valeur brute ``split_distance``.
+
+    Returns:
+        Optional[int]: Distance en mètres ou ``None`` si invalide.
+    """
+    try:
+        return int(str(value).replace(" m", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_relay_swimmers(swimmers: object) -> bool:
+    """Indique si la cellule ``swimmer`` représente une performance relais.
+
+    Args:
+        swimmers (object): Valeur de la colonne ``swimmer``.
+
+    Returns:
+        bool: ``True`` si la liste contient au moins deux nageurs dict.
+    """
+    return (
+        isinstance(swimmers, list)
+        and len(swimmers) > 1
+        and all(isinstance(item, dict) for item in swimmers)
+    )
+
+
+def _extract_relay_split_speed_rows(
+    df: pd.DataFrame,
+    nom_event: str,
+) -> pd.DataFrame:
+    """Extrait les vitesses de split (format long) pour les relais d'une épreuve.
+
+    Chaque ligne correspond à un segment de relais avec un ``split_no`` ordinal
+    (1 = premier passage, etc.) pour un alignement visuel cohérent avec les
+    graphiques solo.
+
+    Args:
+        df (pd.DataFrame): Performances source (Extranat).
+        nom_event (str): Libellé exact de l'épreuve.
+
+    Returns:
+        pd.DataFrame: Colonnes ``relay_key``, ``split_no``, ``split_distance``,
+            ``split_speed``, ``nb_swimmers`` ; vide si aucun relais exploitable.
+    """
+    if df.empty or "Event" not in df.columns:
+        return pd.DataFrame()
+    event_mask = df["Event"].astype(str).str.strip() == str(nom_event).strip()
+    rows: List[dict[str, object]] = []
+    for perf_idx, row in df.loc[event_mask].iterrows():
+        swimmers = row.get("swimmer")
+        if not _is_relay_swimmers(swimmers):
+            continue
+        splits = row.get("splits")
+        if not isinstance(splits, list):
+            continue
+        entries: List[Tuple[int, float]] = []
+        for split in splits:
+            if not isinstance(split, dict):
+                continue
+            dist = _parse_split_distance_m(split.get("split_distance"))
+            speed_raw = split.get("split_speed")
+            if dist is None or speed_raw is None:
+                continue
+            try:
+                speed = float(speed_raw)
+            except (TypeError, ValueError):
+                continue
+            if speed <= 0:
+                continue
+            entries.append((dist, speed))
+        if not entries:
+            continue
+        entries.sort(key=lambda item: item[0])
+        relay_key = f"{perf_idx}|{row.get('SwimDate')}|{len(swimmers)}"
+        for split_no, (distance, speed) in enumerate(entries, start=1):
+            rows.append(
+                {
+                    "relay_key": relay_key,
+                    "split_no": split_no,
+                    "split_distance": distance,
+                    "split_speed": speed,
+                    "nb_swimmers": len(swimmers),
+                }
+            )
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
 
 
 def _prepare_speed_heatmap_long_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -2487,6 +2754,8 @@ GRAPH_CHRONOS_PAR_NAGE = "Évolution des chronos par type de nage (échantillon 
 GRAPH_VITESSE_DISTANCE_NAGE = "Vitesse par distance et type de nage"
 GRAPH_VITESSE_MAX_SPLIT_NAGE = "Vitesse maximale par split et type de nage"
 GRAPH_RELAY_SPLIT_DISTANCE = "Vitesse de split selon la distance (relais)"
+RELAY_CATEGORY_NAME = "Pacing en relais"
+RELAY_SPLIT_CHART_STYLE_VERSION = 2
 GRAPH_PACING_PROFILE_NORMALIZED = (
     "Profil de pacing normalisé - nageur vs couloir de référence"
 )
@@ -2624,6 +2893,51 @@ class ServiceGraphe:
         self._split_speed_event_cache_max: int = 16
         self._speed_heatmap_long_cache: "OrderedDict[tuple, pd.DataFrame]" = OrderedDict()
         self._speed_heatmap_long_cache_max: int = 4
+        self._relay_split_event_cache: "OrderedDict[tuple, pd.DataFrame]" = OrderedDict()
+        self._relay_split_event_cache_max: int = 16
+
+    def _relay_split_cache_key(self, df: pd.DataFrame, nom_event: str) -> tuple:
+        """Construit une clé de cache pour les splits relais d'une épreuve.
+
+        Args:
+            df (pd.DataFrame): Jeu de performances source.
+            nom_event (str): Libellé d'épreuve.
+
+        Returns:
+            tuple: Clé compacte (épreuve, taille, bornes d'index).
+        """
+        if df.empty:
+            return (str(nom_event).strip(), 0, None, None)
+        return (
+            str(nom_event).strip(),
+            int(len(df)),
+            df.index.min(),
+            df.index.max(),
+        )
+
+    def _get_cached_relay_split_rows(
+        self, df: pd.DataFrame, nom_event: str
+    ) -> pd.DataFrame:
+        """Retourne le tableau long relais avec cache LRU par épreuve.
+
+        Args:
+            df (pd.DataFrame): Performances source.
+            nom_event (str): Libellé exact de l'épreuve.
+
+        Returns:
+            pd.DataFrame: Lignes de splits relais exploitables.
+        """
+        cache_key = self._relay_split_cache_key(df, nom_event)
+        cached = self._relay_split_event_cache.get(cache_key)
+        if cached is not None:
+            self._relay_split_event_cache.move_to_end(cache_key)
+            return cached.copy()
+        rows = _extract_relay_split_speed_rows(df, nom_event)
+        self._relay_split_event_cache[cache_key] = rows.copy()
+        self._relay_split_event_cache.move_to_end(cache_key)
+        if len(self._relay_split_event_cache) > self._relay_split_event_cache_max:
+            self._relay_split_event_cache.popitem(last=False)
+        return rows
 
     def _speed_heatmap_long_cache_key(self, df: pd.DataFrame) -> tuple:
         """Construit une clé compacte pour le cache heatmap vitesse.
@@ -4682,184 +4996,279 @@ class ServiceGraphe:
         df: pd.DataFrame,
         nom_event: str,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame, pd.DataFrame, dict[str, object]]:
-        """Compare temps médians de split du peloton vs meilleur nageur.
-        
+        """Compare la vitesse médiane par segment du peloton au meilleur nageur.
+
+        Visualisation alignée sur la littérature pacing (Robertson et al., 2009 ;
+        McGibbon et al., 2018) : vitesses de segment (m/s), bande IQR peloton,
+        courbe du recordman de l'épreuve. Les temps cumulés sont évités car ils
+        masquent la stratégie de pacing intra-course.
+
         Args:
             df (pd.DataFrame): Données de performances.
             nom_event (str): Libellé de l'épreuve.
-        
+
         Returns:
-            tuple[Optional[plt.Figure], pd.DataFrame]: Figure et données de comparaison.
+            tuple[Optional[plt.Figure], pd.DataFrame, pd.DataFrame, dict[str, object]]:
+                Figure, stats peloton, splits du meilleur nageur et métadonnées.
         """
-        df_event = df[
-            (df["Event"] == nom_event)
-            & (df["SwimTimeSeconds"].notna())
-            & (df["swimmer"].apply(len) == 1)
-        ].copy()
-        if df_event.empty:
-            return None, pd.DataFrame(), pd.DataFrame(), {"message": f"Aucune performance pour l'event {nom_event}."}
+        event_distance = parse_event_distance_m(nom_event)
+        long_df = self._get_cached_split_speed_rows(df, nom_event)
+        performances_count = (
+            int(long_df["swim_key"].nunique()) if not long_df.empty else 0
+        )
+        if long_df.empty:
+            return None, pd.DataFrame(), pd.DataFrame(), {
+                "message": (
+                    f"Aucune vitesse de split exploitable pour "
+                    f"{localize_event_string(nom_event)}."
+                ),
+                "performances_count": performances_count,
+                "chart_style_version": MEDIAN_VS_BEST_CHART_STYLE_VERSION,
+            }
 
-        split_data: list[dict[str, object]] = []
-        for _, row in df_event.iterrows():
-            splits = row["splits"]
-            if not splits:
-                continue
-            for split in splits:
-                if not isinstance(split, dict) or split.get("split_seconds") is None:
-                    continue
-                try:
-                    distance = int(str(split.get("split_distance")).replace(" m", ""))
-                    split_seconds = float(split.get("split_seconds"))
-                except (TypeError, ValueError):
-                    continue
-                split_data.append({"split_distance": distance, "split_seconds": split_seconds})
+        resolved = _resolve_fastest_solo_swim_for_event(df, nom_event)
+        if resolved is None:
+            return None, pd.DataFrame(), pd.DataFrame(), {
+                "message": f"Aucune performance solo pour {localize_event_string(nom_event)}.",
+                "performances_count": performances_count,
+                "chart_style_version": MEDIAN_VS_BEST_CHART_STYLE_VERSION,
+            }
+        swim_key, best_name, best_gender, best_swim_time = resolved
+        best_rows = long_df.loc[long_df["swim_key"] == swim_key].sort_values("split_no")
+        if best_rows.empty:
+            return None, pd.DataFrame(), pd.DataFrame(), {
+                "message": "Splits indisponibles pour le meilleur nageur de l'épreuve.",
+                "performances_count": performances_count,
+                "chart_style_version": MEDIAN_VS_BEST_CHART_STYLE_VERSION,
+            }
 
-        df_splits = pd.DataFrame(split_data)
-        if df_splits.empty:
-            return None, pd.DataFrame(), pd.DataFrame(), {"message": "Aucun split valide disponible pour la mediane."}
+        stats = (
+            long_df.groupby("split_no")["split_speed"]
+            .agg(
+                median="median",
+                q1=lambda values: values.quantile(0.25),
+                q3=lambda values: values.quantile(0.75),
+                n="count",
+            )
+            .reset_index()
+            .sort_values("split_no")
+        )
+        distance_by_no = (
+            long_df.groupby("split_no")["split_distance"].first().astype(int).to_dict()
+        )
+        stats["split_distance"] = stats["split_no"].map(distance_by_no)
 
-        df_median_splits = df_splits.groupby("split_distance", as_index=False)["split_seconds"].median()
-
-        df_best = df_event.nsmallest(1, "SwimTimeSeconds").iloc[0]
-        best_name = df_best["swimmer"][0]["Name"]
-        best_gender = df_best["swimmer"][0]["Gender"]
-        best_splits = df_best["splits"]
-
-        split_best_data: list[dict[str, object]] = []
-        for split in best_splits:
-            if not isinstance(split, dict) or split.get("split_seconds") is None:
-                continue
-            try:
-                distance = int(str(split.get("split_distance")).replace(" m", ""))
-                split_seconds = float(split.get("split_seconds"))
-            except (TypeError, ValueError):
-                continue
-            split_best_data.append({"split_distance": distance, "split_seconds": split_seconds})
-        df_best_splits = pd.DataFrame(split_best_data)
-        if df_best_splits.empty:
-            return None, df_median_splits, pd.DataFrame(), {"message": "Aucun split valide pour le meilleur nageur."}
-
-        fig, ax = plt.subplots(figsize=(12, 7))
-        sns.lineplot(
-            x="split_distance",
-            y="split_seconds",
-            data=df_median_splits,
-            marker="o",
+        fig, ax = plt.subplots(figsize=(13, 7))
+        _apply_standard_chart_theme(fig, ax)
+        ax.fill_between(
+            stats["split_no"],
+            stats["q1"],
+            stats["q3"],
+            color="#FDE68A",
+            alpha=0.32,
+            linewidth=0,
+            label="IQR peloton (Q1–Q3)",
+            zorder=2,
+        )
+        ax.plot(
+            stats["split_no"],
+            stats["median"],
             color=NON_CORRIDOR_COLOR_SECONDARY,
-            label="Temps median de tous les nageurs",
-            ax=ax,
+            linewidth=2.8,
+            linestyle="--",
+            marker="s",
+            markersize=7,
+            markeredgecolor="white",
+            markeredgewidth=0.8,
+            label="Vitesse médiane — peloton",
+            zorder=5,
         )
-        color_best = NON_CORRIDOR_COLOR_MALE if best_gender == "M" else NON_CORRIDOR_COLOR_FEMALE
-        sns.lineplot(
-            x="split_distance",
-            y="split_seconds",
-            data=df_best_splits,
+        best_color = (
+            NON_CORRIDOR_COLOR_MALE
+            if best_gender == "M"
+            else NON_CORRIDOR_COLOR_FEMALE
+        )
+        ax.plot(
+            best_rows["split_no"],
+            best_rows["split_speed"],
+            color=best_color,
+            linewidth=3.2,
+            linestyle="-",
             marker="o",
-            color=color_best,
+            markersize=8,
+            markeredgecolor="white",
+            markeredgewidth=0.9,
             label=f"Meilleur nageur : {best_name} ({best_gender})",
-            ax=ax,
+            zorder=7,
         )
-        max_dist = max(df_median_splits["split_distance"].max(), df_best_splits["split_distance"].max())
-        ax.set_xticks(range(50, int(max_dist) + 50, 50))
+
+        ticks = stats["split_no"].astype(int).tolist()
+        labels = _split_segment_tick_labels(ticks, distance_by_no)
+        ax.set_xticks(ticks)
+        ax.set_xticklabels(labels)
+        time_label = _format_swim_time_display(best_swim_time, precision=2)
         ax.set_title(
-            f"Temps médian vs meilleur nageur - {localize_event_string(nom_event)}",
-            fontsize=16,
+            (
+                f"Vitesse par segment — peloton vs meilleur nageur\n"
+                f"{localize_event_string(nom_event)} · record {time_label} ({best_name})"
+            ),
+            fontsize=14,
+            fontweight="bold",
+            pad=10,
         )
-        ax.set_xlabel("Distance par split (m)", fontsize=14)
-        ax.set_ylabel("Temps (s)", fontsize=14)
-        ax.grid(True)
-        ax.legend(fontsize=12)
+        ax.set_xlabel("Segment de course", fontsize=12)
+        ax.set_ylabel("Vitesse (m/s)", fontsize=12)
+        ax.grid(alpha=0.25, color="#cbd5e1")
+        ax.legend(frameon=False, fontsize=10, loc="best")
         fig.tight_layout()
-        return fig, df_median_splits, df_best_splits, {"message": "ok", "best_name": best_name, "best_gender": best_gender}
+        return fig, stats, best_rows, {
+            "message": "ok",
+            "best_name": best_name,
+            "best_gender": best_gender,
+            "best_swim_time": best_swim_time,
+            "performances_count": performances_count,
+            "event_distance": event_distance,
+            "chart_style_version": MEDIAN_VS_BEST_CHART_STYLE_VERSION,
+        }
 
     def plot_temps_median_vs_top10_nageurs_par_split_event(
         self,
         df: pd.DataFrame,
         nom_event: str,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame, pd.DataFrame, dict[str, object]]:
-        """Compare temps médians de split du peloton vs médiane du top 10.
-        
+        """Compare la vitesse médiane par segment du peloton au top 10.
+
+        Même logique que ``plot_temps_median_vs_meilleur_nageur_par_split_event`` :
+        vitesses de segment (m/s), bande IQR peloton, courbe médiane des
+        ``top_n`` meilleurs temps de l'épreuve (Robertson et al., 2009).
+
         Args:
             df (pd.DataFrame): Données de performances.
             nom_event (str): Libellé de l'épreuve.
-        
+
         Returns:
-            tuple[Optional[plt.Figure], pd.DataFrame]: Figure et données de comparaison.
+            tuple[Optional[plt.Figure], pd.DataFrame, pd.DataFrame, dict[str, object]]:
+                Figure, stats peloton, stats top 10 et métadonnées.
         """
-        df_event = df[
-            (df["Event"] == nom_event)
-            & (df["SwimTimeSeconds"].notna())
-            & (df["swimmer"].apply(len) == 1)
-        ].copy()
-        if df_event.empty:
-            return None, pd.DataFrame(), pd.DataFrame(), {"message": f"Aucune performance pour l'event {nom_event}."}
+        event_distance = parse_event_distance_m(nom_event)
+        long_df = self._get_cached_split_speed_rows(df, nom_event)
+        performances_count = (
+            int(long_df["swim_key"].nunique()) if not long_df.empty else 0
+        )
+        if long_df.empty:
+            return None, pd.DataFrame(), pd.DataFrame(), {
+                "message": (
+                    f"Aucune vitesse de split exploitable pour "
+                    f"{localize_event_string(nom_event)}."
+                ),
+                "performances_count": performances_count,
+                "chart_style_version": MEDIAN_VS_TOP10_CHART_STYLE_VERSION,
+            }
 
-        split_data: list[dict[str, object]] = []
-        for _, row in df_event.iterrows():
-            for split in row.get("splits", []) or []:
-                if not isinstance(split, dict) or split.get("split_seconds") is None:
-                    continue
-                try:
-                    distance = int(str(split.get("split_distance")).replace(" m", ""))
-                    split_seconds = float(split.get("split_seconds"))
-                except (TypeError, ValueError):
-                    continue
-                split_data.append({"split_distance": distance, "split_seconds": split_seconds})
+        top_keys = _top_n_swim_keys_for_event(df, nom_event, top_n=10)
+        if not top_keys:
+            return None, pd.DataFrame(), pd.DataFrame(), {
+                "message": f"Aucune performance solo pour {localize_event_string(nom_event)}.",
+                "performances_count": performances_count,
+                "chart_style_version": MEDIAN_VS_TOP10_CHART_STYLE_VERSION,
+            }
 
-        df_splits = pd.DataFrame(split_data)
-        if df_splits.empty:
-            return None, pd.DataFrame(), pd.DataFrame(), {"message": "Aucun split valide pour l'ensemble des nageurs."}
-        df_median_splits = df_splits.groupby("split_distance", as_index=False)["split_seconds"].median()
+        top_rows = long_df.loc[long_df["swim_key"].isin(top_keys)].copy()
+        if top_rows.empty:
+            return None, pd.DataFrame(), pd.DataFrame(), {
+                "message": "Splits indisponibles pour le top 10 de l'épreuve.",
+                "performances_count": performances_count,
+                "chart_style_version": MEDIAN_VS_TOP10_CHART_STYLE_VERSION,
+            }
 
-        df_top10 = df_event.nsmallest(10, "SwimTimeSeconds")
-        top10_split_data: list[dict[str, object]] = []
-        for _, row in df_top10.iterrows():
-            for split in row.get("splits", []) or []:
-                if not isinstance(split, dict) or split.get("split_seconds") is None:
-                    continue
-                try:
-                    distance = int(str(split.get("split_distance")).replace(" m", ""))
-                    split_seconds = float(split.get("split_seconds"))
-                except (TypeError, ValueError):
-                    continue
-                top10_split_data.append({"split_distance": distance, "split_seconds": split_seconds})
+        stats = (
+            long_df.groupby("split_no")["split_speed"]
+            .agg(
+                median="median",
+                q1=lambda values: values.quantile(0.25),
+                q3=lambda values: values.quantile(0.75),
+                n="count",
+            )
+            .reset_index()
+            .sort_values("split_no")
+        )
+        top_stats = (
+            top_rows.groupby("split_no")["split_speed"]
+            .median()
+            .reset_index()
+            .rename(columns={"split_speed": "median"})
+            .sort_values("split_no")
+        )
+        distance_by_no = (
+            long_df.groupby("split_no")["split_distance"].first().astype(int).to_dict()
+        )
+        stats["split_distance"] = stats["split_no"].map(distance_by_no)
+        top_stats["split_distance"] = top_stats["split_no"].map(distance_by_no)
 
-        df_top10_splits = pd.DataFrame(top10_split_data)
-        if df_top10_splits.empty:
-            return None, df_median_splits, pd.DataFrame(), {"message": "Aucun split valide pour le top 10."}
-        df_top10_median = df_top10_splits.groupby("split_distance", as_index=False)["split_seconds"].median()
-
-        fig, ax = plt.subplots(figsize=(12, 7))
-        sns.lineplot(
-            x="split_distance",
-            y="split_seconds",
-            data=df_median_splits,
-            marker="o",
+        fig, ax = plt.subplots(figsize=(13, 7))
+        _apply_standard_chart_theme(fig, ax)
+        ax.fill_between(
+            stats["split_no"],
+            stats["q1"],
+            stats["q3"],
+            color="#FDE68A",
+            alpha=0.32,
+            linewidth=0,
+            label="IQR peloton (Q1–Q3)",
+            zorder=2,
+        )
+        ax.plot(
+            stats["split_no"],
+            stats["median"],
             color=NON_CORRIDOR_COLOR_SECONDARY,
-            label="Temps median de tous les nageurs",
-            ax=ax,
+            linewidth=2.8,
+            linestyle="--",
+            marker="s",
+            markersize=7,
+            markeredgecolor="white",
+            markeredgewidth=0.8,
+            label="Vitesse médiane — peloton",
+            zorder=5,
         )
-        sns.lineplot(
-            x="split_distance",
-            y="split_seconds",
-            data=df_top10_median,
-            marker="o",
+        ax.plot(
+            top_stats["split_no"],
+            top_stats["median"],
             color=NON_CORRIDOR_COLOR_MALE,
-            label="Temps median des 10 meilleurs nageurs",
-            ax=ax,
+            linewidth=3.2,
+            linestyle="-",
+            marker="o",
+            markersize=8,
+            markeredgecolor="white",
+            markeredgewidth=0.9,
+            label=f"Vitesse médiane — top {len(top_keys)} (meilleurs temps)",
+            zorder=7,
         )
-        max_dist = max(df_median_splits["split_distance"].max(), df_top10_median["split_distance"].max())
-        ax.set_xticks(range(50, int(max_dist) + 50, 50))
+
+        ticks = stats["split_no"].astype(int).tolist()
+        labels = _split_segment_tick_labels(ticks, distance_by_no)
+        ax.set_xticks(ticks)
+        ax.set_xticklabels(labels)
         ax.set_title(
-            f"Temps médian vs Top 10 nageurs - {localize_event_string(nom_event)}",
-            fontsize=16,
+            (
+                f"Vitesse par segment — peloton vs top {len(top_keys)}\n"
+                f"{localize_event_string(nom_event)}"
+            ),
+            fontsize=14,
+            fontweight="bold",
+            pad=10,
         )
-        ax.set_xlabel("Distance par split (m)", fontsize=14)
-        ax.set_ylabel("Temps (s)", fontsize=14)
-        ax.grid(True)
-        ax.legend(fontsize=12)
+        ax.set_xlabel("Segment de course", fontsize=12)
+        ax.set_ylabel("Vitesse (m/s)", fontsize=12)
+        ax.grid(alpha=0.25, color="#cbd5e1")
+        ax.legend(frameon=False, fontsize=10, loc="best")
         fig.tight_layout()
-        return fig, df_median_splits, df_top10_median, {"message": "ok", "top10_count": len(df_top10)}
+        return fig, stats, top_stats, {
+            "message": "ok",
+            "top10_count": len(top_keys),
+            "performances_count": performances_count,
+            "event_distance": event_distance,
+            "chart_style_version": MEDIAN_VS_TOP10_CHART_STYLE_VERSION,
+        }
 
     def plot_vitesse_mediane_par_split_selon_genre_top_n_event(
         self,
@@ -4867,206 +5276,290 @@ class ServiceGraphe:
         nom_event: str,
         top_n: int = 10,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame, dict[str, object]]:
-        """Vitesses médianes de split par genre pour le top N M/F.
-        
+        """Compare les vitesses médianes par segment entre femmes et hommes.
+
+        Utilise ``extract_event_split_speed_rows`` (segments complets), médiane
+        et bande IQR par genre. Si ``top_n > 0``, seules les ``top_n`` meilleures
+        performances par genre sont retenues (comparaison élite F vs M).
+
         Args:
             df (pd.DataFrame): Données de performances.
             nom_event (str): Libellé de l'épreuve.
-            top_n (int): Nombre de nageurs par genre.
-        
+            top_n (int): Meilleures performances par genre ; ``0`` = peloton entier.
+
         Returns:
-            tuple[Optional[plt.Figure], pd.DataFrame]: Figure et statistiques par split.
+            tuple[Optional[plt.Figure], pd.DataFrame, dict[str, object]]:
+                Figure, statistiques par genre/split et métadonnées.
         """
-        df_event = df[
-            (df["Event"] == nom_event)
-            & (df["SwimTimeSeconds"].notna())
-            & (df["swimmer"].apply(lambda x: isinstance(x, list) and len(x) == 1))
-        ].copy()
-        if df_event.empty:
-            return None, pd.DataFrame(), {"message": f"Aucune performance pour l'event {nom_event}."}
+        event_distance = parse_event_distance_m(nom_event)
+        long_df = self._get_cached_split_speed_rows(df, nom_event)
+        performances_count = (
+            int(long_df["swim_key"].nunique()) if not long_df.empty else 0
+        )
+        if long_df.empty:
+            return None, pd.DataFrame(), {
+                "message": (
+                    f"Aucune vitesse de split exploitable pour "
+                    f"{localize_event_string(nom_event)}."
+                ),
+                "performances_count": performances_count,
+                "chart_style_version": MEDIAN_SPEED_BY_GENDER_CHART_STYLE_VERSION,
+            }
 
-        df_event["swimmer_name"] = df_event["swimmer"].apply(lambda x: x[0]["Name"])
-        df_event["swimmer_gender"] = df_event["swimmer"].apply(lambda x: x[0]["Gender"])
-        df_top_men = df_event[df_event["swimmer_gender"] == "M"].nsmallest(top_n, "SwimTimeSeconds")
-        df_top_women = df_event[df_event["swimmer_gender"] == "F"].nsmallest(top_n, "SwimTimeSeconds")
-        df_top_all = pd.concat([df_top_men, df_top_women], ignore_index=True)
+        work_df = long_df.copy()
+        top_men = 0
+        top_women = 0
+        if int(top_n) > 0:
+            keys_by_gender = _top_n_swim_keys_for_event_by_gender(
+                df, nom_event, top_n=int(top_n)
+            )
+            top_men = len(keys_by_gender.get("M", []))
+            top_women = len(keys_by_gender.get("F", []))
+            allowed_keys = set(keys_by_gender.get("F", [])) | set(keys_by_gender.get("M", []))
+            if not allowed_keys:
+                return None, pd.DataFrame(), {
+                    "message": f"Aucune performance solo pour {localize_event_string(nom_event)}.",
+                    "performances_count": performances_count,
+                    "chart_style_version": MEDIAN_SPEED_BY_GENDER_CHART_STYLE_VERSION,
+                }
+            work_df = work_df.loc[work_df["swim_key"].isin(allowed_keys)].copy()
+            if work_df.empty:
+                return None, pd.DataFrame(), {
+                    "message": "Splits indisponibles pour le top par genre.",
+                    "performances_count": performances_count,
+                    "chart_style_version": MEDIAN_SPEED_BY_GENDER_CHART_STYLE_VERSION,
+                }
 
-        split_data: list[dict[str, object]] = []
-        for _, row in df_top_all.iterrows():
-            gender = row["swimmer_gender"]
-            for split in row.get("splits", []) or []:
-                if not isinstance(split, dict):
-                    continue
-                try:
-                    distance = int(str(split.get("split_distance")).replace(" m", "").strip())
-                    split_speed = float(split.get("split_speed"))
-                except (TypeError, ValueError):
-                    continue
-                split_data.append(
-                    {
-                        "gender": gender,
-                        "split_distance": distance,
-                        "split_speed": split_speed,
-                    }
-                )
-
-        df_splits = pd.DataFrame(split_data)
-        if df_splits.empty:
-            return None, pd.DataFrame(), {"message": "Aucune donnée de split exploitable."}
-
-        df_med = (
-            df_splits.groupby(["gender", "split_distance"])["split_speed"]
-            .median()
+        stats = (
+            work_df.groupby(["Gender", "split_no"])["split_speed"]
+            .agg(
+                median="median",
+                q1=lambda values: values.quantile(0.25),
+                q3=lambda values: values.quantile(0.75),
+                n="count",
+            )
             .reset_index()
+            .sort_values(["Gender", "split_no"])
         )
+        distance_by_no = (
+            work_df.groupby("split_no")["split_distance"].first().astype(int).to_dict()
+        )
+        stats["split_distance"] = stats["split_no"].map(distance_by_no)
 
-        fig, ax = plt.subplots(figsize=(12, 7))
-        sns.lineplot(
-            x="split_distance",
-            y="split_speed",
-            hue="gender",
-            data=df_med,
-            marker="o",
-            palette={"M": NON_CORRIDOR_COLOR_MALE, "F": NON_CORRIDOR_COLOR_FEMALE},
-            linewidth=2.5,
-            ax=ax,
+        style_by_gender = {
+            "F": {
+                "fill": "#F6D5E8",
+                "median": NON_CORRIDOR_COLOR_FEMALE,
+                "label": "Femmes",
+            },
+            "M": {
+                "fill": "#D2E8F8",
+                "median": NON_CORRIDOR_COLOR_MALE,
+                "label": "Hommes",
+            },
+        }
+
+        fig, ax = plt.subplots(figsize=(13, 7))
+        _apply_standard_chart_theme(fig, ax)
+        for gender in ("F", "M"):
+            data_gender = stats[stats["Gender"] == gender].sort_values("split_no")
+            if data_gender.empty:
+                continue
+            style = style_by_gender[gender]
+            ax.fill_between(
+                data_gender["split_no"],
+                data_gender["q1"],
+                data_gender["q3"],
+                color=style["fill"],
+                alpha=0.32,
+                linewidth=0,
+                label=f"IQR {style['label']} (Q1–Q3)",
+                zorder=2,
+            )
+            ax.plot(
+                data_gender["split_no"],
+                data_gender["median"],
+                color=style["median"],
+                linewidth=3.0,
+                linestyle="-",
+                marker="o",
+                markersize=8,
+                markeredgecolor="white",
+                markeredgewidth=0.9,
+                label=f"Vitesse médiane — {style['label']}",
+                zorder=6,
+            )
+
+        ticks = sorted(work_df["split_no"].dropna().astype(int).unique().tolist())
+        labels = _split_segment_tick_labels(ticks, distance_by_no)
+        ax.set_xticks(ticks)
+        ax.set_xticklabels(labels)
+        scope_label = (
+            f"top {int(top_n)} par genre"
+            if int(top_n) > 0
+            else "peloton complet"
         )
-        ax.set_xticks(range(50, int(df_splits["split_distance"].max()) + 50, 50))
         ax.set_title(
-            f"Vitesse médiane par split selon le genre - {localize_event_string(nom_event)}",
-            fontsize=16,
+            (
+                f"Vitesse par segment selon le genre ({scope_label})\n"
+                f"{localize_event_string(nom_event)}"
+            ),
+            fontsize=14,
+            fontweight="bold",
+            pad=10,
         )
-        ax.set_xlabel("Distance par splits (m)", fontsize=14)
-        ax.set_ylabel("Vitesse mediane (m/s)", fontsize=14)
-        ax.grid(True)
-        ax.legend(title="Genre", fontsize=12)
+        ax.set_xlabel("Segment de course", fontsize=12)
+        ax.set_ylabel("Vitesse (m/s)", fontsize=12)
+        ax.grid(alpha=0.25, color="#cbd5e1")
+        ax.legend(frameon=False, fontsize=10, loc="best", title="Genre")
         fig.tight_layout()
-        return fig, df_med, {"message": "ok", "top_men_count": len(df_top_men), "top_women_count": len(df_top_women)}
+        return fig, stats, {
+            "message": "ok",
+            "top_men_count": top_men if int(top_n) > 0 else int(
+                work_df.loc[work_df["Gender"] == "M", "swim_key"].nunique()
+            ),
+            "top_women_count": top_women if int(top_n) > 0 else int(
+                work_df.loc[work_df["Gender"] == "F", "swim_key"].nunique()
+            ),
+            "performances_count": performances_count,
+            "event_distance": event_distance,
+            "chart_style_version": MEDIAN_SPEED_BY_GENDER_CHART_STYLE_VERSION,
+        }
 
     def plot_relais_split_speed_par_distance(
         self,
         df: pd.DataFrame,
         nom_event: str,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, object]]:
-        """Analyse des vitesses de split en relais (scatter + tendances).
-        
+        """Analyse des vitesses de split en relais par segment de course.
+
+        Nuage de points (chaque passage relais), médiane et bande IQR par segment.
+        L'axe des abscisses utilise des libellés de segments (``0–50 m``, …)
+        plutôt que des distances cumulées mal alignées (Robertson et al., 2009 ;
+        Du & Yuan, 2021 : comparaison de distributions par segment).
+
         Args:
             df (pd.DataFrame): Données de performances (relais uniquement).
-        
+            nom_event (str): Libellé de l'épreuve.
+
         Returns:
-            tuple[Optional[plt.Figure], pd.DataFrame]: Figure et points de split agrégés.
+            tuple[Optional[plt.Figure], pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, object]]:
+                Figure, points bruts, moyennes et médianes par segment, métadonnées.
         """
-        def parse_dist(value: object) -> Optional[int]:
-            """Parse une distance de split en entier (mètres).
-            
-            Args:
-                value (object): Valeur brute de distance.
-            
-            Returns:
-                Optional[int]: Distance en mètres ou None.
-            """
-            try:
-                return int(str(value).replace(" m", "").strip())
-            except (TypeError, ValueError):
-                return None
-
-        def is_relay_swimmers(swimmers: object) -> bool:
-            """Indique si la cellule swimmer représente un relais (plusieurs nageurs).
-            
-            Args:
-                swimmers (object): Valeur brute de la colonne swimmer.
-            
-            Returns:
-                bool: True si la liste contient plus d'un nageur.
-            """
-            return isinstance(swimmers, list) and len(swimmers) > 1 and all(isinstance(s, dict) for s in swimmers)
-
-        df_relay = df[
-            (df["Event"] == nom_event) & df["swimmer"].apply(is_relay_swimmers)
-        ].copy()
-
-        rows: list[dict[str, object]] = []
-        for idx, row in df_relay.iterrows():
-            splits = row.get("splits", [])
-            if not isinstance(splits, list):
-                continue
-            for split in splits:
-                if not isinstance(split, dict):
-                    continue
-                dist = parse_dist(split.get("split_distance"))
-                speed = split.get("split_speed")
-                if dist is None or speed is None:
-                    continue
-                try:
-                    speed = float(speed)
-                except (TypeError, ValueError):
-                    continue
-                rows.append(
-                    {
-                        "perf_idx": idx,
-                        "split_distance_m": dist,
-                        "split_speed": speed,
-                        "nb_swimmers": len(row["swimmer"]),
-                    }
-                )
-
-        df_pts = pd.DataFrame(rows)
-        if df_pts.empty:
+        long_df = self._get_cached_relay_split_rows(df, nom_event)
+        relay_perf_count = (
+            int(long_df["relay_key"].nunique()) if not long_df.empty else 0
+        )
+        if long_df.empty:
             return None, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {
-                "message": "Aucun point relai pour cet event (ou splits vides / split_speed manquant).",
-                "relay_perf_count": len(df_relay),
+                "message": (
+                    f"Aucun split relais exploitable pour "
+                    f"{localize_event_string(nom_event)}."
+                ),
+                "relay_perf_count": relay_perf_count,
+                "chart_style_version": RELAY_SPLIT_CHART_STYLE_VERSION,
             }
 
-        mean_by_dist = (
-            df_pts.groupby("split_distance_m", as_index=False)["split_speed"]
-            .mean()
-            .sort_values("split_distance_m")
+        stats = (
+            long_df.groupby("split_no")["split_speed"]
+            .agg(
+                mean="mean",
+                median="median",
+                q1=lambda values: values.quantile(0.25),
+                q3=lambda values: values.quantile(0.75),
+                n="count",
+            )
+            .reset_index()
+            .sort_values("split_no")
         )
-        median_by_dist = (
-            df_pts.groupby("split_distance_m", as_index=False)["split_speed"]
-            .median()
-            .sort_values("split_distance_m")
+        distance_by_no = (
+            long_df.groupby("split_no")["split_distance"].first().astype(int).to_dict()
         )
+        stats["split_distance"] = stats["split_no"].map(distance_by_no)
 
-        fig, ax = plt.subplots(figsize=(12, 6))
+        mean_by_dist = stats[["split_no", "split_distance", "mean"]].rename(
+            columns={"mean": "split_speed"}
+        )
+        median_by_dist = stats[["split_no", "split_distance", "median"]].rename(
+            columns={"median": "split_speed"}
+        )
+        df_pts = long_df.rename(columns={"split_distance": "split_distance_m"}).copy()
+
+        fig, ax = plt.subplots(figsize=(13, 7))
+        _apply_standard_chart_theme(fig, ax)
+        rng = np.random.default_rng(42)
+        jitter = (rng.random(len(long_df)) - 0.5) * 0.14
         ax.scatter(
-            df_pts["split_distance_m"],
-            df_pts["split_speed"],
-            alpha=0.35,
-            s=28,
+            long_df["split_no"].to_numpy() + jitter,
+            long_df["split_speed"].to_numpy(),
+            alpha=0.22,
+            s=22,
+            color=NON_CORRIDOR_COLOR_PRIMARY,
             edgecolors="none",
+            label="Performances relais",
+            zorder=1,
+        )
+        ax.fill_between(
+            stats["split_no"],
+            stats["q1"],
+            stats["q3"],
+            color="#D2E8F8",
+            alpha=0.45,
+            linewidth=0,
+            label="IQR relais (Q1–Q3)",
+            zorder=2,
         )
         ax.plot(
-            mean_by_dist["split_distance_m"],
-            mean_by_dist["split_speed"],
-            color=NON_CORRIDOR_COLOR_SECONDARY,
-            linewidth=2.7,
-            marker="o",
-            label="Moyenne par split_distance_m",
-        )
-        ax.plot(
-            median_by_dist["split_distance_m"],
-            median_by_dist["split_speed"],
+            stats["split_no"],
+            stats["median"],
             color=NON_CORRIDOR_COLOR_MALE,
+            linewidth=3.0,
+            linestyle="-",
+            marker="s",
+            markersize=8,
+            markeredgecolor="white",
+            markeredgewidth=0.9,
+            label="Vitesse médiane — relais",
+            zorder=6,
+        )
+        ax.plot(
+            stats["split_no"],
+            stats["mean"],
+            color=NON_CORRIDOR_COLOR_SECONDARY,
             linewidth=2.4,
             linestyle="--",
-            marker="s",
-            label="Mediane par split_distance_m",
+            marker="o",
+            markersize=6,
+            markeredgecolor="white",
+            markeredgewidth=0.7,
+            label="Vitesse moyenne — relais",
+            zorder=5,
         )
+
+        ticks = stats["split_no"].astype(int).tolist()
+        labels = _split_segment_tick_labels(ticks, distance_by_no)
+        ax.set_xticks(ticks)
+        ax.set_xticklabels(labels)
         ax.set_title(
-            f"{localize_event_string(nom_event)} - relais uniquement - vitesse de split selon la distance",
-            fontsize=13,
+            (
+                f"Vitesse par segment — relais uniquement\n"
+                f"{localize_event_string(nom_event)} · "
+                f"{relay_perf_count:,} relais".replace(",", " ")
+            ),
+            fontsize=14,
             fontweight="bold",
+            pad=10,
         )
-        ax.set_xlabel("Distance du split (m)")
-        ax.set_ylabel("Vitesse de split")
-        ax.grid(alpha=0.25)
-        ax.legend()
+        ax.set_xlabel("Segment de course", fontsize=12)
+        ax.set_ylabel("Vitesse (m/s)", fontsize=12)
+        ax.grid(alpha=0.25, color="#cbd5e1")
+        ax.legend(frameon=False, fontsize=10, loc="best")
         fig.tight_layout()
         return fig, df_pts, mean_by_dist, median_by_dist, {
             "message": "ok",
-            "relay_perf_count": len(df_relay),
-            "points_count": len(df_pts),
+            "relay_perf_count": relay_perf_count,
+            "points_count": len(long_df),
+            "chart_style_version": RELAY_SPLIT_CHART_STYLE_VERSION,
         }
 
     def plot_pacing_profile_normalized_corridor(
@@ -6195,11 +6688,12 @@ class ServiceGraphe:
                     if err and err != "ok":
                         chart_title = err
 
-        elif selected_graph == "Temps médian vs meilleur nageur":
+        elif selected_graph == MEDIAN_VS_BEST_SWIMMER_GRAPH_NAME:
             if distance and stroke and pool:
                 nom_event = f"{distance} {stroke} {pool}"
                 chart_title = (
-                    f"Temps médian vs meilleur nageur - {format_event_label(distance, stroke, pool)}"
+                    f"Vitesse par segment — peloton vs meilleur nageur · "
+                    f"{format_event_label(distance, stroke, pool)}"
                 )
                 fig, _a, _b, meta = svc.plot_temps_median_vs_meilleur_nageur_par_split_event(
                     df_scope, nom_event=nom_event
@@ -6208,12 +6702,25 @@ class ServiceGraphe:
                     err = str(meta.get("message", ""))
                     if err and err != "ok":
                         chart_title = err
+                elif isinstance(meta, dict) and meta.get("message") == "ok":
+                    best_name = meta.get("best_name")
+                    best_time = meta.get("best_swim_time")
+                    if isinstance(best_name, str) and best_name.strip():
+                        if isinstance(best_time, (int, float)):
+                            time_label = _format_swim_time_display(
+                                float(best_time), precision=2
+                            )
+                            chart_title = (
+                                f"Vitesse par segment — {format_event_label(distance, stroke, pool)} "
+                                f"· record {time_label} ({best_name.strip()})"
+                            )
 
-        elif selected_graph == "Temps médian vs Top 10 nageurs":
+        elif selected_graph == MEDIAN_VS_TOP10_SWIMMER_GRAPH_NAME:
             if distance and stroke and pool:
                 nom_event = f"{distance} {stroke} {pool}"
                 chart_title = (
-                    f"Temps médian vs Top 10 nageurs - {format_event_label(distance, stroke, pool)}"
+                    f"Vitesse par segment — peloton vs top 10 · "
+                    f"{format_event_label(distance, stroke, pool)}"
                 )
                 fig, _a, _b, meta = svc.plot_temps_median_vs_top10_nageurs_par_split_event(
                     df_scope, nom_event=nom_event
@@ -6222,12 +6729,20 @@ class ServiceGraphe:
                     err = str(meta.get("message", ""))
                     if err and err != "ok":
                         chart_title = err
+                elif isinstance(meta, dict) and meta.get("message") == "ok":
+                    top_count = meta.get("top10_count")
+                    if isinstance(top_count, int) and top_count > 0:
+                        chart_title = (
+                            f"Vitesse par segment — peloton vs top {top_count} · "
+                            f"{format_event_label(distance, stroke, pool)}"
+                        )
 
-        elif selected_graph == "Vitesse médiane par split selon le genre":
+        elif selected_graph == MEDIAN_SPEED_BY_GENDER_GRAPH_NAME:
             if distance and stroke and pool:
                 nom_event = f"{distance} {stroke} {pool}"
                 chart_title = (
-                    f"Vitesse médiane par split selon le genre - {format_event_label(distance, stroke, pool)}"
+                    f"Vitesse par segment selon le genre · "
+                    f"{format_event_label(distance, stroke, pool)}"
                 )
                 fig, _med, meta = svc.plot_vitesse_mediane_par_split_selon_genre_top_n_event(
                     df_scope, nom_event=nom_event, top_n=10
@@ -6236,6 +6751,11 @@ class ServiceGraphe:
                     err = str(meta.get("message", ""))
                     if err and err != "ok":
                         chart_title = err
+                elif isinstance(meta, dict) and meta.get("message") == "ok":
+                    chart_title = (
+                        f"Vitesse par segment F/M (top 10) · "
+                        f"{format_event_label(distance, stroke, pool)}"
+                    )
 
         elif selected_graph == "Heatmap vitesse moyenne (distance x nage)":
             chart_title = "Synthèse des vitesses – heatmap comparative"
@@ -6411,15 +6931,22 @@ class ServiceGraphe:
                 nom_event = f"{distance} {stroke} {pool}"
                 nom_event_label = format_event_label(distance, stroke, pool)
                 chart_title = (
-                    f"{nom_event_label} — relais uniquement — vitesse de split selon la distance"
+                    f"Vitesse par segment — relais · {nom_event_label}"
                 )
                 fig, _p, _m, _md, meta = svc.plot_relais_split_speed_par_distance(
                     df_scope, nom_event=nom_event
                 )
                 if fig is None and isinstance(meta, dict):
                     err = str(meta.get("message", ""))
-                    if err:
+                    if err and err != "ok":
                         chart_title = err
+                elif isinstance(meta, dict) and meta.get("message") == "ok":
+                    relay_count = meta.get("relay_perf_count")
+                    if isinstance(relay_count, int) and relay_count > 0:
+                        chart_title = (
+                            f"Vitesse par segment — relais ({relay_count:,} relais) · "
+                            f"{nom_event_label}".replace(",", " ")
+                        )
 
         return fig, chart_title
 

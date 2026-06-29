@@ -71,6 +71,16 @@ from services.graph_service import (
     GraphSpec,
     HEATMAP_CATEGORY_NAME,
     HEATMAP_GRAPH_NAME,
+    MEDIAN_VS_BEST_CHART_STYLE_VERSION,
+    MEDIAN_VS_BEST_SWIMMER_GRAPH_NAME,
+    MEDIAN_VS_TOP10_CHART_STYLE_VERSION,
+    MEDIAN_VS_TOP10_SWIMMER_GRAPH_NAME,
+    MEDIAN_SPEED_BY_GENDER_CHART_STYLE_VERSION,
+    MEDIAN_SPEED_BY_GENDER_GRAPH_NAME,
+    GRAPH_RELAY_SPLIT_DISTANCE,
+    RELAY_CATEGORY_NAME,
+    RELAY_SPLIT_CHART_STYLE_VERSION,
+    SPLIT_COMPARISON_CATEGORY_NAME,
     ServiceGraphe,
     unwrap_matplotlib_figure,
 )
@@ -130,6 +140,19 @@ CORRIDOR_CHART_PREFETCH_GRAPH_NAMES: Tuple[str, ...] = (
 ENABLE_HEATMAP_CHART_PREFETCH_ON_START = True
 HEATMAP_CHART_PREFETCH_SWIMMER_LIMIT = int(
     os.environ.get("PACING_HEATMAP_PREFETCH_SWIMMER_LIMIT", "32")
+)
+ENABLE_MEDIAN_VS_BEST_CHART_PREFETCH_ON_START = True
+MEDIAN_VS_BEST_CHART_PREFETCH_LIMIT = int(
+    os.environ.get("PACING_MEDIAN_VS_BEST_PREFETCH_LIMIT", "96")
+)
+SPLIT_COMPARISON_PREFETCH_GRAPH_NAMES: Tuple[str, ...] = (
+    MEDIAN_VS_BEST_SWIMMER_GRAPH_NAME,
+    MEDIAN_VS_TOP10_SWIMMER_GRAPH_NAME,
+    MEDIAN_SPEED_BY_GENDER_GRAPH_NAME,
+)
+ENABLE_RELAY_CHART_PREFETCH_ON_START = True
+RELAY_CHART_PREFETCH_LIMIT = int(
+    os.environ.get("PACING_RELAY_CHART_PREFETCH_LIMIT", "48")
 )
 HEATMAP_DROPDOWN_SWIMMER_LIMIT = int(
     os.environ.get("PACING_HEATMAP_DROPDOWN_SWIMMER_LIMIT", "400")
@@ -415,6 +438,8 @@ class PacingDesktopApp:
             self._scope_performances_prefetched_on_startup: bool = False
             self._corridor_charts_prefetched_on_startup: bool = False
             self._heatmap_charts_prefetched_on_startup: bool = False
+            self._median_vs_best_charts_prefetched_on_startup: bool = False
+            self._relay_charts_prefetched_on_startup: bool = False
             self._chart_render_gen: int = 0
             self._chart_executor = concurrent.futures.ThreadPoolExecutor(
                 max_workers=1,
@@ -560,6 +585,18 @@ class PacingDesktopApp:
                 and not self._heatmap_charts_prefetched_on_startup
             ):
                 self.page.run_thread(self._prefetch_heatmap_charts_on_startup)
+            if (
+                ENABLE_MEDIAN_VS_BEST_CHART_PREFETCH_ON_START
+                and not self.df_nav.empty
+                and not self._median_vs_best_charts_prefetched_on_startup
+            ):
+                self.page.run_thread(self._prefetch_median_vs_best_charts_on_startup)
+            if (
+                ENABLE_RELAY_CHART_PREFETCH_ON_START
+                and not self.df_nav.empty
+                and not self._relay_charts_prefetched_on_startup
+            ):
+                self.page.run_thread(self._prefetch_relay_charts_on_startup)
         except Exception as exc:
             traceback.print_exc()
             err_msg = f"Démarrage: {exc!s}"
@@ -1139,6 +1176,14 @@ class PacingDesktopApp:
         }
         if graph_name in CORRIDOR_SWIMMER_UI_GRAPHS:
             options["chart_style_version"] = CORRIDOR_CHART_STYLE_VERSION
+        if graph_name == MEDIAN_VS_BEST_SWIMMER_GRAPH_NAME:
+            options["chart_style_version"] = MEDIAN_VS_BEST_CHART_STYLE_VERSION
+        if graph_name == MEDIAN_VS_TOP10_SWIMMER_GRAPH_NAME:
+            options["chart_style_version"] = MEDIAN_VS_TOP10_CHART_STYLE_VERSION
+        if graph_name == MEDIAN_SPEED_BY_GENDER_GRAPH_NAME:
+            options["chart_style_version"] = MEDIAN_SPEED_BY_GENDER_CHART_STYLE_VERSION
+        if graph_name == GRAPH_RELAY_SPLIT_DISTANCE:
+            options["chart_style_version"] = RELAY_SPLIT_CHART_STYLE_VERSION
         return options
 
     @staticmethod
@@ -4401,6 +4446,174 @@ class PacingDesktopApp:
         if warmed > 0:
             self._write_graph_registry_json()
         self._heatmap_charts_prefetched_on_startup = True
+
+    def _prefetch_median_vs_best_charts_on_startup(self) -> None:
+        """Pré-rend les graphiques peloton vs meilleur / top 10 par épreuve.
+
+        Les images sont persistées dans ``prefetched_graphs.json`` pour un affichage
+        instantané lors du changement stroke / distance / bassin.
+
+        Returns:
+            None: Met à jour le registre de rendu et le cache mémoire.
+        """
+        if (
+            not ENABLE_MEDIAN_VS_BEST_CHART_PREFETCH_ON_START
+            or not ENABLE_PERSISTENT_GRAPH_CACHE
+            or self.df_nav.empty
+            or MEDIAN_VS_BEST_CHART_PREFETCH_LIMIT <= 0
+            or self._median_vs_best_charts_prefetched_on_startup
+        ):
+            return
+
+        event_combos = self._event_combinations_from_swimmers_cache()
+        if not event_combos:
+            event_combos = _event_combinations(self.df_nav)
+        if not event_combos:
+            self._median_vs_best_charts_prefetched_on_startup = True
+            return
+
+        prefetch_graphs = tuple(
+            g for g in SPLIT_COMPARISON_PREFETCH_GRAPH_NAMES if isinstance(g, str) and g.strip()
+        )
+        target = int(MEDIAN_VS_BEST_CHART_PREFETCH_LIMIT)
+        warmed = 0
+        for graph_name in prefetch_graphs:
+            for stroke in sorted(event_combos.keys()):
+                by_distance = event_combos.get(stroke, {})
+                if not isinstance(by_distance, dict):
+                    continue
+                for distance in sorted(by_distance.keys()):
+                    pools = by_distance.get(distance, [])
+                    if not isinstance(pools, list):
+                        continue
+                    for pool in pools:
+                        if not isinstance(pool, str):
+                            continue
+                        snapshot = {
+                            "country": self.selected_country,
+                            "category": SPLIT_COMPARISON_CATEGORY_NAME,
+                            "graph": graph_name,
+                            "usa_event": None,
+                            "stroke": stroke,
+                            "distance": int(distance),
+                            "pool": pool,
+                            "corridor_gender": "all",
+                            "corridor_name": None,
+                            "corridor_yob": None,
+                            "moroccan_corridor_name": None,
+                            "moroccan_corridor_yob": None,
+                            "deciles_name": None,
+                            "deciles_yob": None,
+                            "heatmap": None,
+                            "pacing": [],
+                            "chronos_sample_size": int(self.selected_chronos_sample_size),
+                        }
+                        _, _, render_key = self._build_render_key_from_snapshot(snapshot)
+                        with self._registry_json_lock:
+                            cached = self.graph_render_registry.get(render_key)
+                            img = self.chart_image_cache.get(render_key) or (
+                                (cached or {}).get("image_base64")
+                            )
+                        if isinstance(img, str) and len(img) > 0:
+                            warmed += 1
+                            if warmed >= target:
+                                self._write_graph_registry_json()
+                                self._median_vs_best_charts_prefetched_on_startup = True
+                                return
+                            continue
+                        payload = self._compute_chart_payload(snapshot=snapshot)
+                        if payload.get("status") == "ok" and payload.get("image_base64"):
+                            self._register_chart_payload(payload)
+                        warmed += 1
+                        if warmed >= target:
+                            self._write_graph_registry_json()
+                            self._median_vs_best_charts_prefetched_on_startup = True
+                            return
+        if warmed > 0:
+            self._write_graph_registry_json()
+        self._median_vs_best_charts_prefetched_on_startup = True
+
+    def _prefetch_relay_charts_on_startup(self) -> None:
+        """Pré-rend les graphiques de pacing relais par épreuve.
+
+        Les images sont persistées dans ``prefetched_graphs.json`` pour un affichage
+        instantané lors du changement stroke / distance / bassin.
+
+        Returns:
+            None: Met à jour le registre de rendu et le cache mémoire.
+        """
+        if (
+            not ENABLE_RELAY_CHART_PREFETCH_ON_START
+            or not ENABLE_PERSISTENT_GRAPH_CACHE
+            or self.df_nav.empty
+            or RELAY_CHART_PREFETCH_LIMIT <= 0
+            or self._relay_charts_prefetched_on_startup
+        ):
+            return
+
+        event_combos = self._event_combinations_from_swimmers_cache()
+        if not event_combos:
+            event_combos = _event_combinations(self.df_nav)
+        if not event_combos:
+            self._relay_charts_prefetched_on_startup = True
+            return
+
+        target = int(RELAY_CHART_PREFETCH_LIMIT)
+        warmed = 0
+        for stroke in sorted(event_combos.keys()):
+            by_distance = event_combos.get(stroke, {})
+            if not isinstance(by_distance, dict):
+                continue
+            for distance in sorted(by_distance.keys()):
+                pools = by_distance.get(distance, [])
+                if not isinstance(pools, list):
+                    continue
+                for pool in pools:
+                    if not isinstance(pool, str):
+                        continue
+                    snapshot = {
+                        "country": self.selected_country,
+                        "category": RELAY_CATEGORY_NAME,
+                        "graph": GRAPH_RELAY_SPLIT_DISTANCE,
+                        "usa_event": None,
+                        "stroke": stroke,
+                        "distance": int(distance),
+                        "pool": pool,
+                        "corridor_gender": "all",
+                        "corridor_name": None,
+                        "corridor_yob": None,
+                        "moroccan_corridor_name": None,
+                        "moroccan_corridor_yob": None,
+                        "deciles_name": None,
+                        "deciles_yob": None,
+                        "heatmap": None,
+                        "pacing": [],
+                        "chronos_sample_size": int(self.selected_chronos_sample_size),
+                    }
+                    _, _, render_key = self._build_render_key_from_snapshot(snapshot)
+                    with self._registry_json_lock:
+                        cached = self.graph_render_registry.get(render_key)
+                        img = self.chart_image_cache.get(render_key) or (
+                            (cached or {}).get("image_base64")
+                        )
+                    if isinstance(img, str) and len(img) > 0:
+                        warmed += 1
+                        if warmed >= target:
+                            self._write_graph_registry_json()
+                            self._relay_charts_prefetched_on_startup = True
+                            return
+                        continue
+                    payload = self._compute_chart_payload(snapshot=snapshot)
+                    if payload.get("status") == "ok" and payload.get("image_base64"):
+                        self._register_chart_payload(payload)
+                    warmed += 1
+                    if warmed >= target:
+                        self._write_graph_registry_json()
+                        self._relay_charts_prefetched_on_startup = True
+                        return
+        if warmed > 0:
+            self._write_graph_registry_json()
+        self._relay_charts_prefetched_on_startup = True
 
     def _chart_render_snapshot(self) -> Dict[str, Any]:
         corridor_name = self.selected_corridor_swimmer_name
