@@ -148,4 +148,15 @@ class ExtranatCompetitionsDataLoader:
         df["Gender"] = df["swimmer"].apply(
             lambda x: x[0]["Gender"] if isinstance(x, list) and len(x) > 0 else None
         )
+        df["SwimmerName"] = df["swimmer"].apply(
+            lambda x: (
+                str(x[0]["Name"]).strip()
+                if isinstance(x, list)
+                and len(x) == 1
+                and isinstance(x[0], dict)
+                and isinstance(x[0].get("Name"), str)
+                and str(x[0]["Name"]).strip()
+                else None
+            )
+        )
         return df

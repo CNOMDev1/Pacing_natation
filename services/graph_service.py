@@ -1,4 +1,5 @@
 from __future__ import annotations
+from collections import OrderedDict
 from dataclasses import dataclass
 import difflib
 import re
@@ -10,7 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from matplotlib.colors import to_hex
+from matplotlib.colors import Normalize, TwoSlopeNorm, to_hex
 from matplotlib.ticker import FixedLocator, FuncFormatter, MaxNLocator, MultipleLocator
 
 from services.stroke_labels import (
@@ -130,6 +131,370 @@ def _stroke_palette_for_labels(labels: List[str]) -> Dict[str, str]:
         label: _STROKE_CATEGORY_COLORS.get(label, NON_CORRIDOR_COLOR_NEUTRAL)
         for label in labels
     }
+
+
+_HEATMAP_STANDARD_DISTANCES: Tuple[int, ...] = (
+    25,
+    50,
+    100,
+    200,
+    400,
+    500,
+    800,
+    1000,
+    1200,
+    1500,
+)
+HEATMAP_GRAPH_NAME = "Heatmap vitesse moyenne (distance x nage)"
+HEATMAP_CATEGORY_NAME = "Synthèse des vitesses par distance et nage"
+
+
+def _prepare_speed_heatmap_long_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Prépare un tableau long vitesse × distance × nage pour les heatmaps.
+
+    Ne conserve que les nages solo avec une vitesse et une distance valides.
+    Les codes nage sont convertis en libellés français pour l'affichage.
+
+    Args:
+        df (pd.DataFrame): Performances source (Extranat).
+
+    Returns:
+        pd.DataFrame: Colonnes ``Name``, ``Name_norm``, ``Distance``, ``Stroke``,
+            ``Speed`` ; vide si aucune ligne exploitable.
+    """
+    if df.empty:
+        return pd.DataFrame()
+
+    if "SwimmerName" in df.columns:
+        work = df.loc[
+            df["SwimmerName"].notna(),
+            ["SwimmerName", "Distance", "Stroke", "Speed"],
+        ].copy()
+        work["Speed"] = pd.to_numeric(work["Speed"], errors="coerce")
+        work["Distance"] = pd.to_numeric(work["Distance"], errors="coerce")
+        work = work.loc[
+            work["Speed"].notna()
+            & work["Distance"].notna()
+            & (work["Speed"] > 0)
+        ].copy()
+        if work.empty:
+            return pd.DataFrame()
+        work["Distance"] = work["Distance"].astype(int)
+        work = work.loc[work["Distance"].isin(_HEATMAP_STANDARD_DISTANCES)].copy()
+        work["Stroke"] = (
+            work["Stroke"].astype(str).str.strip().map(stroke_code_to_label)
+        )
+        work = work.loc[
+            work["Stroke"].notna() & (work["Stroke"].astype(str).str.strip() != "")
+        ].copy()
+        if work.empty:
+            return pd.DataFrame()
+        work["Name"] = work["SwimmerName"].astype(str).str.strip()
+        work["Name_norm"] = work["Name"].map(corridor_norm_name)
+        return work[["Name", "Name_norm", "Distance", "Stroke", "Speed"]].copy()
+
+    rows: List[dict[str, object]] = []
+    for swimmers_raw, distance_raw, stroke_raw, speed_raw in df[
+        ["swimmer", "Distance", "Stroke", "Speed"]
+    ].itertuples(index=False, name=None):
+        speed = pd.to_numeric(speed_raw, errors="coerce")
+        distance = pd.to_numeric(distance_raw, errors="coerce")
+        if pd.isna(speed) or pd.isna(distance) or float(speed) <= 0:
+            continue
+        dist_int = int(float(distance))
+        if dist_int not in _HEATMAP_STANDARD_DISTANCES:
+            continue
+
+        swimmers: List[dict]
+        if isinstance(swimmers_raw, list):
+            swimmers = [s for s in swimmers_raw if isinstance(s, dict)]
+        elif isinstance(swimmers_raw, dict):
+            swimmers = [swimmers_raw]
+        else:
+            swimmers = []
+        if len(swimmers) != 1:
+            continue
+
+        name = swimmers[0].get("Name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        stroke_label = stroke_code_to_label(str(stroke_raw).strip())
+        if not stroke_label:
+            continue
+
+        rows.append(
+            {
+                "Name": name.strip(),
+                "Name_norm": corridor_norm_name(name),
+                "Distance": dist_int,
+                "Stroke": stroke_label,
+                "Speed": float(speed),
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
+
+
+def _speed_heatmap_pivot_tables(
+    long_df: pd.DataFrame,
+    *,
+    mask: pd.Series,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Construit les pivots médiane et effectif pour une heatmap vitesse.
+
+    Args:
+        long_df (pd.DataFrame): Données longues préparées par
+            ``_prepare_speed_heatmap_long_df``.
+        mask (pd.Series): Masque booléen sur ``long_df`` (groupe cible ou peloton).
+
+    Returns:
+        Tuple[pd.DataFrame, pd.DataFrame]: Pivot vitesse médiane et pivot effectifs
+            (distance × nage), réindexés sur la grille standard.
+    """
+    subset = long_df.loc[mask].copy()
+    if subset.empty:
+        empty_index = list(_HEATMAP_STANDARD_DISTANCES)
+        return (
+            pd.DataFrame(index=empty_index),
+            pd.DataFrame(index=empty_index),
+        )
+
+    speed_pivot = subset.pivot_table(
+        values="Speed",
+        index="Distance",
+        columns="Stroke",
+        aggfunc="median",
+    )
+    count_pivot = subset.pivot_table(
+        values="Speed",
+        index="Distance",
+        columns="Stroke",
+        aggfunc="count",
+    )
+    stroke_cols = _ordered_stroke_labels(
+        list(set(speed_pivot.columns.tolist()) | set(count_pivot.columns.tolist()))
+    )
+    speed_pivot = speed_pivot.reindex(
+        index=list(_HEATMAP_STANDARD_DISTANCES),
+        columns=stroke_cols,
+    )
+    count_pivot = count_pivot.reindex(
+        index=list(_HEATMAP_STANDARD_DISTANCES),
+        columns=stroke_cols,
+    )
+    return speed_pivot, count_pivot
+
+
+def _canonical_heatmap_stroke_columns(
+    pivot_target: pd.DataFrame,
+    pivot_others: pd.DataFrame,
+) -> List[str]:
+    """Retourne l'ordre canonique des colonnes nage pour les trois panneaux.
+
+    Args:
+        pivot_target (pd.DataFrame): Pivot nageur cible.
+        pivot_others (pd.DataFrame): Pivot peloton.
+
+    Returns:
+        List[str]: Libellés de nage triés (FR, dos, brasse…).
+    """
+    labels = list(pivot_target.columns) + list(pivot_others.columns)
+    return _ordered_stroke_labels(labels)
+
+
+def _reindex_heatmap_grid(
+    pivot: pd.DataFrame,
+    counts: pd.DataFrame,
+    *,
+    stroke_cols: List[str],
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Réindexe un pivot sur la grille distance × nage standard.
+
+    Args:
+        pivot (pd.DataFrame): Table pivot vitesse.
+        counts (pd.DataFrame): Table pivot effectifs.
+        stroke_cols (List[str]): Ordre fixe des colonnes nage.
+
+    Returns:
+        Tuple[pd.DataFrame, pd.DataFrame]: Pivot vitesse et effectifs alignés.
+    """
+    distances = list(_HEATMAP_STANDARD_DISTANCES)
+    speed_out = pivot.reindex(index=distances, columns=stroke_cols)
+    count_out = counts.reindex(index=distances, columns=stroke_cols).fillna(0)
+    return speed_out, count_out
+
+
+def _heatmap_annotations(
+    values: pd.DataFrame,
+    counts: pd.DataFrame,
+    *,
+    show_counts: bool = False,
+) -> np.ndarray:
+    """Construit les annotations texte pour une heatmap vitesse.
+
+    Par défaut n'affiche que la vitesse médiane (lisibilité Tufte). L'effectif
+    peut être ajouté pour les petits échantillons (carte nageur cible).
+
+    Args:
+        values (pd.DataFrame): Vitesses médianes (distance × nage).
+        counts (pd.DataFrame): Effectifs par cellule.
+        show_counts (bool): Afficher ``(n=…)`` sous la vitesse si True.
+
+    Returns:
+        np.ndarray: Grille d'annotations de forme ``(n_rows, n_cols)``.
+    """
+    annot = np.empty(values.shape, dtype=object)
+    for row_idx in range(values.shape[0]):
+        for col_idx in range(values.shape[1]):
+            val = values.iat[row_idx, col_idx]
+            count = counts.iat[row_idx, col_idx]
+            if pd.isna(val) or pd.isna(count) or int(count) <= 0:
+                annot[row_idx, col_idx] = ""
+            elif show_counts:
+                annot[row_idx, col_idx] = f"{float(val):.2f}\n(n={int(count)})"
+            else:
+                annot[row_idx, col_idx] = f"{float(val):.2f}"
+    return annot
+
+
+def _apply_heatmap_text_contrast(
+    ax: plt.Axes,
+    values: pd.DataFrame,
+    *,
+    cmap_name: str,
+    vmin: float,
+    vmax: float,
+    center: Optional[float] = None,
+) -> None:
+    """Ajuste la couleur des annotations selon la luminance du fond.
+
+    Args:
+        ax (plt.Axes): Axe contenant la heatmap seaborn.
+        values (pd.DataFrame): Valeurs affichées (même forme que la heatmap).
+        cmap_name (str): Nom de la colormap utilisée.
+        vmin (float): Borne basse de l'échelle.
+        vmax (float): Borne haute de l'échelle.
+        center (Optional[float]): Centre pour colormap divergente ; None sinon.
+
+    Returns:
+        None
+    """
+    cmap = plt.get_cmap(cmap_name)
+    if center is not None:
+        norm: Normalize = TwoSlopeNorm(vmin=vmin, vcenter=center, vmax=vmax)
+    else:
+        norm = Normalize(vmin=vmin, vmax=vmax)
+
+    text_idx = 0
+    for row_idx in range(values.shape[0]):
+        for col_idx in range(values.shape[1]):
+            val = values.iat[row_idx, col_idx]
+            if pd.isna(val):
+                continue
+            rgba = cmap(norm(float(val)))
+            luminance = 0.299 * rgba[0] + 0.587 * rgba[1] + 0.114 * rgba[2]
+            if text_idx >= len(ax.texts):
+                break
+            ax.texts[text_idx].set_color("#f8fafc" if luminance < 0.58 else "#0f172a")
+            ax.texts[text_idx].set_fontsize(9)
+            ax.texts[text_idx].set_fontweight("medium")
+            text_idx += 1
+
+
+def _draw_speed_heatmap_panel(
+    ax: plt.Axes,
+    values: pd.DataFrame,
+    counts: pd.DataFrame,
+    *,
+    title: str,
+    vmin: float,
+    vmax: float,
+    cmap: str,
+    cbar: bool,
+    cbar_label: str,
+    center: Optional[float] = None,
+    show_counts: bool = False,
+) -> Optional[Any]:
+    """Dessine un panneau heatmap avec thème Pacing et cellules masquées.
+
+    Args:
+        ax (plt.Axes): Axe matplotlib cible.
+        values (pd.DataFrame): Vitesses à encoder (distance × nage).
+        counts (pd.DataFrame): Effectifs par cellule (même forme).
+        title (str): Titre du panneau.
+        vmin (float): Borne basse de l'échelle couleur.
+        vmax (float): Borne haute de l'échelle couleur.
+        cmap (str): Nom de la colormap seaborn/matplotlib.
+        cbar (bool): Afficher la barre de couleur sur ce panneau.
+        cbar_label (str): Libellé de la barre de couleur.
+        center (Optional[float]): Centre pour colormap divergente ; None sinon.
+        show_counts (bool): Afficher l'effectif dans les cellules.
+
+    Returns:
+        Optional[Any]: Collection matplotlib (mappable) pour une colorbar externe.
+    """
+    _apply_standard_chart_theme(ax.figure, ax)
+    if values.empty or values.dropna(how="all").dropna(axis=1, how="all").empty:
+        ax.text(
+            0.5,
+            0.5,
+            "Pas de données disponibles",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=11,
+            color="#334155",
+        )
+        ax.set_title(title, fontsize=12, fontweight="bold", pad=8)
+        ax.set_xlabel("Nage")
+        ax.set_ylabel("Distance (m)")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        return None
+
+    masked = values.copy()
+    counts_aligned = counts.reindex(index=values.index, columns=values.columns).fillna(0)
+    masked[counts_aligned <= 0] = np.nan
+    annot = _heatmap_annotations(masked, counts_aligned, show_counts=show_counts)
+    n_rows, n_cols = masked.shape
+    heatmap_kwargs: Dict[str, object] = {
+        "annot": annot,
+        "fmt": "",
+        "cmap": cmap,
+        "ax": ax,
+        "cbar": cbar,
+        "vmin": vmin,
+        "vmax": vmax,
+        "linewidths": 0.6,
+        "linecolor": "#cbd5e1",
+        "mask": masked.isna(),
+        "xticklabels": list(values.columns),
+        "yticklabels": [str(distance) for distance in values.index],
+    }
+    if center is not None:
+        heatmap_kwargs["center"] = center
+    if cbar:
+        heatmap_kwargs["cbar_kws"] = {"label": cbar_label, "shrink": 0.85}
+    heatmap = sns.heatmap(masked, **heatmap_kwargs)
+    _apply_heatmap_text_contrast(
+        ax,
+        masked,
+        cmap_name=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        center=center,
+    )
+    ax.set_ylim(n_rows, 0)
+    ax.set_xlim(0, n_cols)
+    ax.set_title(title, fontsize=12, fontweight="bold", pad=8)
+    ax.set_xlabel("Nage", fontsize=11)
+    ax.set_ylabel("Distance (m)", fontsize=11)
+    ax.tick_params(axis="x", rotation=0, labelsize=9)
+    ax.tick_params(axis="y", rotation=0, labelsize=9)
+    collections = heatmap.collections
+    return collections[0] if collections else None
 
 
 def _format_swim_time_display(total_seconds: float, *, precision: int = 1) -> str:
@@ -556,6 +921,166 @@ def _compute_yearly_stroke_median_times(
 _CHRONOS_YEARLY_MIN_PERFORMANCES = 5
 _CHRONOS_ROLLING_WINDOW_YEARS = 3
 
+_SPEED_DISTANCE_MIN_AGE_YEARS = 17
+_SPEED_DISTANCE_MIN_GROUP_N = 25
+_SPEED_DISTANCE_MAX_MPS = 2.8
+_SPEED_DISTANCE_MIN_MPS = 0.45
+
+
+def _resolve_speed_distance_min_group_n(raw_count: int) -> int:
+    """Adapte l'effectif minimal par point à la taille du périmètre.
+
+    Args:
+        raw_count (int): Nombre de performances dans le périmètre filtré.
+
+    Returns:
+        int: Seuil minimal par couple distance × nage.
+    """
+    if raw_count >= 200:
+        return _SPEED_DISTANCE_MIN_GROUP_N
+    if raw_count >= 80:
+        return 12
+    if raw_count >= 30:
+        return 6
+    return max(2, raw_count // 4)
+
+
+def _swimmer_field_from_cell(swimmer: object, field: str) -> Optional[Any]:
+    """Extrait un champ d'un nageur depuis une cellule ``swimmer`` hétérogène.
+
+    Args:
+        swimmer (object): Dict, liste de dicts ou valeur brute.
+        field (str): Nom du champ (ex. ``Gender``, ``Year_of_birth``).
+
+    Returns:
+        Optional[Any]: Valeur du champ ou None si introuvable.
+    """
+    if isinstance(swimmer, dict):
+        return swimmer.get(field)
+    if isinstance(swimmer, list) and swimmer and isinstance(swimmer[0], dict):
+        return swimmer[0].get(field)
+    return None
+
+
+def _prepare_speed_distance_stroke_stats(
+    df: pd.DataFrame,
+    *,
+    distance_col: str = "Distance",
+    stroke_col: str = "Stroke",
+    swim_col: str = "SwimTimeSeconds",
+    gender_filter: Optional[str] = None,
+    min_age_years: int = _SPEED_DISTANCE_MIN_AGE_YEARS,
+    min_group_n: int = _SPEED_DISTANCE_MIN_GROUP_N,
+) -> pd.DataFrame:
+    """Prépare les vitesses médianes par distance et nage avec nettoyage méthodologique.
+
+    Filtre les performances valides (statut OK, âge minimal, cohérence épreuve /
+    distance), recalcule la vitesse (distance / temps), puis agrège la médiane
+    après exclusion IQR par couple distance × nage.
+
+    Args:
+        df (pd.DataFrame): Performances brutes.
+        distance_col (str): Colonne distance en mètres.
+        stroke_col (str): Colonne type de nage.
+        swim_col (str): Colonne temps en secondes.
+        gender_filter (Optional[str]): ``F``, ``M`` ou None pour tous.
+        min_age_years (int): Âge minimal à la date de performance.
+        min_group_n (int): Effectif minimal par couple distance × nage.
+
+    Returns:
+        pd.DataFrame: Colonnes distance, nage, ``median_speed``, ``n``.
+    """
+    if df.empty:
+        return pd.DataFrame(
+            columns=[distance_col, stroke_col, "median_speed", "n"]
+        )
+
+    effective_min_group_n = _resolve_speed_distance_min_group_n(len(df))
+    if min_group_n != _SPEED_DISTANCE_MIN_GROUP_N:
+        effective_min_group_n = max(2, int(min_group_n))
+
+    local_df = df.copy()
+    local_df[distance_col] = pd.to_numeric(local_df.get(distance_col), errors="coerce")
+    local_df[swim_col] = pd.to_numeric(local_df.get(swim_col), errors="coerce")
+    local_df = local_df.dropna(subset=[distance_col, swim_col, stroke_col])
+    local_df = local_df.loc[
+        (local_df[distance_col] > 0)
+        & (local_df[swim_col] > 0)
+    ].copy()
+
+    if "Status" in local_df.columns:
+        local_df = local_df.loc[
+            local_df["Status"].astype(str).str.upper().eq("OK")
+        ].copy()
+
+    if "Event" in local_df.columns:
+        event_distances = local_df["Event"].astype(str).map(parse_event_distance_m)
+        known_event_distance = event_distances.notna()
+        local_df = local_df.loc[
+            ~known_event_distance
+            | (event_distances == local_df[distance_col])
+        ].copy()
+
+    local_df["SwimDate"] = pd.to_datetime(local_df.get("SwimDate"), errors="coerce")
+    local_df["swim_year"] = local_df["SwimDate"].dt.year
+    local_df["year_of_birth"] = local_df.get("swimmer", pd.Series(dtype=object)).map(
+        lambda cell: _swimmer_field_from_cell(cell, "Year_of_birth")
+    )
+    local_df["year_of_birth"] = pd.to_numeric(local_df["year_of_birth"], errors="coerce")
+    local_df["age_at_swim"] = local_df["swim_year"] - local_df["year_of_birth"]
+    aged_df = local_df.loc[local_df["age_at_swim"] >= min_age_years].copy()
+    if len(aged_df) >= max(effective_min_group_n * 2, 8):
+        local_df = aged_df
+
+    if gender_filter in ("F", "M"):
+        local_df["Gender"] = local_df.get("swimmer", pd.Series(dtype=object)).map(
+            lambda cell: _swimmer_field_from_cell(cell, "Gender")
+        )
+        local_df["Gender"] = local_df["Gender"].astype(str).str.upper().str[:1]
+        local_df = local_df.loc[local_df["Gender"] == gender_filter].copy()
+
+    local_df["speed_calc"] = local_df[distance_col] / local_df[swim_col]
+    local_df = local_df.loc[
+        (local_df["speed_calc"] >= _SPEED_DISTANCE_MIN_MPS)
+        & (local_df["speed_calc"] <= _SPEED_DISTANCE_MAX_MPS)
+    ].copy()
+    local_df = relabel_stroke_column(local_df, stroke_col)
+
+    if local_df.empty:
+        return pd.DataFrame(
+            columns=[distance_col, stroke_col, "median_speed", "n"]
+        )
+
+    aggregated_rows: List[Dict[str, Any]] = []
+    for (distance_value, stroke_label), group in local_df.groupby(
+        [distance_col, stroke_col]
+    ):
+        speeds = pd.to_numeric(group["speed_calc"], errors="coerce").dropna()
+        if len(speeds) < effective_min_group_n:
+            continue
+        q1, q3 = speeds.quantile([0.25, 0.75])
+        iqr = float(q3 - q1)
+        if iqr > 0 and len(speeds) >= 6:
+            low = float(q1 - 1.5 * iqr)
+            high = float(q3 + 1.5 * iqr)
+            speeds = speeds[(speeds >= low) & (speeds <= high)]
+        if len(speeds) < max(2, effective_min_group_n // 2):
+            continue
+        aggregated_rows.append(
+            {
+                distance_col: float(distance_value),
+                stroke_col: str(stroke_label),
+                "median_speed": float(speeds.median()),
+                "n": int(len(speeds)),
+            }
+        )
+
+    if not aggregated_rows:
+        return pd.DataFrame(
+            columns=[distance_col, stroke_col, "median_speed", "n"]
+        )
+    return pd.DataFrame(aggregated_rows).sort_values([stroke_col, distance_col])
+
 
 def _smooth_centered_rolling(values: List[float], window: int) -> List[float]:
     """Applique une moyenne mobile centrée pour lisser une série annuelle.
@@ -786,6 +1311,524 @@ def _plot_yearly_stroke_time_evolution(
         fontweight="bold",
         color="#1e293b",
         y=1.02,
+    )
+    fig.tight_layout()
+    return fig
+
+
+def _format_speed_tick(value: float, _: int) -> str:
+    """Formate une graduation d'axe vitesse en m/s.
+
+    Args:
+        value (float): Vitesse en mètres par seconde.
+        _ (int): Index de graduation (ignoré, requis par Matplotlib).
+
+    Returns:
+        str: Libellé formaté (ex. ``1.25``).
+    """
+    if value < 0:
+        return ""
+    return f"{value:.2f}"
+
+
+_SPLIT_SPEED_MIN_MPS = 0.45
+_SPLIT_SPEED_MAX_MPS = 3.0
+_STROKE_MARKERS: Dict[str, str] = {
+    stroke_code_to_label("FR"): "s",
+    stroke_code_to_label("BK"): "X",
+    stroke_code_to_label("BR"): "o",
+    stroke_code_to_label("FL"): "P",
+    stroke_code_to_label("IM"): "D",
+    stroke_code_to_label("MD"): "v",
+}
+
+
+def _parse_split_distance_m(value: object) -> Optional[int]:
+    """Convertit une distance de split en mètres entiers.
+
+    Args:
+        value (object): Valeur brute (ex. ``100``, ``\"100 m\"``).
+
+    Returns:
+        Optional[int]: Distance en mètres ou None si invalide.
+    """
+    if value is None:
+        return None
+    try:
+        text = str(value).strip().lower().replace("m", "").strip()
+        distance = int(float(text))
+    except (TypeError, ValueError):
+        return None
+    if distance <= 0:
+        return None
+    return distance
+
+
+def _parse_split_speed_mps(value: object) -> Optional[float]:
+    """Convertit une vitesse de split en m/s.
+
+    Args:
+        value (object): Valeur brute numérique ou chaîne.
+
+    Returns:
+        Optional[float]: Vitesse en m/s ou None si invalide.
+    """
+    if value is None:
+        return None
+    try:
+        speed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(speed) or speed <= 0:
+        return None
+    return speed
+
+
+def _extract_all_split_speed_rows(
+    df: pd.DataFrame,
+    *,
+    stroke_col: str = "Stroke",
+    min_speed_mps: float = _SPLIT_SPEED_MIN_MPS,
+    max_speed_mps: float = _SPLIT_SPEED_MAX_MPS,
+) -> pd.DataFrame:
+    """Extrait toutes les vitesses de splits exploitables du périmètre.
+
+    Parcourt les performances solo avec splits, filtre les vitesses plausibles
+    et relabel les nages en français.
+
+    Args:
+        df (pd.DataFrame): Performances source (colonnes ``splits``, ``swimmer``…).
+        stroke_col (str): Colonne du type de nage.
+        min_speed_mps (float): Vitesse minimale conservée (m/s).
+        max_speed_mps (float): Vitesse maximale conservée (m/s).
+
+    Returns:
+        pd.DataFrame: Colonnes ``Stroke``, ``SplitDistance``, ``SplitSpeed``,
+            ``Swimmer`` ; vide si aucun split valide.
+    """
+    if df.empty or "splits" not in df.columns:
+        return pd.DataFrame(
+            columns=[stroke_col, "SplitDistance", "SplitSpeed", "Swimmer"]
+        )
+
+    local_df = df.copy()
+    if "Status" in local_df.columns:
+        local_df = local_df.loc[
+            local_df["Status"].astype(str).str.upper().eq("OK")
+        ].copy()
+
+    split_rows: List[Dict[str, object]] = []
+    has_splits = local_df["splits"].apply(
+        lambda cell: isinstance(cell, list) and len(cell) > 0
+    )
+    for _, row in local_df.loc[has_splits].iterrows():
+        swimmer_name = _swimmer_field_from_cell(row.get("swimmer"), "Name")
+        if not swimmer_name:
+            continue
+        stroke = row.get(stroke_col)
+        if stroke is None or (isinstance(stroke, float) and np.isnan(stroke)):
+            continue
+        for split in row["splits"]:
+            if not isinstance(split, dict):
+                continue
+            distance = _parse_split_distance_m(split.get("split_distance"))
+            speed = _parse_split_speed_mps(split.get("split_speed"))
+            if distance is None or speed is None:
+                continue
+            if speed < min_speed_mps or speed > max_speed_mps:
+                continue
+            split_rows.append(
+                {
+                    stroke_col: str(stroke),
+                    "SplitDistance": distance,
+                    "SplitSpeed": speed,
+                    "Swimmer": str(swimmer_name),
+                }
+            )
+
+    if not split_rows:
+        return pd.DataFrame(
+            columns=[stroke_col, "SplitDistance", "SplitSpeed", "Swimmer"]
+        )
+    result = pd.DataFrame(split_rows)
+    return relabel_stroke_column(result, stroke_col)
+
+
+def _prepare_max_split_speed_by_stroke(
+    df_splits: pd.DataFrame,
+    *,
+    stroke_col: str = "Stroke",
+    distance_col: str = "SplitDistance",
+    speed_col: str = "SplitSpeed",
+) -> pd.DataFrame:
+    """Retient la vitesse maximale observée par couple nage × distance de split.
+
+    Args:
+        df_splits (pd.DataFrame): Splits extraits (une ligne par passage).
+        stroke_col (str): Colonne du type de nage.
+        distance_col (str): Colonne distance cumulée du split (m).
+        speed_col (str): Colonne vitesse du segment (m/s).
+
+    Returns:
+        pd.DataFrame: Un enregistrement par couple nage × distance (record de
+            vitesse) avec colonnes ``Swimmer`` et ``n`` (effectif source).
+    """
+    required = (stroke_col, distance_col, speed_col)
+    if df_splits.empty or any(col not in df_splits.columns for col in required):
+        return pd.DataFrame(
+            columns=[stroke_col, distance_col, speed_col, "Swimmer", "n"]
+        )
+
+    grouped_keys = [stroke_col, distance_col]
+    counts = (
+        df_splits.groupby(grouped_keys)[speed_col]
+        .size()
+        .reset_index(name="n")
+    )
+    idx = df_splits.groupby(grouped_keys)[speed_col].idxmax()
+    peaks = df_splits.loc[idx, [stroke_col, distance_col, speed_col, "Swimmer"]].copy()
+    peaks = peaks.merge(counts, on=grouped_keys, how="left")
+    return peaks.sort_values(grouped_keys).reset_index(drop=True)
+
+
+def _all_split_distance_ticks(distances: List[float]) -> List[float]:
+    """Retourne toutes les distances de split présentes dans les données.
+
+    Args:
+        distances (List[float]): Distances observées (valeurs uniques ou brutes).
+
+    Returns:
+        List[float]: Distances triées pour graduations complètes de l'axe X.
+    """
+    return sorted({float(distance) for distance in distances})
+
+
+def _plot_max_split_speed_by_stroke(
+    peaks_df: pd.DataFrame,
+    *,
+    title: str,
+    subtitle: str = "",
+    empty_message: str = "Aucun split valide pour ce périmètre.",
+    stroke_col: str = "Stroke",
+    distance_col: str = "SplitDistance",
+    speed_col: str = "SplitSpeed",
+) -> plt.Figure:
+    """Trace les records de vitesse de split par nage (nuage de points).
+
+    Position + couleur + forme de marqueur pour distinguer les nages (Munzner,
+    Okabe-Ito), thème Pacing, axe X linéaire avec toutes les distances tracées.
+
+    Args:
+        peaks_df (pd.DataFrame): Vitesses maximales par nage et distance de split.
+        title (str): Titre affiché au-dessus du graphique.
+        subtitle (str): Sous-titre méthodologique optionnel.
+        empty_message (str): Message affiché lorsque aucun point n'est traçable.
+        stroke_col (str): Colonne du type de nage.
+        distance_col (str): Colonne distance cumulée du split (m).
+        speed_col (str): Colonne vitesse maximale (m/s).
+
+    Returns:
+        plt.Figure: Figure matplotlib du nuage de points.
+
+    Raises:
+        ValueError: Si une colonne requise est absente de ``peaks_df``.
+    """
+    for column in (stroke_col, distance_col, speed_col):
+        if column not in peaks_df.columns:
+            raise ValueError(
+                f"Colonne introuvable pour le graphique splits max: {column}"
+            )
+
+    stroke_order = _ordered_stroke_labels(
+        peaks_df[stroke_col].astype(str).tolist()
+    )
+    palette = _stroke_palette_for_labels(stroke_order)
+    distances = sorted(peaks_df[distance_col].astype(float).unique())
+
+    fig, ax = plt.subplots(figsize=(14, 8))
+    _apply_standard_chart_theme(fig, ax)
+
+    if not stroke_order or not distances:
+        ax.text(
+            0.5,
+            0.5,
+            empty_message,
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=12,
+            color="#334155",
+        )
+        ax.set_axis_off()
+        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+        if subtitle:
+            fig.text(
+                0.5,
+                0.02,
+                subtitle,
+                ha="center",
+                va="bottom",
+                fontsize=9,
+                color="#64748B",
+            )
+        fig.tight_layout()
+        return fig
+
+    y_values_all: List[float] = []
+    for stroke_label in stroke_order:
+        stroke_data = peaks_df.loc[
+            peaks_df[stroke_col].astype(str) == stroke_label
+        ]
+        if stroke_data.empty:
+            continue
+        color = palette[stroke_label]
+        marker = _STROKE_MARKERS.get(stroke_label, "o")
+        x_vals = stroke_data[distance_col].astype(float).tolist()
+        y_vals = stroke_data[speed_col].astype(float).tolist()
+        y_values_all.extend(y_vals)
+        ax.scatter(
+            x_vals,
+            y_vals,
+            c=color,
+            marker=marker,
+            s=95,
+            linewidths=1.4,
+            edgecolors="#ffffff",
+            label=stroke_label,
+            alpha=0.9,
+            zorder=3,
+        )
+
+    tick_values = _all_split_distance_ticks(distances)
+    ax.set_xscale("linear")
+    ax.set_xticks(tick_values)
+    ax.xaxis.set_major_formatter(
+        FuncFormatter(lambda v, _: f"{int(v)}" if v == int(v) else f"{v:g}")
+    )
+    if len(tick_values) > 8:
+        ax.tick_params(axis="x", labelsize=8, rotation=45)
+        for label in ax.get_xticklabels():
+            label.set_ha("right")
+    ax.yaxis.set_major_formatter(FuncFormatter(_format_speed_tick))
+    ax.set_xlabel("Distance cumulée du split (m) — échelle linéaire")
+    ax.set_ylabel("Vitesse maximale du split (m/s)")
+    if subtitle:
+        fig.suptitle(
+            f"{title}\n{subtitle}",
+            fontsize=13,
+            fontweight="bold",
+            color="#1e293b",
+            y=1.02,
+        )
+    else:
+        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+    if distances:
+        x_min = min(distances)
+        x_max = max(distances)
+        x_margin = max((x_max - x_min) * 0.04, 25.0)
+        ax.set_xlim(max(0.0, x_min - x_margin), x_max + x_margin)
+    if y_values_all:
+        y_min = float(min(y_values_all))
+        y_max = float(max(y_values_all))
+        y_span = max(y_max - y_min, 0.08)
+        ax.set_ylim(y_min - y_span * 0.08, y_max + y_span * 0.12)
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=10))
+    ax.grid(
+        axis="y",
+        alpha=CORRIDOR_GRID_ALPHA,
+        color="#94a3b8",
+        linestyle="-",
+        linewidth=0.6,
+        zorder=0,
+    )
+    ax.grid(
+        axis="x",
+        alpha=0.18,
+        color="#94a3b8",
+        linestyle=":",
+        linewidth=0.5,
+        zorder=0,
+    )
+    ax.legend(
+        title="Nage",
+        loc="upper right",
+        framealpha=0.92,
+        edgecolor="#cbd5e1",
+        fontsize=10,
+        title_fontsize=10,
+    )
+    fig.tight_layout()
+    if len(tick_values) > 8:
+        fig.subplots_adjust(bottom=0.16)
+    return fig
+
+
+def _plot_mean_speed_by_distance_and_stroke(
+    speed_by_dist: pd.DataFrame,
+    *,
+    title: str,
+    subtitle: str = "",
+    empty_message: str = "Aucune performance disponible pour ce périmètre.",
+    distance_col: str = "Distance",
+    speed_col: str = "median_speed",
+    stroke_col: str = "Stroke",
+    count_col: str = "n",
+) -> plt.Figure:
+    """Trace la vitesse médiane par distance et type de nage.
+
+    Courbes sur une échelle X linéaire (distance réelle en mètres), palette
+    Okabe-Ito par nage, thème Pacing et annotations de lecture.
+
+    Args:
+        speed_by_dist (pd.DataFrame): Vitesses médianes agrégées.
+        title (str): Titre affiché au-dessus du graphique.
+        subtitle (str): Sous-titre méthodologique optionnel.
+        empty_message (str): Message affiché lorsque aucun point n'est traçable.
+        distance_col (str): Colonne distance en mètres.
+        speed_col (str): Colonne vitesse médiane en m/s.
+        stroke_col (str): Colonne du type de nage (libellés français).
+        count_col (str): Colonne effectif par point.
+
+    Returns:
+        plt.Figure: Figure matplotlib des courbes de vitesse.
+
+    Raises:
+        ValueError: Si une colonne requise est absente de ``speed_by_dist``.
+    """
+    for column in (distance_col, speed_col, stroke_col):
+        if column not in speed_by_dist.columns:
+            raise ValueError(f"Colonne introuvable pour le graphique vitesse: {column}")
+
+    stroke_order = _ordered_stroke_labels(
+        speed_by_dist[stroke_col].astype(str).tolist()
+    )
+    palette = _stroke_palette_for_labels(stroke_order)
+    distances = sorted(speed_by_dist[distance_col].astype(float).unique())
+
+    fig, ax = plt.subplots(figsize=(14, 8))
+    _apply_standard_chart_theme(fig, ax)
+
+    if not stroke_order or not distances:
+        ax.text(
+            0.5,
+            0.5,
+            empty_message,
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=12,
+            color="#334155",
+        )
+        ax.set_axis_off()
+        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+        if subtitle:
+            fig.text(
+                0.5,
+                0.02,
+                subtitle,
+                ha="center",
+                va="bottom",
+                fontsize=9,
+                color="#64748B",
+            )
+        fig.tight_layout()
+        return fig
+
+    y_values_all: List[float] = []
+    for stroke_label in stroke_order:
+        stroke_data = speed_by_dist.loc[
+            speed_by_dist[stroke_col].astype(str) == stroke_label
+        ].sort_values(distance_col)
+        if stroke_data.empty:
+            continue
+        color = palette[stroke_label]
+        x_vals = stroke_data[distance_col].astype(float).tolist()
+        y_vals = stroke_data[speed_col].astype(float).tolist()
+        y_values_all.extend(y_vals)
+        ax.plot(
+            x_vals,
+            y_vals,
+            color=color,
+            linewidth=2.8,
+            marker="o",
+            markersize=9,
+            markerfacecolor="#ffffff",
+            markeredgecolor=color,
+            markeredgewidth=2.0,
+            label=stroke_label,
+            zorder=3,
+        )
+        if count_col in stroke_data.columns:
+            counts = stroke_data[count_col].astype(int).tolist()
+        else:
+            counts = [0] * len(x_vals)
+        x_span = max(distances) - min(distances) if len(distances) > 1 else 50.0
+        label_dx = max(x_span * 0.012, 1.5)
+        for x_val, y_val, perf_n in zip(x_vals, y_vals, counts):
+            ax.text(
+                x_val + label_dx,
+                y_val,
+                f"{y_val:.2f}",
+                ha="left",
+                va="center",
+                fontsize=8.5,
+                color="#334155",
+                fontweight="medium",
+                zorder=4,
+            )
+
+    ax.set_xscale("linear")
+    ax.set_xticks(distances)
+    ax.xaxis.set_major_formatter(
+        FuncFormatter(lambda v, _: f"{int(v)}" if v == int(v) else f"{v:g}")
+    )
+    ax.yaxis.set_major_formatter(FuncFormatter(_format_speed_tick))
+    ax.set_xlabel("Distance (m) — échelle linéaire")
+    ax.set_ylabel("Vitesse médiane (m/s)")
+    if subtitle:
+        fig.suptitle(
+            f"{title}\n{subtitle}",
+            fontsize=13,
+            fontweight="bold",
+            color="#1e293b",
+            y=1.02,
+        )
+    else:
+        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+    if distances:
+        x_min = min(distances)
+        x_max = max(distances)
+        x_margin = max((x_max - x_min) * 0.05, 8.0)
+        ax.set_xlim(x_min - x_margin, x_max + x_margin * 1.35)
+    if y_values_all:
+        y_min = float(min(y_values_all))
+        y_max = float(max(y_values_all))
+        y_span = max(y_max - y_min, 0.08)
+        ax.set_ylim(y_min - y_span * 0.1, y_max + y_span * 0.14)
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=10))
+    ax.grid(
+        axis="y",
+        alpha=CORRIDOR_GRID_ALPHA,
+        color="#94a3b8",
+        linestyle="-",
+        linewidth=0.6,
+        zorder=0,
+    )
+    ax.grid(
+        axis="x",
+        alpha=0.18,
+        color="#94a3b8",
+        linestyle=":",
+        linewidth=0.5,
+        zorder=0,
+    )
+    ax.legend(
+        title="Nage",
+        loc="upper right",
+        framealpha=0.92,
+        edgecolor="#cbd5e1",
+        fontsize=10,
+        title_fontsize=10,
     )
     fig.tight_layout()
     return fig
@@ -1552,6 +2595,7 @@ SCOPE_NO_FILTER_GRAPHS = frozenset(
         "Heatmap vitesse moyenne (distance x nage)",
     }
 )
+SCOPE_GENDER_FILTER_GRAPHS: frozenset[str] = frozenset()
 SCOPE_POOL_ONLY_GRAPHS: frozenset[str] = frozenset()
 SCOPE_POOL_STROKE_GRAPHS = frozenset({GRAPH_NOMBRE_PERF_EPREUVE})
 SCOPE_STROKE_ONLY_GRAPHS = frozenset({GRAPH_NOMBRE_PERF_EPREUVE_LCM_SCM})
@@ -1559,7 +2603,100 @@ SCOPE_NO_STROKE_GRAPHS = frozenset({"Distribution des temps par type de nage (bo
 
 
 class ServiceGraphe:
-    """Service central pour construire les graphes."""
+    """Service central pour construire les graphes.
+
+    Attributes:
+        _split_speed_event_cache (OrderedDict[tuple, pd.DataFrame]): Cache LRU
+            des lignes de split par épreuve.
+        _split_speed_event_cache_max (int): Taille maximale du cache LRU.
+    """
+
+    def __init__(self) -> None:
+        """Initialise les caches internes du service.
+
+        Args:
+            None: Cette méthode n'accepte aucun paramètre explicite.
+
+        Returns:
+            None: Initialise les attributs d'instance en place.
+        """
+        self._split_speed_event_cache: "OrderedDict[tuple, pd.DataFrame]" = OrderedDict()
+        self._split_speed_event_cache_max: int = 16
+        self._speed_heatmap_long_cache: "OrderedDict[tuple, pd.DataFrame]" = OrderedDict()
+        self._speed_heatmap_long_cache_max: int = 4
+
+    def _speed_heatmap_long_cache_key(self, df: pd.DataFrame) -> tuple:
+        """Construit une clé compacte pour le cache heatmap vitesse.
+
+        Args:
+            df (pd.DataFrame): Jeu de performances source.
+
+        Returns:
+            tuple: Empreinte stable du DataFrame.
+        """
+        if df.empty:
+            return (0, None, None)
+        return (int(len(df)), df.index.min(), df.index.max())
+
+    def _get_cached_speed_heatmap_long_df(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Retourne le tableau long heatmap avec cache LRU.
+
+        Args:
+            df (pd.DataFrame): Performances source.
+
+        Returns:
+            pd.DataFrame: Lignes exploitables pour les heatmaps vitesse.
+        """
+        cache_key = self._speed_heatmap_long_cache_key(df)
+        cached = self._speed_heatmap_long_cache.get(cache_key)
+        if cached is not None:
+            self._speed_heatmap_long_cache.move_to_end(cache_key)
+            return cached.copy()
+        rows = _prepare_speed_heatmap_long_df(df)
+        self._speed_heatmap_long_cache[cache_key] = rows.copy()
+        self._speed_heatmap_long_cache.move_to_end(cache_key)
+        if len(self._speed_heatmap_long_cache) > self._speed_heatmap_long_cache_max:
+            self._speed_heatmap_long_cache.popitem(last=False)
+        return rows
+
+    def _split_speed_cache_key(self, df: pd.DataFrame, nom_event: str) -> tuple:
+        """Construit une clé compacte pour le cache split-speed par épreuve.
+
+        Args:
+            df (pd.DataFrame): Sous-ensemble courant utilisé pour le tracé.
+            nom_event (str): Libellé de l'épreuve.
+
+        Returns:
+            tuple: Clé stable basée sur l'épreuve et l'empreinte du DataFrame.
+        """
+        if df.empty:
+            return (str(nom_event).strip(), 0, None, None)
+        idx_min = df.index.min()
+        idx_max = df.index.max()
+        return (str(nom_event).strip(), int(len(df)), idx_min, idx_max)
+
+    def _get_cached_split_speed_rows(self, df: pd.DataFrame, nom_event: str) -> pd.DataFrame:
+        """Retourne les lignes de split pour une épreuve avec cache LRU.
+
+        Args:
+            df (pd.DataFrame): Données filtrées du périmètre courant.
+            nom_event (str): Libellé exact de l'épreuve.
+
+        Returns:
+            pd.DataFrame: Lignes de split exploitables (copie défensive).
+        """
+        cache_key = self._split_speed_cache_key(df, nom_event)
+        cached = self._split_speed_event_cache.get(cache_key)
+        if cached is not None:
+            self._split_speed_event_cache.move_to_end(cache_key)
+            return cached.copy()
+        rows = extract_event_split_speed_rows(df, nom_event)
+        self._split_speed_event_cache[cache_key] = rows.copy()
+        self._split_speed_event_cache.move_to_end(cache_key)
+        if len(self._split_speed_event_cache) > self._split_speed_event_cache_max:
+            self._split_speed_event_cache.popitem(last=False)
+        return rows
+
     def plot_histogramme_simple(self, df: pd.DataFrame, swim_col: str = "SwimTimeSeconds") -> plt.Figure:
         """Trace un histogramme robuste des temps de nage.
 
@@ -2046,34 +3183,47 @@ class ServiceGraphe:
         stroke_col: str = "Stroke",
         speed_col: str = "Speed",
     ) -> plt.Figure:
-        """Heatmap de la vitesse moyenne par distance et nage.
-        
+        """Heatmap de la vitesse médiane par distance et nage (peloton).
+
         Args:
             df (pd.DataFrame): Données de performances.
-            distance_col (str): Colonne distance.
-            stroke_col (str): Colonne type de nage.
-            speed_col (str): Colonne vitesse.
-        
+            distance_col (str): Colonne distance (conservée pour compatibilité API).
+            stroke_col (str): Colonne type de nage (conservée pour compatibilité API).
+            speed_col (str): Colonne vitesse (conservée pour compatibilité API).
+
         Returns:
             plt.Figure: Figure matplotlib de la heatmap.
         """
-        local_df = df.copy()
-        local_df[distance_col] = pd.to_numeric(local_df.get(distance_col), errors="coerce")
-        local_df[speed_col] = pd.to_numeric(local_df.get(speed_col), errors="coerce")
-        local_df = local_df.dropna(subset=[distance_col, stroke_col, speed_col])
-        local_df = relabel_stroke_column(local_df, stroke_col)
-        pivot = local_df.pivot_table(values=speed_col, index=distance_col, columns=stroke_col, aggfunc="mean")
-        fig, ax = plt.subplots(figsize=(12, 7))
-        sns.heatmap(
-            pivot,
-            annot=True,
-            fmt=".2f",
-            cmap=NON_CORRIDOR_CMAP_SEQUENTIAL,
-            ax=ax,
+        _ = (distance_col, stroke_col, speed_col)
+        long_df = self._get_cached_speed_heatmap_long_df(df)
+        speed_pivot, count_pivot = _speed_heatmap_pivot_tables(
+            long_df,
+            mask=pd.Series(True, index=long_df.index),
         )
-        ax.set_title("Heatmap vitesse moyenne (distance x nage)")
-        ax.set_xlabel("Nage")
-        ax.set_ylabel("Distance (m)")
+        vmin = float(speed_pivot.min().min(skipna=True)) if not speed_pivot.empty else 0.0
+        vmax = float(speed_pivot.max().max(skipna=True)) if not speed_pivot.empty else 1.0
+        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
+            vmin, vmax = 0.8, 1.8
+
+        fig, ax = plt.subplots(figsize=(12, 7))
+        _draw_speed_heatmap_panel(
+            ax,
+            speed_pivot,
+            count_pivot,
+            title="Heatmap vitesse médiane (distance × nage)",
+            vmin=vmin,
+            vmax=vmax,
+            cmap=NON_CORRIDOR_CMAP_SEQUENTIAL,
+            cbar=True,
+            cbar_label="Vitesse médiane (m/s)",
+            show_counts=False,
+        )
+        fig.suptitle(
+            "Synthèse peloton · vitesse médiane par distance et nage",
+            fontsize=14,
+            fontweight="bold",
+            y=1.02,
+        )
         fig.tight_layout()
         return fig
 
@@ -2083,129 +3233,117 @@ class ServiceGraphe:
         speed_col: str = "Speed",
         distance_col: str = "Distance",
         stroke_col: str = "Stroke",
+        *,
+        title: str = GRAPH_VITESSE_DISTANCE_NAGE,
+        gender_filter: Optional[str] = None,
     ) -> Optional[plt.Figure]:
-        """Vitesse moyenne (colonne Speed) par distance et type de nage — courbes."""
-        local_df = df.copy()
-        local_df[speed_col] = pd.to_numeric(local_df.get(speed_col), errors="coerce")
-        local_df[distance_col] = pd.to_numeric(local_df.get(distance_col), errors="coerce")
-        local_df = local_df.dropna(subset=[speed_col, distance_col, stroke_col])
-        if local_df.empty:
-            return None
-        local_df = relabel_stroke_column(local_df, stroke_col)
-        speed_by_dist = (
-            local_df.groupby([distance_col, stroke_col], as_index=False)[speed_col]
-            .mean()
-            .sort_values([stroke_col, distance_col])
+        """Vitesse médiane par distance et type de nage — courbes ordonnées.
+
+        Agrège la vitesse médiane (m/s) pour chaque couple distance × nage après
+        nettoyage méthodologique (âge, statut, cohérence épreuve, IQR).
+
+        Args:
+            df (pd.DataFrame): Données de performances.
+            speed_col (str): Colonne vitesse en m/s (recalculée depuis le temps).
+            distance_col (str): Colonne distance en mètres.
+            stroke_col (str): Colonne du type de nage.
+            title (str): Titre affiché au-dessus du graphique.
+            gender_filter (Optional[str]): ``F``, ``M`` ou None pour tous les sexes.
+
+        Returns:
+            Optional[plt.Figure]: Figure matplotlib ou None si données insuffisantes.
+        """
+        if gender_filter not in (None, "F", "M"):
+            gender_filter = None
+
+        min_group_n = _resolve_speed_distance_min_group_n(len(df))
+        speed_by_dist = _prepare_speed_distance_stroke_stats(
+            df,
+            distance_col=distance_col,
+            stroke_col=stroke_col,
+            gender_filter=gender_filter,
+            min_group_n=min_group_n,
         )
-        fig, ax = plt.subplots(figsize=(14, 8))
-        sns.lineplot(
-            data=speed_by_dist,
-            x=distance_col,
-            y=speed_col,
-            hue=stroke_col,
-            marker="o",
-            ax=ax,
+
+        gender_note = "tous sexes · LCM + SCM"
+        age_note = (
+            f"âge ≥ {_SPEED_DISTANCE_MIN_AGE_YEARS} ans"
+            if len(df) >= max(min_group_n * 2, 8)
+            else "âge assoupli (petit échantillon)"
         )
-        ax.set_title(GRAPH_VITESSE_DISTANCE_NAGE)
-        ax.set_xlabel("Distance (m)")
-        ax.set_ylabel("Vitesse (m/s)")
-        ax.legend(title="Nage")
-        ax.grid(alpha=0.3, linestyle="--")
-        fig.tight_layout()
-        return fig
+        subtitle = (
+            f"Médiane · {age_note} · ≥ {min_group_n} perf./point · {gender_note} · "
+            "épreuve = distance · axe X linéaire"
+        )
+        chart_title = title or "Vitesse médiane par distance et type de nage"
+        if speed_by_dist.empty:
+            return _plot_mean_speed_by_distance_and_stroke(
+                speed_by_dist,
+                title=chart_title,
+                subtitle=subtitle,
+                empty_message=(
+                    "Données insuffisantes pour tracer ce profil.\n"
+                    "Vérifiez que le jeu de données contient assez de performances valides."
+                ),
+                distance_col=distance_col,
+                speed_col="median_speed",
+                stroke_col=stroke_col,
+                count_col="n",
+            )
+        return _plot_mean_speed_by_distance_and_stroke(
+            speed_by_dist,
+            title=chart_title,
+            subtitle=subtitle,
+            distance_col=distance_col,
+            speed_col="median_speed",
+            stroke_col=stroke_col,
+            count_col="n",
+        )
 
     def plot_vitesse_max_par_split_et_nage(
         self,
         df: pd.DataFrame,
-    ) -> tuple[Optional[plt.Figure], pd.DataFrame]:
-        """Nuage de points des vitesses max par split, nage et nageur.
-        
+        *,
+        title: str = GRAPH_VITESSE_MAX_SPLIT_NAGE,
+    ) -> tuple[plt.Figure, pd.DataFrame]:
+        """Records de vitesse de split par distance cumulée et type de nage.
+
+        Pour chaque couple nage × distance de passage, affiche la vitesse
+        maximale observée dans le périmètre après nettoyage des splits.
+
         Args:
-            df (pd.DataFrame): Performances avec splits et vitesse.
-        
+            df (pd.DataFrame): Performances avec colonne ``splits``.
+            title (str): Titre affiché au-dessus du graphique.
+
         Returns:
-            tuple[Optional[plt.Figure], pd.DataFrame]: Figure et max par split.
+            tuple[plt.Figure, pd.DataFrame]: Figure matplotlib et tableau des
+                records ; le DataFrame des pics peut être vide.
         """
-        local_df = df.loc[
-            df["Speed"].notna(),
-            ["Stroke", "Distance", "Speed", "swimmer", "splits"],
-        ].copy()
-
-        def clean_swimmer(value: object) -> Optional[str]:
-            """Extrait le nom du nageur depuis une cellule swimmer hétérogène.
-            
-            Args:
-                value (object): Dict, liste de dicts ou autre valeur brute.
-            
-            Returns:
-                Optional[str]: Nom du nageur ou None.
-            """
-            if isinstance(value, dict):
-                return value.get("Name")
-            if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
-                return value[0].get("Name")
-            return None
-
-        local_df["Swimmer"] = local_df["swimmer"].map(clean_swimmer)
-        local_df = local_df.dropna(subset=["Swimmer"])
-
-        split_rows: list[dict[str, object]] = []
-        has_splits = local_df["splits"].apply(lambda x: isinstance(x, list) and len(x) > 0)
-        for _, row in local_df.loc[has_splits].iterrows():
-            swimmer_name = row["Swimmer"]
-            stroke = row["Stroke"]
-            for split in row["splits"]:
-                if not isinstance(split, dict):
-                    continue
-                split_distance = split.get("split_distance")
-                split_speed = split.get("split_speed")
-                if split_distance is None or split_speed is None:
-                    continue
-                try:
-                    distance = int(str(split_distance).replace(" m", ""))
-                    speed = float(split_speed)
-                except (TypeError, ValueError):
-                    continue
-                if 0 < speed < 5:
-                    split_rows.append(
-                        {
-                            "Stroke": stroke,
-                            "SplitDistance": distance,
-                            "SplitSpeed": speed,
-                            "Swimmer": swimmer_name,
-                        }
-                    )
-
-        df_splits = pd.DataFrame(split_rows)
-        if df_splits.empty:
-            return None, pd.DataFrame()
-
-        df_splits = relabel_stroke_column(df_splits, "Stroke")
-        df_splits_max = df_splits.loc[
-            df_splits.groupby(["Stroke", "SplitDistance"])["SplitSpeed"].idxmax()
-        ].reset_index(drop=True)
-
-        fig, ax = plt.subplots(figsize=(12, 6))
-        sns.set_style("whitegrid")
-        sns.scatterplot(
-            data=df_splits_max,
-            x="SplitDistance",
-            y="SplitSpeed",
-            hue="Stroke",
-            style="Stroke",
-            s=150,
-            ax=ax,
+        df_splits = _extract_all_split_speed_rows(df)
+        peaks = _prepare_max_split_speed_by_stroke(df_splits)
+        subtitle = (
+            f"Record par distance de passage · vitesses "
+            f"{_SPLIT_SPEED_MIN_MPS:.2f}–{_SPLIT_SPEED_MAX_MPS:.1f} m/s · "
+            "statut OK · échelle X linéaire"
         )
-
-        max_split = int(df_splits_max["SplitDistance"].max())
-        ax.set_xticks(np.arange(0, max_split + 50, 50))
-        ax.set_title(GRAPH_VITESSE_MAX_SPLIT_NAGE, fontsize=16)
-        ax.set_xlabel("Distance du split (m)")
-        ax.set_ylabel("Vitesse du split (m/s)")
-        ax.grid(True, linestyle="--", alpha=0.5)
-        ax.legend(title="Nage", bbox_to_anchor=(1.05, 1), loc="upper left")
-        fig.tight_layout()
-        return fig, df_splits_max
+        chart_title = title or GRAPH_VITESSE_MAX_SPLIT_NAGE
+        if peaks.empty:
+            fig = _plot_max_split_speed_by_stroke(
+                peaks,
+                title=chart_title,
+                subtitle=subtitle,
+                empty_message=(
+                    "Aucun split exploitable dans ce périmètre.\n"
+                    "Vérifiez que les performances incluent des chronos intermédiaires."
+                ),
+            )
+            return fig, peaks
+        fig = _plot_max_split_speed_by_stroke(
+            peaks,
+            title=chart_title,
+            subtitle=subtitle,
+        )
+        return fig, peaks
 
     def plot_vitesse_moyenne_mediane_par_split_et_nage(
         self,
@@ -2709,13 +3847,13 @@ class ServiceGraphe:
         target_colors: Optional[dict[str, str]] = None,
     ) -> tuple[Optional[plt.Figure], pd.DataFrame, pd.DataFrame, dict[str, object]]:
         """Analyse des vitesses de split F vs M avec surcouches de nageurs cibles.
-        
+
         Args:
             df (pd.DataFrame): Données de performances.
             nom_event (str): Libellé de l'épreuve.
             swimmer_targets (list[str]): Noms de nageurs à superposer.
             target_colors (Optional[dict[str, str]]): Couleurs par nageur cible.
-        
+
         Returns:
             tuple: Figure, stats globales, stats cibles et métadonnées.
         """
@@ -2737,168 +3875,34 @@ class ServiceGraphe:
         line_width_mean = 3.2
         marker_size = 7
 
-        def parse_dist(value: object) -> Optional[int]:
-            """Parse une distance de split en entier (mètres).
-            
-            Args:
-                value (object): Valeur brute de distance.
-            
-            Returns:
-                Optional[int]: Distance en mètres ou None.
-            """
-            try:
-                return int(float(str(value).lower().replace("m", "").strip()))
-            except (TypeError, ValueError):
-                return None
+        event_distance = parse_event_distance_m(nom_event)
+        long_df = self._get_cached_split_speed_rows(df, nom_event)
+        performances_count = (
+            int(long_df["swim_key"].nunique()) if not long_df.empty else 0
+        )
 
-        def parse_event_distance(event_name: str) -> Optional[int]:
-            """Extrait la distance numérique depuis le libellé d'épreuve.
-            
-            Args:
-                event_name (object): Nom d'épreuve (ex. « 100 NL LCM »).
-            
-            Returns:
-                Optional[int]: Distance en mètres ou None.
-            """
-            try:
-                return int(str(event_name).strip().split()[0])
-            except (TypeError, ValueError, IndexError):
-                return None
-
-        def normalize_name(value: object) -> str:
-            """Normalise un nom de nageur en minuscules sans espaces superflus.
-            
-            Args:
-                value (object): Nom brut.
-            
-            Returns:
-                str: Nom normalisé ou chaîne vide.
-            """
-            if pd.notna(value):
-                return str(value).strip().lower()
-            return ""
-
-        def to_float(value: object) -> Optional[float]:
-            """Convertit une valeur en float de façon tolérante.
-            
-            Args:
-                value (object): Valeur à convertir.
-            
-            Returns:
-                Optional[float]: Flottant ou None en cas d'échec.
-            """
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                return None
-
-        def has_valid_split_speed(splits: object) -> bool:
-            """Indique si une liste de splits contient au moins une vitesse valide.
-            
-            Args:
-                splits (object): Liste de dicts de splits.
-            
-            Returns:
-                bool: True si distance et vitesse de split sont présentes.
-            """
-            if not isinstance(splits, list) or len(splits) == 0:
-                return False
-            for split in splits:
-                if not isinstance(split, dict):
-                    continue
-                distance = parse_dist(split.get("split_distance"))
-                speed = to_float(split.get("split_speed"))
-                if distance is not None and speed is not None:
-                    return True
-            return False
-
-        def get_last_split_distance(splits: object) -> Optional[int]:
-            """Retourne la distance du dernier split valide d'une liste.
-            
-            Args:
-                splits (object): Liste de dicts de splits.
-            
-            Returns:
-                Optional[int]: Distance du dernier split ou None.
-            """
-            if not isinstance(splits, list) or len(splits) == 0:
-                return None
-            for split in reversed(splits):
-                if not isinstance(split, dict):
-                    continue
-                distance = parse_dist(split.get("split_distance"))
-                if distance is not None:
-                    return distance
-            return None
-
-        target_set_norm = {normalize_name(name) for name in swimmer_targets}
-        event_distance = parse_event_distance(nom_event)
-        applied_last_filter = False
-
-        df_event = df[
-            (df["Event"].astype(str).str.strip() == nom_event)
-            & df["splits"].apply(has_valid_split_speed)
-        ].copy()
-
-        if event_distance is not None:
-            df_event_last = df_event[
-                df_event["splits"].apply(lambda splits: get_last_split_distance(splits) == event_distance)
-            ].copy()
-            if len(df_event_last) > 0:
-                df_event = df_event_last
-                applied_last_filter = True
-
-        split_rows: list[dict[str, object]] = []
-        target_rows: list[dict[str, object]] = []
-        for _, row in df_event.iterrows():
-            swimmers = row.get("swimmer", [])
-            splits = row.get("splits", [])
-
-            swimmer0 = {}
-            if isinstance(swimmers, list) and len(swimmers) > 0 and isinstance(swimmers[0], dict):
-                swimmer0 = swimmers[0]
-
-            gender = swimmer0.get("Gender")
-            name = swimmer0.get("Name")
-            if gender not in ["F", "M"]:
-                continue
-
-            is_target = normalize_name(name) in target_set_norm
-            for split in splits if isinstance(splits, list) else []:
-                if not isinstance(split, dict):
-                    continue
-                distance = parse_dist(split.get("split_distance"))
-                speed = to_float(split.get("split_speed"))
-                if distance is None or speed is None:
-                    continue
-                split_no = max(1, int(round(distance / 50)))
-                split_rows.append(
-                    {
-                        "Gender": gender,
-                        "split_no": split_no,
-                        "split_distance": distance,
-                        "split_speed": speed,
-                    }
-                )
-                if is_target:
-                    target_rows.append(
-                        {
-                            "Name": name,
-                            "Gender": gender,
-                            "split_no": split_no,
-                            "split_distance": distance,
-                            "split_speed": speed,
-                        }
-                    )
-
-        df_splits = pd.DataFrame(split_rows)
-        if df_splits.empty:
+        if long_df.empty:
             return None, pd.DataFrame(), pd.DataFrame(), {
                 "event_distance": event_distance,
-                "applied_last_filter": applied_last_filter,
-                "performances_count": len(df_event),
+                "message": (
+                    f"Aucune vitesse de split exploitable pour "
+                    f"{localize_event_string(nom_event)}."
+                ),
+                "performances_count": performances_count,
                 "split_values_count": 0,
             }
+
+        target_set_norm = {corridor_norm_name(name) for name in swimmer_targets}
+        long_df = long_df.copy()
+        long_df["is_target"] = long_df["Name"].apply(
+            lambda name: corridor_norm_name(name) in target_set_norm
+        )
+
+        df_splits = long_df[["Gender", "split_no", "split_distance", "split_speed"]].copy()
+        target_rows = long_df.loc[
+            long_df["is_target"],
+            ["Name", "Gender", "split_no", "split_distance", "split_speed"],
+        ]
 
         stats = (
             df_splits.groupby(["Gender", "split_no"])["split_speed"]
@@ -2912,17 +3916,20 @@ class ServiceGraphe:
             .reset_index()
             .sort_values(["Gender", "split_no"])
         )
-        stats["split_distance_theorique"] = stats["split_no"] * 50
+        stats["split_distance_theorique"] = stats["split_no"].map(
+            df_splits.groupby("split_no")["split_distance"].first().to_dict()
+        )
 
-        df_target = pd.DataFrame(target_rows)
-        if not df_target.empty:
+        if not target_rows.empty:
             target_stats = (
-                df_target.groupby(["Name", "Gender", "split_no"])["split_speed"]
+                target_rows.groupby(["Name", "Gender", "split_no"])["split_speed"]
                 .agg(target_mean="mean", target_n="count")
                 .reset_index()
                 .sort_values(["Name", "split_no"])
             )
-            target_stats["split_distance_theorique"] = target_stats["split_no"] * 50
+            target_stats["split_distance_theorique"] = target_stats["split_no"].map(
+                target_rows.groupby("split_no")["split_distance"].first().to_dict()
+            )
         else:
             target_stats = pd.DataFrame()
 
@@ -2970,8 +3977,9 @@ class ServiceGraphe:
 
         if not target_stats.empty:
             for swimmer in swimmer_targets:
+                swimmer_norm = corridor_norm_name(swimmer)
                 data_sw = target_stats[
-                    target_stats["Name"].apply(normalize_name) == normalize_name(swimmer)
+                    target_stats["Name"].apply(corridor_norm_name) == swimmer_norm
                 ].sort_values("split_no")
                 if data_sw.empty:
                     continue
@@ -2992,7 +4000,8 @@ class ServiceGraphe:
                 )
 
         ticks = sorted(df_splits["split_no"].dropna().astype(int).unique().tolist())
-        labels = [f"{tick * 50} m" for tick in ticks]
+        distance_by_no = df_splits.groupby("split_no")["split_distance"].first().to_dict()
+        labels = [f"{int(distance_by_no.get(tick, tick * 50))} m" for tick in ticks]
         ax.set_xticks(ticks)
         ax.set_xticklabels(labels)
         ax.set_title(
@@ -3008,8 +4017,8 @@ class ServiceGraphe:
 
         return fig, stats, target_stats, {
             "event_distance": event_distance,
-            "applied_last_filter": applied_last_filter,
-            "performances_count": len(df_event),
+            "message": "ok",
+            "performances_count": performances_count,
             "split_values_count": len(df_splits),
         }
 
@@ -3510,115 +4519,163 @@ class ServiceGraphe:
         df: pd.DataFrame,
         nageur_cible: str,
     ) -> tuple[Optional[plt.Figure], dict[str, object]]:
-        """Heatmaps côte à côte : nageur cible vs peloton (vitesse moyenne).
-        
+        """Heatmaps côte à côte : nageur cible vs peloton (vitesse médiane).
+
+        Trois vues coordonnées (Perin et al., 2013 ; Du & Yuan, 2021) :
+        nageur cible, peloton de référence, et écart cible − peloton.
+        Échelle commune, effectifs par cellule, thème Pacing unifié.
+
         Args:
             df (pd.DataFrame): Données de performances.
             nageur_cible (str): Nom du nageur de référence.
-        
+
         Returns:
-            tuple[Optional[plt.Figure], pd.DataFrame]: Figure et table pivot.
+            tuple[Optional[plt.Figure], dict[str, object]]: Figure et métadonnées
+                (message, effectifs, exemples de noms).
         """
-        def norm_txt(value: object) -> str:
-            """Normalise un texte (minuscules, sans accents) pour comparaison.
-            
-            Args:
-                value (object): Chaîne à normaliser.
-            
-            Returns:
-                str: Texte normalisé ASCII.
-            """
-            if pd.isna(value):
-                return ""
-            text = str(value).strip().lower()
-            text = unicodedata.normalize("NFD", text)
-            text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
-            text = " ".join(text.split())
-            return text
-
-        df_cmp = df.copy()
-        df_cmp = df_cmp.explode("swimmer")
-        df_cmp = df_cmp[df_cmp["swimmer"].apply(lambda x: isinstance(x, dict))].copy()
-
-        df_cmp["Nageur"] = df_cmp["swimmer"].apply(lambda x: x.get("Name"))
-        df_cmp["Speed"] = pd.to_numeric(df_cmp["Speed"], errors="coerce")
-        df_cmp["Distance"] = pd.to_numeric(df_cmp["Distance"], errors="coerce")
-        df_cmp["Stroke"] = df_cmp["Stroke"].astype(str).str.strip().map(stroke_code_to_label)
-
-        df_cmp["Nageur_norm"] = df_cmp["Nageur"].map(norm_txt)
-        nageur_norm = norm_txt(nageur_cible)
-        df_cmp = df_cmp[
-            df_cmp["Speed"].notna()
-            & df_cmp["Distance"].notna()
-            & df_cmp["Stroke"].notna()
-            & (df_cmp["Stroke"].str.strip() != "")
-        ].copy()
-        df_cmp["Groupe"] = df_cmp["Nageur_norm"].apply(
-            lambda n: "Nageur cible" if nageur_norm in n else "Autres nageurs"
-        )
-
-        nb_target = int((df_cmp["Groupe"] == "Nageur cible").sum())
-        if nb_target == 0:
+        long_df = self._get_cached_speed_heatmap_long_df(df)
+        if long_df.empty:
             return None, {
-                "message": f"Aucune ligne trouvée pour le nageur '{nageur_cible}'.",
-                "examples": df_cmp["Nageur"].dropna().value_counts().head(30),
+                "message": "Aucune performance solo exploitable pour la heatmap.",
+                "target_count": 0,
             }
 
-        pivot_target = df_cmp[df_cmp["Groupe"] == "Nageur cible"].pivot_table(
-            values="Speed", index="Distance", columns="Stroke", aggfunc="mean"
+        target_norm = corridor_norm_name(nageur_cible)
+        target_mask = long_df["Name_norm"] == target_norm
+        nb_target = int(target_mask.sum())
+        if nb_target == 0:
+            return None, {
+                "message": f"Aucune ligne trouvée pour le nageur « {nageur_cible} ».",
+                "examples": long_df["Name"].dropna().value_counts().head(30).to_dict(),
+                "target_count": 0,
+            }
+
+        pivot_target, count_target = _speed_heatmap_pivot_tables(
+            long_df,
+            mask=target_mask,
         )
-        pivot_others = df_cmp[df_cmp["Groupe"] == "Autres nageurs"].pivot_table(
-            values="Speed", index="Distance", columns="Stroke", aggfunc="mean"
+        pivot_others, count_others = _speed_heatmap_pivot_tables(
+            long_df,
+            mask=~target_mask,
+        )
+        stroke_cols = _canonical_heatmap_stroke_columns(pivot_target, pivot_others)
+        pivot_target, count_target = _reindex_heatmap_grid(
+            pivot_target, count_target, stroke_cols=stroke_cols
+        )
+        pivot_others, count_others = _reindex_heatmap_grid(
+            pivot_others, count_others, stroke_cols=stroke_cols
+        )
+        delta = (pivot_target - pivot_others).reindex(
+            index=list(_HEATMAP_STANDARD_DISTANCES),
+            columns=stroke_cols,
         )
 
-        all_idx = sorted(set(pivot_target.index).union(set(pivot_others.index)))
-        all_cols = sorted(set(pivot_target.columns).union(set(pivot_others.columns)))
-        pivot_target = pivot_target.reindex(index=all_idx, columns=all_cols)
-        pivot_others = pivot_others.reindex(index=all_idx, columns=all_cols)
+        speed_vals = pd.concat(
+            [
+                pivot_target.stack(future_stack=True),
+                pivot_others.stack(future_stack=True),
+            ]
+        )
+        if speed_vals.empty:
+            return None, {
+                "message": "Pas assez de données pour tracer la comparaison.",
+                "target_count": nb_target,
+            }
+        vmin = float(speed_vals.min())
+        vmax = float(speed_vals.max())
+        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
+            vmin, vmax = 0.8, 1.8
 
-        vmin = min(pivot_target.min().min(skipna=True), pivot_others.min().min(skipna=True))
-        vmax = max(pivot_target.max().max(skipna=True), pivot_others.max().max(skipna=True))
+        delta_vals = delta.stack(future_stack=True)
+        if delta_vals.empty:
+            delta_lim = 0.1
+        else:
+            delta_lim = max(0.05, float(np.nanmax(np.abs(delta_vals.to_numpy()))))
 
-        def draw_heatmap(ax: plt.Axes, pivot: pd.DataFrame, title: str, cbar: bool = False) -> None:
-            """Dessine une heatmap de vitesses moyennes sur un axe matplotlib.
-            
-            Args:
-                ax: Axe matplotlib cible.
-                pivot (pd.DataFrame): Table pivot distance × nage.
-                title (str): Titre du sous-graphique.
-                cmap (str): Colormap seaborn/matplotlib.
-            
-            Returns:
-                None
-            """
-            empty = pivot.empty or pivot.dropna(how="all").dropna(axis=1, how="all").empty
-            if empty:
-                ax.text(0.5, 0.5, "Pas de donnees disponibles", ha="center", va="center", fontsize=12)
-                ax.set_title(title)
-                ax.set_xlabel("Nage")
-                ax.set_ylabel("Distance (m)")
-                ax.set_xticks([])
-                ax.set_yticks([])
-                return
-            sns.heatmap(
-                pivot,
-                annot=True,
-                fmt=".2f",
-                cmap=NON_CORRIDOR_CMAP_SEQUENTIAL,
-                ax=ax,
-                cbar=cbar,
-                vmin=vmin,
-                vmax=vmax,
+        display_name = str(
+            long_df.loc[target_mask, "Name"].iloc[0]
+        ).strip() or nageur_cible
+
+        fig, axes = plt.subplots(
+            1,
+            3,
+            figsize=(24, 8),
+            sharey=True,
+            gridspec_kw={"width_ratios": [1.0, 1.0, 1.0], "wspace": 0.12},
+            constrained_layout=True,
+        )
+        speed_mesh = _draw_speed_heatmap_panel(
+            axes[0],
+            pivot_target,
+            count_target,
+            title=f"{display_name} — vitesse médiane",
+            vmin=vmin,
+            vmax=vmax,
+            cmap=NON_CORRIDOR_CMAP_SEQUENTIAL,
+            cbar=False,
+            cbar_label="Vitesse médiane (m/s)",
+            show_counts=True,
+        )
+        _draw_speed_heatmap_panel(
+            axes[1],
+            pivot_others,
+            count_others,
+            title="Peloton — vitesse médiane",
+            vmin=vmin,
+            vmax=vmax,
+            cmap=NON_CORRIDOR_CMAP_SEQUENTIAL,
+            cbar=False,
+            cbar_label="Vitesse médiane (m/s)",
+            show_counts=False,
+        )
+        delta_mesh = _draw_speed_heatmap_panel(
+            axes[2],
+            delta,
+            count_target,
+            title="Écart cible − peloton",
+            vmin=-delta_lim,
+            vmax=delta_lim,
+            cmap=NON_CORRIDOR_CMAP_DIVERGING,
+            cbar=False,
+            cbar_label="Écart (m/s)",
+            center=0.0,
+            show_counts=False,
+        )
+        n_rows = len(_HEATMAP_STANDARD_DISTANCES)
+        for panel_ax in axes:
+            panel_ax.set_ylim(n_rows, 0)
+            panel_ax.set_xlim(0, len(stroke_cols))
+        if speed_mesh is not None:
+            speed_cbar = fig.colorbar(
+                speed_mesh,
+                ax=axes[:2],
+                location="right",
+                fraction=0.025,
+                pad=0.02,
             )
-            ax.set_title(title)
-            ax.set_xlabel("Nage")
-            ax.set_ylabel("Distance (m)")
-
-        fig, axes = plt.subplots(1, 2, figsize=(18, 7), sharey=True)
-        draw_heatmap(axes[0], pivot_target, f"{nageur_cible} - Vitesse moyenne", cbar=False)
-        draw_heatmap(axes[1], pivot_others, "Autres nageurs - Vitesse moyenne", cbar=True)
-        fig.tight_layout()
-        return fig, {"message": "ok", "target_count": nb_target}
+            speed_cbar.set_label("Vitesse médiane (m/s)", fontsize=10)
+        if delta_mesh is not None:
+            delta_cbar = fig.colorbar(
+                delta_mesh,
+                ax=axes[2],
+                location="right",
+                fraction=0.035,
+                pad=0.02,
+            )
+            delta_cbar.set_label("Écart (m/s)", fontsize=10)
+        fig.suptitle(
+            (
+                f"{display_name} vs peloton · vitesse médiane (m/s) par distance et nage · "
+                f"{nb_target} performances cible"
+            ),
+            fontsize=14,
+            fontweight="bold",
+        )
+        return fig, {
+            "message": "ok",
+            "target_count": nb_target,
+            "display_name": display_name,
+        }
 
     def plot_temps_median_vs_meilleur_nageur_par_split_event(
         self,
@@ -5106,8 +6163,11 @@ class ServiceGraphe:
             )
 
         elif selected_graph == GRAPH_VITESSE_DISTANCE_NAGE:
-            chart_title = GRAPH_VITESSE_DISTANCE_NAGE
-            fig = svc.plot_swimming_speed_by_distance_and_stroke(df_scope)
+            chart_title = "Vitesse médiane par distance et type de nage"
+            fig = svc.plot_swimming_speed_by_distance_and_stroke(
+                df_scope,
+                title=chart_title,
+            )
 
         elif selected_graph == GRAPH_VITESSE_MAX_SPLIT_NAGE:
             chart_title = GRAPH_VITESSE_MAX_SPLIT_NAGE
@@ -5124,12 +6184,16 @@ class ServiceGraphe:
                 if pacing:
                     pal = sns.color_palette("Dark2", n_colors=len(pacing))
                     target_colors = {n: to_hex(c) for n, c in zip(pacing, pal)}
-                fig, _a, _b, _meta = svc.plot_split_speed_analysis_by_gender_with_targets(
+                fig, _a, _b, meta = svc.plot_split_speed_analysis_by_gender_with_targets(
                     df_scope,
                     nom_event=nom_event,
                     swimmer_targets=list(pacing),
                     target_colors=target_colors,
                 )
+                if fig is None and isinstance(meta, dict):
+                    err = str(meta.get("message", ""))
+                    if err and err != "ok":
+                        chart_title = err
 
         elif selected_graph == "Temps médian vs meilleur nageur":
             if distance and stroke and pool:
@@ -5180,10 +6244,15 @@ class ServiceGraphe:
                     df_scope,
                     nageur_cible=selected_heatmap_swimmer,
                 )
-                if fig is None and isinstance(meta, dict):
-                    err = str(meta.get("message", ""))
-                    if err:
-                        chart_title = err
+                if isinstance(meta, dict):
+                    if meta.get("message") == "ok" and meta.get("display_name"):
+                        chart_title = (
+                            f"Synthèse des vitesses – {meta['display_name']} vs peloton"
+                        )
+                    else:
+                        err = str(meta.get("message", ""))
+                        if err and err != "ok":
+                            chart_title = err
 
         elif selected_graph == GRAPH_PACING_PROFILE_NORMALIZED:
             if distance and stroke and pool:
