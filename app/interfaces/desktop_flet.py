@@ -30,7 +30,7 @@ from project_path import PROJECT_DIR, ensure_project_imports
 ensure_project_imports()
 
 from loading_progress import TriplePrefetchProgress
-from services.corridor_data import build_corridor_chart_plot_kwargs, distance_supports_pacing_profile, CORRIDOR_CHART_STYLE_VERSION
+from services.corridor_data import build_corridor_chart_plot_kwargs, CORRIDOR_CHART_STYLE_VERSION
 from services.frmnatation_html_results_data_loader import (
     DEFAULT_FRMNATATION_HTML_RESULTS_DIR,
     FrmnatationHtmlResultsDataLoader,
@@ -47,6 +47,8 @@ from desktop_helpers import (
     _figure_to_base64,
     _materialize_df_scope,
     _normalize_text,
+    _pick_preferred_corridor_distance,
+    _pick_preferred_corridor_stroke,
     _primary_swimmer_name,
     _primary_swimmer_name_and_yob,
     _resolve_scope_filters,
@@ -58,7 +60,6 @@ from services.graph_service import (
     EVENT_COUNTS_SORT_STROKE_DISTANCE,
     GRAPH_CATEGORIES,
     GRAPH_CHRONOS_PAR_NAGE,
-    GRAPH_PACING_PROFILE_NORMALIZED,
     GRAPHES_NOTEBOOK,
     GRAPHES_PAR_KEY,
     SCOPE_EVENT_COUNTS_GRAPHS,
@@ -112,28 +113,22 @@ CORRIDOR_GLOBAL_GRAPH_NAME = "Couloir de performance global (âge)"
 CORRIDOR_GLOBAL_DECILES_GRAPH_NAME = "Couloir de performance global (déciles 10-90)"
 CORRIDOR_CATEGORY = "Couloirs de performance"
 CORRIDOR_SWIMMER_UI_GRAPHS: Tuple[str, ...] = (
-    GRAPH_PACING_PROFILE_NORMALIZED,
     CORRIDOR_GRAPH_NAME,
     CORRIDOR_GLOBAL_GRAPH_NAME,
     CORRIDOR_GLOBAL_DECILES_GRAPH_NAME,
 )
-CORRIDOR_FR_TARGET_SWIMMER_GRAPHS: Tuple[str, ...] = (
-    GRAPH_PACING_PROFILE_NORMALIZED,
-    CORRIDOR_GRAPH_NAME,
-)
+CORRIDOR_FR_TARGET_SWIMMER_GRAPHS: Tuple[str, ...] = (CORRIDOR_GRAPH_NAME,)
 CHART_UPDATE_AFTER_FILTER_DEBOUNCE_SEC = 0.1
 SCOPE_PERFORMANCES_CACHE_MAX_ENTRIES = 64
 SCOPE_PERFORMANCES_PREFETCH_GRAPHS: Tuple[str, ...] = (
-    GRAPH_PACING_PROFILE_NORMALIZED,
-    CORRIDOR_GRAPH_NAME,
     CORRIDOR_GLOBAL_GRAPH_NAME,
+    CORRIDOR_GRAPH_NAME,
 )
 ENABLE_CORRIDOR_CHART_PREFETCH_ON_START = True
 CORRIDOR_CHART_PREFETCH_LIMIT = int(
     os.environ.get("PACING_CORRIDOR_CHART_PREFETCH_LIMIT", "96")
 )
 CORRIDOR_CHART_PREFETCH_GRAPH_NAMES: Tuple[str, ...] = (
-    GRAPH_PACING_PROFILE_NORMALIZED,
     CORRIDOR_GLOBAL_GRAPH_NAME,
     CORRIDOR_GRAPH_NAME,
 )
@@ -2903,10 +2898,16 @@ class PacingDesktopApp:
         if self.selected_graph != CORRIDOR_GLOBAL_DECILES_GRAPH_NAME:
             self.corridor_deciles_confirmed_name = None
             self.corridor_deciles_confirmed_yob = None
+        if self.selected_category == CORRIDOR_CATEGORY:
+            self.selected_stroke = None
+            self.selected_distance = None
+            self.selected_pool = None
         self.graph_dd.options = [ft.dropdown.Option(g) for g in graphs]
         self.graph_dd.value = self.selected_graph
         self._sync_corridor_mode_switch(update_ui=False)
         self._refresh_filters_from_data()
+        if self.selected_category == CORRIDOR_CATEGORY:
+            self._try_show_stale_corridor_chart(update_ui=True)
         self._schedule_deferred_chart_update()
 
     def _on_graph_change(self, e: ft.ControlEvent) -> None:
@@ -5492,6 +5493,51 @@ class PacingDesktopApp:
         if update_ui:
             self.page.update()
 
+    def _apply_corridor_scope_defaults(
+        self,
+        combos: Dict[str, Dict[int, List[str]]],
+        stroke: Optional[str],
+        distance: Optional[int],
+        pool: Optional[str],
+    ) -> Tuple[Optional[str], Optional[int], Optional[str]]:
+        """Applique des filtres par défaut adaptés aux graphiques couloir.
+
+        Privilégie nage libre, distance 100 m et bassin SCM lorsque disponibles,
+        afin d'afficher dès la première ouverture un couloir âge×temps lisible.
+
+        Args:
+            combos (Dict[str, Dict[int, List[str]]]): Combinaisons nage/distance/bassin.
+            stroke (Optional[str]): Nage courante.
+            distance (Optional[int]): Distance courante.
+            pool (Optional[str]): Bassin courant.
+
+        Returns:
+            Tuple[Optional[str], Optional[int], Optional[str]]: Filtres effectifs.
+        """
+        stroke_vals = sorted(
+            combos.keys(),
+            key=lambda s: stroke_code_to_label(str(s)),
+        )
+        if not stroke_vals:
+            return stroke, distance, pool
+        if stroke not in stroke_vals:
+            stroke = _pick_preferred_corridor_stroke(stroke_vals)
+
+        dist_vals = [int(d) for d in combos.get(stroke or "", {}).keys()]
+        if not dist_vals:
+            return stroke, distance, pool
+        if distance not in dist_vals:
+            distance = _pick_preferred_corridor_distance(dist_vals)
+
+        pool_vals = list(
+            combos.get(stroke or "", {}).get(int(distance) if distance is not None else -1, [])
+        )
+        if not pool_vals:
+            return stroke, distance, pool
+        if pool not in pool_vals:
+            pool = "SCM" if "SCM" in pool_vals else str(pool_vals[0])
+        return stroke, distance, pool
+
     def _refresh_filters_from_data(
         self,
         update_ui: bool = True,
@@ -5581,9 +5627,9 @@ class PacingDesktopApp:
             if df_scope_mem is None:
                 df_scope_mem = self._get_cached_scope_performances(
                     graph_name=self.selected_graph,
-                    stroke=stroke,
-                    distance=distance,
-                    pool=pool,
+                    stroke=self.selected_stroke,
+                    distance=self.selected_distance,
+                    pool=self.selected_pool,
                 )
             return df_scope_mem
 
@@ -5620,13 +5666,28 @@ class PacingDesktopApp:
                 self._nav_combos_cache_key = combos_key
             combos = self._nav_combos_cache
 
+        if in_corridor and combos:
+            stroke, distance, pool = self._apply_corridor_scope_defaults(
+                combos,
+                self.selected_stroke,
+                self.selected_distance,
+                self.selected_pool,
+            )
+            self.selected_stroke = stroke
+            self.selected_distance = distance
+            self.selected_pool = pool
+
         # Options de nage (libellés français, clés internes inchangées)
         stroke_vals = sorted(
             combos.keys(),
             key=lambda s: stroke_code_to_label(str(s)),
         )
         if self.selected_stroke not in stroke_vals:
-            self.selected_stroke = stroke_vals[0] if stroke_vals else None
+            self.selected_stroke = (
+                _pick_preferred_corridor_stroke(stroke_vals)
+                if in_corridor
+                else (stroke_vals[0] if stroke_vals else None)
+            )
         stroke_keys = tuple(str(s) for s in stroke_vals)
         if self._sync_dropdown(
             self.stroke_dd,
@@ -5667,25 +5728,12 @@ class PacingDesktopApp:
                 if self.selected_stroke
                 else []
             )
-        if (
-            self.selected_graph == GRAPH_PACING_PROFILE_NORMALIZED
-            and self.selected_stroke
-            and dist_vals
-            and not self.df.empty
-        ):
-            stroke_pools = combos.get(self.selected_stroke, {})
-            dist_vals = [
-                int(d)
-                for d in dist_vals
-                if distance_supports_pacing_profile(
-                    self.df,
-                    self.selected_stroke,
-                    int(d),
-                    list(stroke_pools.get(int(d), [])),
-                )
-            ]
         if self.selected_distance not in dist_vals:
-            self.selected_distance = dist_vals[0] if dist_vals else None
+            self.selected_distance = (
+                _pick_preferred_corridor_distance([int(d) for d in dist_vals])
+                if in_corridor
+                else (dist_vals[0] if dist_vals else None)
+            )
         dist_keys = tuple(str(d) for d in dist_vals)
         dist_value = (
             str(self.selected_distance) if self.selected_distance is not None else None
@@ -5722,7 +5770,12 @@ class PacingDesktopApp:
                 else []
             )
         if self.selected_pool not in pool_vals:
-            self.selected_pool = pool_vals[0] if pool_vals else None
+            if in_corridor and pool_vals:
+                self.selected_pool = (
+                    "SCM" if "SCM" in pool_vals else str(pool_vals[0])
+                )
+            else:
+                self.selected_pool = pool_vals[0] if pool_vals else None
         pool_keys = tuple(str(p) for p in pool_vals)
         if self._sync_dropdown(
             self.pool_dd,
