@@ -404,6 +404,29 @@ def compute_corridor_deciles_df(
 # --- Résolution du nageur cible dans le peloton ---
 
 
+def _sort_corridor_swimmer_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Trie les lignes nageur selon la colonne disponible (âge ou split).
+
+    Les données couloir âge×temps disposent de ``Age_swim`` ; les profils de
+    pacing normalisés utilisent des lignes split (``split_no``, ``split_distance``).
+
+    Args:
+        df (pd.DataFrame): Lignes d'un nageur cible.
+
+    Returns:
+        pd.DataFrame: Copie triée ou entrée inchangée si aucune colonne d'ordre.
+    """
+    if df.empty:
+        return df
+    if "Age_swim" in df.columns:
+        return df.sort_values("Age_swim")
+    if "split_no" in df.columns:
+        return df.sort_values("split_no")
+    if "split_distance" in df.columns:
+        return df.sort_values("split_distance")
+    return df
+
+
 def resolve_corridor_swimmer(
     long_df: pd.DataFrame,
     nom_nageur: str,
@@ -486,7 +509,8 @@ def resolve_corridor_swimmer(
     yob_series = pd.to_numeric(long_df["Year_of_birth"], errors="coerce")
     swimmer_data = long_df[
         (name_norm_series == resolved_norm) & (yob_series == resolved_yob)
-    ].sort_values("Age_swim")
+    ]
+    swimmer_data = _sort_corridor_swimmer_rows(swimmer_data)
     return swimmer_data, resolved_name, resolved_yob
 
 
@@ -576,7 +600,7 @@ def resolve_corridor_swimmer_flexible(
         )
         return df_s, name, int(yob)
 
-    matches = matches.sort_values("Age_swim")
+    matches = _sort_corridor_swimmer_rows(matches)
     resolved_name = str(matches.iloc[0]["Name"]).strip()
     return matches, resolved_name, None
 
@@ -782,11 +806,19 @@ def resolve_corridor_plot_gender(
     """
     if gender_filter in ("F", "M"):
         return gender_filter
+    if long_df.empty or "Name" not in long_df.columns:
+        return None
     genders: set[str] = set()
     for spec in specs:
-        df_s, _, _ = resolve_corridor_swimmer_flexible(
-            long_df, spec.name, spec.year_of_birth
-        )
+        if not spec.name.strip():
+            continue
+        target_norm = corridor_norm_name(spec.name)
+        name_norm = long_df["Name"].astype(str).map(corridor_norm_name)
+        mask = name_norm == target_norm
+        if spec.year_of_birth is not None and "Year_of_birth" in long_df.columns:
+            yob = pd.to_numeric(long_df["Year_of_birth"], errors="coerce")
+            mask = mask & (yob == int(spec.year_of_birth))
+        df_s = long_df.loc[mask]
         if df_s.empty or "Gender" not in df_s.columns:
             continue
         for value in df_s["Gender"].dropna().astype(str).str.strip().str.upper():
@@ -1497,7 +1529,7 @@ def draw_percentile_corridor_bands(
     has_outer = outer_low in df_percentiles.columns and outer_high in df_percentiles.columns
     has_inner = inner_low in df_percentiles.columns and inner_high in df_percentiles.columns
 
-    if has_outer:
+    if has_outer and len(x) > 1:
         ax.fill_between(
             x,
             df_percentiles[outer_low],
@@ -1533,7 +1565,7 @@ def draw_percentile_corridor_bands(
                 zorder=zorder_bands + 1,
             )
 
-    if has_inner:
+    if has_inner and len(x) > 1:
         ax.fill_between(
             x,
             df_percentiles[inner_low],
@@ -1565,6 +1597,56 @@ def draw_percentile_corridor_bands(
         label=median_label,
         zorder=zorder_median,
     )
+    if len(x) == 1:
+        x0 = x[0]
+        median_v = float(median.iloc[0])
+        if has_outer:
+            ax.scatter(
+                [x0, x0],
+                [
+                    float(df_percentiles[outer_low].iloc[0]),
+                    float(df_percentiles[outer_high].iloc[0]),
+                ],
+                color=[
+                    CORRIDOR_BELOW_MEDIAN_EDGE_COLOR,
+                    CORRIDOR_ABOVE_MEDIAN_EDGE_COLOR,
+                ],
+                s=45,
+                marker="_",
+                linewidths=2.2,
+                zorder=zorder_median + 1,
+                label="_nolegend_",
+            )
+        if has_inner:
+            ax.scatter(
+                [x0, x0],
+                [
+                    float(df_percentiles[inner_low].iloc[0]),
+                    float(df_percentiles[inner_high].iloc[0]),
+                ],
+                color=[
+                    below_median_inner_color,
+                    above_median_inner_color,
+                ],
+                s=40,
+                marker="o",
+                edgecolors="#1e293b",
+                linewidths=0.8,
+                alpha=0.9,
+                zorder=zorder_median + 1,
+                label="_nolegend_",
+            )
+        ax.scatter(
+            [x0],
+            [median_v],
+            color=median_color,
+            s=55,
+            marker="o",
+            edgecolors="#1e293b",
+            linewidths=0.8,
+            zorder=zorder_median + 2,
+            label="_nolegend_",
+        )
 
 
 def draw_decile_corridor_bands(
@@ -1629,26 +1711,44 @@ def draw_decile_corridor_bands(
             palette_idx = idx - median_split_idx
             edge_color = DECILE_EDGE_ABOVE_COLOR
         color = palette[palette_idx] if palette_idx < len(palette) else "#808080"
-        ax.fill_between(
-            x,
-            df_deciles[low_col],
-            df_deciles[high_col],
-            color=color,
-            alpha=band_alpha,
-            linewidth=0,
-            label=decile_labels[idx] if idx in (0, 9) else "_nolegend_",
-            zorder=zorder_bands + idx,
-        )
-        ax.plot(
-            x,
-            df_deciles[high_col],
-            color=edge_color,
-            alpha=DECILE_EDGE_ALPHA,
-            linewidth=0.55,
-            linestyle="-",
-            label="_nolegend_",
-            zorder=zorder_bands + idx + 1,
-        )
+        if len(x) > 1:
+            ax.fill_between(
+                x,
+                df_deciles[low_col],
+                df_deciles[high_col],
+                color=color,
+                alpha=band_alpha,
+                linewidth=0,
+                label=decile_labels[idx] if idx in (0, 9) else "_nolegend_",
+                zorder=zorder_bands + idx,
+            )
+            ax.plot(
+                x,
+                df_deciles[high_col],
+                color=edge_color,
+                alpha=DECILE_EDGE_ALPHA,
+                linewidth=0.55,
+                linestyle="-",
+                label="_nolegend_",
+                zorder=zorder_bands + idx + 1,
+            )
+        else:
+            x0 = x[0]
+            y_mid = float(
+                (df_deciles[low_col].iloc[0] + df_deciles[high_col].iloc[0]) / 2.0
+            )
+            ax.scatter(
+                [x0],
+                [y_mid],
+                color=color,
+                alpha=0.95,
+                s=36,
+                marker="s",
+                edgecolors=edge_color,
+                linewidths=0.7,
+                label=decile_labels[idx] if idx in (0, 9) else "_nolegend_",
+                zorder=zorder_bands + idx,
+            )
 
     if "p50" in df_deciles.columns:
         ax.plot(

@@ -47,6 +47,45 @@ EXTRANAT_OUTPUT_BASE_DIR = (
 CHART_PNG_DPI = 96
 CORRIDOR_CHART_PNG_DPI = 72
 
+CORRIDOR_PREFERRED_STROKES: Tuple[str, ...] = ("FR", "BK", "BR", "FL", "IM", "MD")
+CORRIDOR_PREFERRED_DISTANCES: Tuple[int, ...] = (100, 200, 50, 400, 1500, 25)
+
+
+def _pick_preferred_corridor_stroke(stroke_vals: List[str]) -> Optional[str]:
+    """Choisit une nage par défaut lisible pour les couloirs de performance.
+
+    Args:
+        stroke_vals (List[str]): Codes nage disponibles pour l'épreuve filtrée.
+
+    Returns:
+        Optional[str]: Code nage préféré ou premier disponible.
+    """
+    if not stroke_vals:
+        return None
+    stroke_set = {str(s) for s in stroke_vals}
+    for code in CORRIDOR_PREFERRED_STROKES:
+        if code in stroke_set:
+            return code
+    return str(stroke_vals[0])
+
+
+def _pick_preferred_corridor_distance(dist_vals: List[int]) -> Optional[int]:
+    """Choisit une distance par défaut adaptée aux couloirs (évite le 25 m isolé).
+
+    Args:
+        dist_vals (List[int]): Distances disponibles pour la nage et le bassin.
+
+    Returns:
+        Optional[int]: Distance préférée ou première disponible.
+    """
+    if not dist_vals:
+        return None
+    dist_set = {int(d) for d in dist_vals}
+    for distance in CORRIDOR_PREFERRED_DISTANCES:
+        if distance in dist_set:
+            return distance
+    return int(sorted(dist_set)[0])
+
 
 # --- Extraction nageur depuis la colonne swimmer ---
 

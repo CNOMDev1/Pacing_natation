@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from matplotlib.colors import Normalize, TwoSlopeNorm, to_hex
-from matplotlib.ticker import FixedLocator, FuncFormatter, MaxNLocator, MultipleLocator
+from matplotlib.ticker import FuncFormatter, MaxNLocator, MultipleLocator
 
 from services.stroke_labels import (
     format_event_label,
@@ -2142,6 +2142,51 @@ def _apply_standard_chart_theme(fig: plt.Figure, ax: plt.Axes) -> None:
     ax.title.set_color("#1e293b")
 
 
+def _apply_corridor_consistent_styling(
+    fig: plt.Figure,
+    ax: plt.Axes,
+    *,
+    title: str,
+    gender: Optional[str],
+    reference_count: Optional[int] = None,
+    legend_fontsize: int = 9,
+) -> None:
+    """Applique le style final commun aux graphiques de couloirs.
+
+    Cette fonction aligne les graphiques de la catégorie « Couloirs de
+    performances » avec la charte Pacing utilisée par les autres visuels :
+    thème standard, titre contextualisé (épreuve + genre), encadré d'information
+    de référence, et légende homogène.
+
+    Args:
+        fig (plt.Figure): Figure matplotlib.
+        ax (plt.Axes): Axe principal.
+        title (str): Titre principal sans suffixe de genre.
+        gender (Optional[str]): Code genre (``F``/``M``) ou None.
+        reference_count (Optional[int]): Effectif du groupe de référence à afficher.
+        legend_fontsize (int): Taille de police de la légende.
+
+    Returns:
+        None: Cette fonction modifie la figure et l'axe en place.
+    """
+    _apply_standard_chart_theme(fig, ax)
+    gender_txt = corridor_gender_display_label(gender)
+    final_title = f"{title} ({gender_txt})" if gender_txt else title
+    ax.set_title(final_title, fontsize=13, fontweight="bold", pad=10)
+    if reference_count is not None:
+        ax.text(
+            0.01,
+            0.99,
+            f"Couloir : {int(reference_count)} nages de référence",
+            transform=ax.transAxes,
+            fontsize=9,
+            va="top",
+            ha="left",
+            color=CORRIDOR_ANNOTATION_COLOR,
+        )
+    ax.legend(loc="best", fontsize=legend_fontsize, frameon=False)
+
+
 def _drop_zero_count_events(df_counts: pd.DataFrame) -> pd.DataFrame:
     """Exclut les épreuves sans aucune performance enregistrée.
 
@@ -2234,7 +2279,7 @@ def _plot_gender_grouped_counts_by_event(
 
     y_pos = np.arange(n_events)
     bar_height = 0.36
-    ax.barh(
+    female_bars = ax.barh(
         y_pos - bar_height / 2,
         female_counts.values,
         height=bar_height,
@@ -2244,7 +2289,7 @@ def _plot_gender_grouped_counts_by_event(
         linewidth=0.6,
         zorder=3,
     )
-    ax.barh(
+    male_bars = ax.barh(
         y_pos + bar_height / 2,
         male_counts.values,
         height=bar_height,
@@ -2255,6 +2300,26 @@ def _plot_gender_grouped_counts_by_event(
         zorder=3,
     )
 
+    max_value = float(max(female_counts.max(), male_counts.max(), 1))
+    label_offset = max(max_value * 0.012, 8.0)
+    label_fontsize = 10 if n_events <= 8 else 9
+    for bars, counts in ((female_bars, female_counts), (male_bars, male_counts)):
+        for bar, value in zip(bars, counts.values):
+            count = int(value)
+            if count <= 0:
+                continue
+            ax.text(
+                count + label_offset,
+                bar.get_y() + bar.get_height() / 2,
+                _format_count_display(count),
+                ha="left",
+                va="center",
+                fontsize=label_fontsize,
+                color="#334155",
+                fontweight="medium",
+                zorder=4,
+            )
+
     y_labelsize = 12 if n_events <= 8 else (11 if n_events <= 14 else 10)
     ax.set_yticks(y_pos)
     ax.set_yticklabels(labels)
@@ -2263,6 +2328,7 @@ def _plot_gender_grouped_counts_by_event(
     ax.set_xlabel("Nombre de performances")
     ax.set_ylabel("Épreuve")
     ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+    ax.set_xlim(0, max_value * 1.14)
     ax.xaxis.set_major_locator(MaxNLocator(integer=True, min_n_ticks=5))
     ax.grid(
         axis="x",
@@ -2601,9 +2667,8 @@ def _apply_histogram_bin_xaxis(
 ) -> float:
     """Aligne l'axe X sur les bords réels des classes d'histogramme.
 
-    Pour peu de classes, toutes les bornes sont étiquetées. Pour davantage de
-    classes (ex. 1500 m libre), les graduations majeures restent alignées sur
-    des bords de bins et des repères mineurs marquent chaque classe.
+    Chaque borne de classe est affichée comme graduation majeure afin que
+    l'utilisateur puisse lire précisément les intervalles des bacs.
 
     Args:
         ax (plt.Axes): Axe matplotlib à configurer.
@@ -2617,20 +2682,24 @@ def _apply_histogram_bin_xaxis(
     ax.set_xlim(float(edges[0]), float(edges[-1]))
     bin_width = float(edges[1] - edges[0]) if len(edges) > 1 else 0.0
 
-    if nbins <= 12:
-        major_ticks = edges
-    else:
-        max_labels = 12
-        step = max(1, int(np.ceil((len(edges) - 1) / max_labels)))
-        major_ticks = edges[::step]
-        if major_ticks[-1] != edges[-1]:
-            major_ticks = np.append(major_ticks, edges[-1])
-        ax.xaxis.set_minor_locator(FixedLocator(edges))
-        ax.grid(axis="x", which="minor", alpha=0.24, linestyle=":", linewidth=0.7)
-
-    ax.set_xticks(major_ticks)
+    ax.set_xticks(edges)
     ax.xaxis.set_major_formatter(FuncFormatter(_histogram_time_tick_label))
-    plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+    label_size = 10
+    if nbins > 30:
+        label_size = 7
+    elif nbins > 20:
+        label_size = 8
+    elif nbins > 12:
+        label_size = 9
+    plt.setp(
+        ax.get_xticklabels(),
+        rotation=90 if nbins > 24 else 45,
+        ha="right",
+        fontsize=label_size,
+    )
+    ax.tick_params(axis="x", which="major", length=4, width=0.9)
+    if nbins > 12:
+        ax.grid(axis="x", which="major", alpha=0.18, linestyle=":", linewidth=0.6)
     return bin_width
 
 
@@ -2642,37 +2711,101 @@ _HISTOGRAM_STATS_BBOX = {
 }
 
 
-def _place_histogram_stats_footnote(fig: plt.Figure, stats_text: str) -> None:
+def _histogram_xaxis_label_band(nbins: int) -> float:
+    """Estime la hauteur des étiquettes X en fraction de la hauteur d'axe.
+
+    Args:
+        nbins (int): Nombre de classes affichées sur l'histogramme.
+
+    Returns:
+        float: Bande verticale réservée sous l'axe X (coordonnées ``axes``).
+    """
+    if nbins > 30:
+        return 0.12
+    if nbins > 20:
+        return 0.09
+    if nbins > 12:
+        return 0.07
+    return 0.05
+
+
+def _apply_histogram_yaxis_label(ax: plt.Axes, ylabel: str) -> None:
+    """Rapproche le libellé de l'axe Y de la zone de tracé.
+
+    Args:
+        ax (plt.Axes): Axe principal de l'histogramme.
+        ylabel (str): Texte du libellé vertical ; ignoré si vide.
+
+    Returns:
+        None
+    """
+    if not ylabel:
+        return
+    label_x = -0.052 - 0.0018 * max(0, len(ylabel) - 18)
+    label_x = max(label_x, -0.085)
+    ax.set_ylabel(ylabel, labelpad=2)
+    ax.yaxis.set_label_coords(label_x, 0.5)
+
+
+def _place_histogram_stats_footnote(
+    fig: plt.Figure,
+    stats_text: str,
+    *,
+    ax: plt.Axes,
+    nbins: int = 0,
+    xlabel: str = "Temps (secondes)",
+    ylabel: str = "Nombre de performances",
+) -> None:
     """Place les statistiques descriptives sous la zone de tracé de l'histogramme.
 
-    Le texte est centré sous l'axe des temps afin de libérer la zone de données
-    (barres, KDE, repères verticaux) tout en conservant un encadré lisible.
+    L'encadré est positionné avec un décalage relatif à la hauteur de l'axe
+    (``transAxes``), afin de conserver un espacement stable quelle que soit la
+    taille de la figure ou le nombre de classes. Le titre de l'axe X est placé
+    entre les graduations et l'encadré statistique.
 
     Args:
         fig (plt.Figure): Figure matplotlib contenant l'histogramme.
         stats_text (str): Statistiques à afficher (une ou plusieurs lignes).
+        ax (plt.Axes): Axe principal de l'histogramme.
+        nbins (int): Nombre de classes affichées ; sert à réserver l'espace
+            sous l'axe quand toutes les bornes sont étiquetées.
+        xlabel (str): Libellé de l'axe des temps à afficher sous les graduations.
+        ylabel (str): Libellé de l'axe des effectifs, rapproché du tracé.
 
     Returns:
         None
     """
     line_count = stats_text.count("\n") + 1
     if line_count <= 1:
-        bottom_margin = 0.11
+        extra_lines = 0.0
     elif line_count == 2:
-        bottom_margin = 0.13
+        extra_lines = 0.015
     else:
-        bottom_margin = 0.15
+        extra_lines = 0.03
+
+    label_band = _histogram_xaxis_label_band(nbins)
+    xlabel_band = 0.04
+    stats_gap = 0.022
+    stats_height = 0.042 + extra_lines
+    stats_offset = -(label_band + xlabel_band + stats_gap)
+    bottom_margin = 0.06 + label_band + xlabel_band + stats_gap + stats_height
 
     fig.tight_layout(rect=[0, bottom_margin, 1, 0.98])
-    fig.text(
+    _apply_histogram_yaxis_label(ax, ylabel)
+    ax.set_xlabel(xlabel)
+    ax.xaxis.set_label_coords(0.5, -(label_band + xlabel_band * 0.42))
+    ax.text(
         0.5,
-        0.018,
+        stats_offset,
         stats_text.replace("\n", "   "),
+        transform=ax.transAxes,
         ha="center",
-        va="bottom",
+        va="top",
+        clip_on=False,
         fontsize=9.5,
         color="#0f172a",
         bbox=_HISTOGRAM_STATS_BBOX,
+        zorder=10,
     )
 
 
@@ -2756,11 +2889,6 @@ GRAPH_VITESSE_MAX_SPLIT_NAGE = "Vitesse maximale par split et type de nage"
 GRAPH_RELAY_SPLIT_DISTANCE = "Vitesse de split selon la distance (relais)"
 RELAY_CATEGORY_NAME = "Pacing en relais"
 RELAY_SPLIT_CHART_STYLE_VERSION = 2
-GRAPH_PACING_PROFILE_NORMALIZED = (
-    "Profil de pacing normalisé - nageur vs couloir de référence"
-)
-
-
 DESKTOP_GRAPH_MENU: Tuple[DesktopGraphCategory, ...] = (
     DesktopGraphCategory(
         "Distributions de temps",
@@ -2826,9 +2954,8 @@ DESKTOP_GRAPH_MENU: Tuple[DesktopGraphCategory, ...] = (
     DesktopGraphCategory(
         "Couloirs de performance",
         (
-            GRAPH_PACING_PROFILE_NORMALIZED,
-            "Couloir de performance (âge) - nageur cible",
             "Couloir de performance global (âge)",
+            "Couloir de performance (âge) - nageur cible",
             "Couloir de performance global (déciles 10-90)",
             "Couloir de performance (AgeGroup) - USA Swimming",
         ),
@@ -3125,8 +3252,6 @@ class ServiceGraphe:
             ax.legend(hist_handles + kde_handles, hist_labels + kde_labels, loc="upper right")
         else:
             ax.legend(loc="upper right")
-        ax.set_xlabel("Temps (secondes)")
-        ax.set_ylabel("Nombre de performances")
         ax.set_title("Histogramme simple des temps de nage")
         max_count = int(np.max(hist_counts)) if hist_counts.size > 0 else 0
         if max_count <= 12:
@@ -3135,7 +3260,7 @@ class ServiceGraphe:
             ax.yaxis.set_major_locator(MaxNLocator(integer=True, min_n_ticks=5))
         ax.yaxis.set_major_formatter(FuncFormatter(lambda tick, _: f"{int(tick)}" if tick >= 0 else ""))
         ax.grid(axis="y", alpha=0.22, linestyle="--", linewidth=0.7)
-        _place_histogram_stats_footnote(fig, stats_text)
+        _place_histogram_stats_footnote(fig, stats_text, ax=ax, nbins=nbins)
         return fig
 
     def plot_camembert_sexe_global(
@@ -3300,12 +3425,16 @@ class ServiceGraphe:
             ax.yaxis.set_major_locator(MaxNLocator(integer=True, min_n_ticks=5))
         ax.yaxis.set_major_formatter(FuncFormatter(lambda tick, _: f"{int(tick)}" if tick >= 0 else ""))
 
-        ax.set_xlabel("Temps (secondes)")
-        ax.set_ylabel("Nombre cumulé de performances")
         ax.set_title("Histogramme cumulatif des temps de nage")
         ax.legend(loc="lower right")
         ax.grid(axis="y", alpha=0.22, linestyle="--", linewidth=0.7)
-        _place_histogram_stats_footnote(fig, stats_text)
+        _place_histogram_stats_footnote(
+            fig,
+            stats_text,
+            ax=ax,
+            nbins=nbins,
+            ylabel="Nombre cumulé de performances",
+        )
         return fig
 
     def plot_boxplot_temps_par_nage(
@@ -5664,7 +5793,6 @@ class ServiceGraphe:
         plot_norm = add_within_swim_speed_pct(plot_splits)
 
         fig, ax = plt.subplots(figsize=figsize)
-        apply_corridor_chart_theme(fig, ax)
         draw_percentile_corridor_bands(
             ax,
             df_percentiles.index,
@@ -5690,24 +5818,38 @@ class ServiceGraphe:
         )
         ax.set_xlabel("Segment de nage")
         ax.set_ylabel("Vitesse normalisée (% de la vitesse moyenne de la nage)")
-        gender_txt = corridor_gender_display_label(gender)
         title_event = localize_event_string(nom_event)
-        title_main = f"Profil de pacing normalisé — {title_event}"
-        if gender_txt:
-            title_main = f"{title_main} ({gender_txt})"
-        ax.set_title(title_main, fontsize=13, pad=10)
         ref_swims = int(ref_norm["swim_key"].nunique())
-        ax.text(
-            0.01,
-            0.99,
-            f"Couloir : {ref_swims} nages de référence",
-            transform=ax.transAxes,
-            fontsize=9,
-            va="top",
-            ha="left",
-            color=CORRIDOR_ANNOTATION_COLOR,
+        _apply_corridor_consistent_styling(
+            fig,
+            ax,
+            title=f"Profil de pacing normalisé — {title_event}",
+            gender=gender,
+            reference_count=ref_swims,
+            legend_fontsize=9,
         )
-        ax.legend(loc="best", fontsize=9, framealpha=0.92)
+        mono_segment_msg: Optional[str] = None
+        if len(ticks) <= 1:
+            mono_segment_msg = (
+                "Épreuve mono-segment (25/50 m) : le profil normalisé se réduit "
+                "à un point proche de 100 %."
+            )
+            ax.text(
+                0.5,
+                0.05,
+                mono_segment_msg,
+                transform=ax.transAxes,
+                ha="center",
+                va="bottom",
+                fontsize=9,
+                color=CORRIDOR_ANNOTATION_COLOR,
+                bbox={
+                    "boxstyle": "round,pad=0.3",
+                    "facecolor": "#ffffff",
+                    "edgecolor": "#cbd5e1",
+                    "alpha": 0.92,
+                },
+            )
         fig.tight_layout()
 
         meta: dict[str, object] = {
@@ -5717,6 +5859,8 @@ class ServiceGraphe:
             "reference_swims": int(ref_norm["swim_key"].nunique()),
             "swimmer_trace_messages": trace_messages,
         }
+        if mono_segment_msg:
+            meta["mono_segment_message"] = mono_segment_msg
         if trace_messages:
             meta["overlay_swimmer_message"] = "; ".join(trace_messages)
         return fig, meta
@@ -5810,7 +5954,6 @@ class ServiceGraphe:
             }
 
         fig, ax = plt.subplots(figsize=figsize)
-        apply_corridor_chart_theme(fig, ax)
         draw_percentile_corridor_bands(ax, df_percentiles.index, df_percentiles)
         trace_messages = plot_corridor_swimmer_specs(
             ax, long_plot, specs, source_df=df, nom_event=nom_event
@@ -5818,8 +5961,14 @@ class ServiceGraphe:
         ax.invert_yaxis()
         ax.set_xlabel("Âge")
         ax.set_ylabel("Temps (secondes)")
-        ax.set_title(f"Couloir de performance - {localize_event_string(nom_event)}")
-        ax.legend()
+        _apply_corridor_consistent_styling(
+            fig,
+            ax,
+            title=f"Couloir de performance — {localize_event_string(nom_event)}",
+            gender=gender,
+            reference_count=int(long_ref["SwimTimeSeconds"].notna().sum()),
+            legend_fontsize=9,
+        )
         fig.tight_layout()
 
         meta: dict[str, object] = {
@@ -5917,7 +6066,6 @@ class ServiceGraphe:
             }
 
         fig, ax = plt.subplots(figsize=figsize)
-        apply_corridor_chart_theme(fig, ax)
         draw_percentile_corridor_bands(ax, df_percentiles.index, df_percentiles)
         trace_messages = plot_corridor_swimmer_specs(
             ax, long_plot, specs, source_df=df, nom_event=nom_event
@@ -5925,8 +6073,14 @@ class ServiceGraphe:
         ax.invert_yaxis()
         ax.set_xlabel("Âge")
         ax.set_ylabel("Temps (secondes)")
-        ax.set_title(f"Couloir de performance global - {localize_event_string(nom_event)}")
-        ax.legend()
+        _apply_corridor_consistent_styling(
+            fig,
+            ax,
+            title=f"Couloir de performance global — {localize_event_string(nom_event)}",
+            gender=gender,
+            reference_count=int(long_ref["SwimTimeSeconds"].notna().sum()),
+            legend_fontsize=9,
+        )
         fig.tight_layout()
 
         meta: dict[str, object] = {
@@ -6013,7 +6167,6 @@ class ServiceGraphe:
 
         x_positions = np.arange(len(df_percentiles))
         fig, ax = plt.subplots(figsize=figsize)
-        apply_corridor_chart_theme(fig, ax)
         draw_percentile_corridor_bands(ax, x_positions, df_percentiles)
 
         meta: dict[str, object] = {
@@ -6117,10 +6270,17 @@ class ServiceGraphe:
         ax.invert_yaxis()
         ax.set_xlabel("Catégorie d'âge")
         ax.set_ylabel("Temps (secondes)")
-        ax.set_title(
-            f"Couloir de performance global (catégorie d'âge) - {localize_event_string(nom_event)}"
+        _apply_corridor_consistent_styling(
+            fig,
+            ax,
+            title=(
+                "Couloir de performance global (catégorie d'âge) — "
+                f"{localize_event_string(nom_event)}"
+            ),
+            gender=gender,
+            reference_count=int(len(data)),
+            legend_fontsize=9,
         )
-        ax.legend()
         fig.tight_layout()
 
         return fig, meta
@@ -6216,7 +6376,6 @@ class ServiceGraphe:
             }
 
         fig, ax = plt.subplots(figsize=figsize)
-        apply_corridor_chart_theme(fig, ax)
         draw_decile_corridor_bands(ax, df_deciles.index, df_deciles)
 
         trace_messages = plot_corridor_swimmer_specs(
@@ -6231,10 +6390,17 @@ class ServiceGraphe:
         ax.invert_yaxis()
         ax.set_xlabel("Âge")
         ax.set_ylabel("Temps (secondes)")
-        ax.set_title(
-            f"Couloir de performance global (10 déciles) - {localize_event_string(nom_event)}"
+        _apply_corridor_consistent_styling(
+            fig,
+            ax,
+            title=(
+                "Couloir de performance global (10 déciles) — "
+                f"{localize_event_string(nom_event)}"
+            ),
+            gender=gender,
+            reference_count=int(long_ref["SwimTimeSeconds"].notna().sum()),
+            legend_fontsize=8,
         )
-        ax.legend(loc="best", fontsize=8, ncol=1, framealpha=0.92)
         fig.tight_layout()
 
         return fig, {
@@ -6465,13 +6631,6 @@ class ServiceGraphe:
                 return {"nom_event": nom, "top_n": 10}
             return {"nom_event": nom}
         if m == "plot_performance_corridor_plot_time":
-            if not nom:
-                return None
-            name, yob = ServiceGraphe._nb_first_solo_name_yob_for_event(df_nav, nom)
-            if not name or yob is None:
-                return None
-            return {"nom_event": nom, "nom_nageur": name, "year_of_birth": int(yob)}
-        if m == "plot_pacing_profile_normalized_corridor":
             if not nom:
                 return None
             name, yob = ServiceGraphe._nb_first_solo_name_yob_for_event(df_nav, nom)
@@ -6773,42 +6932,6 @@ class ServiceGraphe:
                         err = str(meta.get("message", ""))
                         if err and err != "ok":
                             chart_title = err
-
-        elif selected_graph == GRAPH_PACING_PROFILE_NORMALIZED:
-            if distance and stroke and pool:
-                nom_event = f"{distance} {stroke} {pool}"
-                chart_title = (
-                    f"Profil de pacing normalisé - "
-                    f"{format_event_label(distance, stroke, pool)}"
-                )
-                plot_kwargs = dict(overlay_kwargs)
-                if plot_kwargs.get("swimmer_specs"):
-                    plot_kwargs.pop("overlay_nageur", None)
-                    plot_kwargs.pop("overlay_year_of_birth", None)
-                fig, meta = svc.plot_pacing_profile_normalized_corridor(
-                    corridor_df,
-                    nom_event=nom_event,
-                    nom_nageur=None
-                    if plot_kwargs.get("swimmer_specs")
-                    else selected_corridor_swimmer_name,
-                    year_of_birth=None
-                    if plot_kwargs.get("swimmer_specs")
-                    else selected_corridor_swimmer_yob,
-                    **plot_kwargs,
-                )
-                if isinstance(meta, dict):
-                    warn_parts: List[str] = []
-                    if meta.get("overlay_swimmer_message"):
-                        warn_parts.append(str(meta["overlay_swimmer_message"]))
-                    elif meta.get("swimmer_trace_messages"):
-                        msgs = meta.get("swimmer_trace_messages")
-                        if isinstance(msgs, list) and msgs:
-                            warn_parts.append("; ".join(str(m) for m in msgs))
-                    if fig is None:
-                        err = str(meta.get("message", ""))
-                        chart_title = err or (warn_parts[0] if warn_parts else chart_title)
-                    elif warn_parts:
-                        chart_title = f"{chart_title} — {warn_parts[0]}"
 
         elif selected_graph == "Couloir de performance (âge) - nageur cible":
             if distance and stroke and pool:
@@ -7126,18 +7249,11 @@ Graphe30 = GraphSpec(
     category="Analyse individuelle par epreuve",
     method_name="plot_performance_corridor_global_by_agegroup",
 )
-Graphe31 = GraphSpec(
-    key="pacing_profile_normalized_corridor",
-    name=GRAPH_PACING_PROFILE_NORMALIZED,
-    category="Analyse individuelle par epreuve",
-    method_name="plot_pacing_profile_normalized_corridor",
-)
-
 GRAPHES_NOTEBOOK: List[GraphSpec] = [
     Graphe1, Graphe2, Graphe3, Graphe4, Graphe5, Graphe7, Graphe8, Graphe9,
     Graphe10, Graphe11, Graphe12, Graphe13, Graphe14, Graphe15, Graphe16, Graphe17,
     Graphe18, Graphe19, Graphe20, Graphe21, Graphe22, Graphe23, Graphe24, Graphe25,
-    Graphe26, Graphe27, Graphe28, Graphe29, Graphe30, Graphe31,
+    Graphe26, Graphe27, Graphe28, Graphe29, Graphe30,
 ]
 GRAPHES_PAR_KEY: Dict[str, GraphSpec] = {g.key: g for g in GRAPHES_NOTEBOOK}
 
