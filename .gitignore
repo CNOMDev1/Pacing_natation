@@ -7,8 +7,8 @@ playwright_tmp_profile/
 # cache polices Matplotlib (genere au 1er import)
 .mplconfig/fontlist-v390.json
 
-# Donnees locales et generees
-data/
+# Donnees locales et generees (racine du dépôt uniquement)
+/data/
 
 # Fichiers locaux
 cookies_omegatiming.txt
