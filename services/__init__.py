@@ -1,7 +1,10 @@
-"""Package services : importer explicitement les modules nécessaires.
+"""Package services : couche métier Pacing.
 
-Exemples : ``from services.graph_service import ServiceGraphe``,
-``from services.omega_service import ...``. Ne pas regrouper ici des imports
-qui tirent des dépendances optionnelles (ex. Playwright), pour éviter de les
-charger à chaque sous-module.
+Organisation :
+- ``paths`` / ``settings`` / ``normalize`` / ``scope`` — config et domaine
+- ``*_data_loader`` / ``*_service`` — données et ingestion
+- ``corridor_data`` / ``graph_compute`` — analytics (sans matplotlib)
+- ``rendering`` — tracé matplotlib
+- ``graph_service`` — orchestration graphes
+- ``app_service`` — façade application pour l'UI desktop
 """

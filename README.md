@@ -12,6 +12,30 @@ Pacing permet d’explorer des chronos et des splits, de comparer des nageurs et
 - **API FastAPI** (`app/main.py`) : endpoints pour Extranat, Omega et USA Swimming.
 - **Notebooks Jupyter** : analyses et graphiques reproductibles (`app/visualization/`).
 
+## Architecture (services/)
+
+| Couche | Modules |
+|--------|---------|
+| Config | `paths.py`, `settings.py` (`PACING_*`) |
+| Domaine | `normalize.py`, `stroke_labels.py` |
+| Données | `*_data_loader.py` |
+| Ingestion | `*_service.py`, `app/scripts/*` |
+| Analytics | `corridor_data.py`, `graph_compute.py` (sans matplotlib) |
+| Rendu | `rendering/` (matplotlib) |
+| Application | `graph_service.py`, `use_cases.py` |
+| UI / API | `app/interfaces/`, `app/routers/` |
+
+## Architecture (services/)
+
+| Couche | Modules |
+|--------|---------|
+| Config / domaine | `paths.py`, `settings.py`, `normalize.py`, `scope.py` |
+| Données / ingestion | `*_data_loader.py`, `*_service.py` |
+| Analytics | `corridor_data.py`, `graph_compute.py` |
+| Rendu | `rendering/` |
+| Application | `graph_service.py`, **`app_service.py`** (façade UI) |
+| Présentation | `app/interfaces/desktop_flet.py` → appelle uniquement `PacingAppService` |
+
 ## Prérequis
 
 - **Python 3.10+**
@@ -36,7 +60,7 @@ playwright install chromium
 | API | `fastapi`, `uvicorn`, `pydantic` | Serveur REST |
 | Scraping | `requests`, `beautifulsoup4`, `playwright` | Extranat, Omega, USA Swimming |
 | Données | `pandas`, `pyarrow`, `numpy` | DataFrames, cache Parquet |
-| Visualisation | `matplotlib`, `seaborn` | Graphiques (`services/graph_service.py`) |
+| Visualisation | `matplotlib`, `seaborn` | Graphiques (`services/rendering`, `graph_service`) |
 | Interfaces | `flet` | Application desktop |
 | Notebooks | `jupyter`, `notebook`, `ipykernel` | Analyses dans `app/visualization/` |
 

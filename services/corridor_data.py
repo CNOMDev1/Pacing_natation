@@ -1,8 +1,9 @@
-"""Préparation vectorisée des données pour les graphiques couloir de performance.
+"""Cœur métier : préparation des données pour les couloirs de performance.
 
 Ce module transforme les DataFrames de performances (Extranat, USA Swimming,
-FRM Natation) en données « longues » prêtes pour le tracé couloir âge × temps,
-calcule les percentiles de référence et résout les nageurs cibles à afficher.
+FRM Natation) en données « longues », calcule les percentiles de référence et
+résout les nageurs cibles. Il ne trace pas de figures matplotlib : le rendu
+vit dans ``services.rendering.corridor_plots``.
 
 Le flux de données :
 1. **Préparation** — ``prepare_corridor_long_df()`` filtre l'épreuve, extrait
@@ -11,20 +12,23 @@ Le flux de données :
    percentiles par âge via ``groupby.quantile``.
 3. **Résolution nageur** — ``resolve_corridor_swimmer*()`` retrouve le nageur
    cible (exact, tokens, fuzzy) dans le peloton.
-4. **Tracé** — ``plot_corridor_swimmer_specs()`` et ``build_corridor_chart_plot_kwargs()``
-   préparent les courbes nageur FR / overlay MAR pour ``graph_service``.
+4. **Séries à tracer** — ``build_corridor_swimmer_series()`` et
+   ``build_normalized_pacing_series()`` produisent des structures de données
+   consommées par la couche de rendu ; ``build_corridor_chart_plot_kwargs()``
+   prépare les kwargs pour ``graph_service``.
 """
 from __future__ import annotations
 
 import difflib
 import re
-import unicodedata
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+
+from services.normalize import normalize_gender_code, normalize_name
 
 # --- Palette couloirs (grammaire visuelle) ---
 #
@@ -92,7 +96,7 @@ class CorridorSwimmerSpec:
     Attributes:
         name (str): Nom du nageur tel qu'affiché dans les données source.
         year_of_birth (Optional[int]): Année de naissance pour désambiguïser.
-        color (str): Couleur matplotlib de la courbe et des annotations.
+        color (str): Couleur hex de la courbe et des annotations (rendu).
         label (str): Libellé de la légende du graphique.
     """
 
@@ -100,6 +104,48 @@ class CorridorSwimmerSpec:
     year_of_birth: Optional[int] = None
     color: str = CORRIDOR_FR_SWIMMER_COLOR
     label: str = "Nageur cible"
+
+
+
+
+@dataclass(frozen=True)
+class CorridorSwimmerSeries:
+    """Série âge × temps prête à être tracée (sans dépendance matplotlib).
+
+    Attributes:
+        label (str): Libellé de légende.
+        color (str): Couleur hex du nageur.
+        ages (Tuple[float, ...]): Abscisses âge.
+        times (Tuple[float, ...]): Ordonnées temps en secondes.
+        annotation_text (str): Texte d'annotation du dernier point.
+        last_age (float): Âge du dernier point tracé.
+        last_time (float): Temps du dernier point tracé.
+    """
+
+    label: str
+    color: str
+    ages: Tuple[float, ...]
+    times: Tuple[float, ...]
+    annotation_text: str
+    last_age: float
+    last_time: float
+
+
+@dataclass(frozen=True)
+class NormalizedPacingSeries:
+    """Profil de pacing normalisé prêt à être tracé (sans matplotlib).
+
+    Attributes:
+        label (str): Libellé de légende (peut inclure le nombre de nages).
+        color (str): Couleur hex du nageur.
+        distances (Tuple[float, ...]): Distances de split en mètres.
+        speed_pct (Tuple[float, ...]): Vitesses normalisées en pourcentage.
+    """
+
+    label: str
+    color: str
+    distances: Tuple[float, ...]
+    speed_pct: Tuple[float, ...]
 
 
 # --- Cache LRU pour prepare_corridor_long_df ---
@@ -121,14 +167,7 @@ def _normalize_gender_code(value: object) -> Optional[str]:
     Returns:
         Optional[str]: ``F``, ``M`` ou None si non reconnu.
     """
-    if value is None:
-        return None
-    s = str(value).strip().upper()
-    if s in ("F", "FEMME", "FEMALE", "W"):
-        return "F"
-    if s in ("M", "H", "HOMME", "MALE", "MAN"):
-        return "M"
-    return None
+    return normalize_gender_code(value)
 
 
 def corridor_norm_name(value: object) -> str:
@@ -142,9 +181,7 @@ def corridor_norm_name(value: object) -> str:
     Returns:
         str: Nom normalisé ASCII, espaces réduits.
     """
-    txt = "" if value is None else str(value).strip().lower()
-    txt = unicodedata.normalize("NFKD", txt).encode("ascii", "ignore").decode("ascii")
-    return re.sub(r"\s+", " ", txt)
+    return normalize_name(value)
 
 
 # --- Préparation du DataFrame long (épreuve → lignes exploitables) ---
@@ -978,62 +1015,7 @@ def corridor_swimmer_missing_hint(
     return ""
 
 
-# --- Couloir percentile (bandes) et profils de pacing normalisés ---
-
-
-def corridor_swimmer_line_kwargs(spec: CorridorSwimmerSpec) -> Dict[str, Any]:
-    """Style matplotlib pour un nageur : teinte + forme redondante (accessibilité).
-
-    Le nageur marocain utilise un trait discontinu et des marqueurs carrés ;
-    le nageur français/USA un trait plein et des cercles. La couleur reste
-    le canal d'identité principale.
-
-    Args:
-        spec (CorridorSwimmerSpec): Nageur à tracer.
-
-    Returns:
-        Dict[str, Any]: Arguments ``plot`` / ``scatter`` matplotlib.
-    """
-    is_moroccan = (
-        spec.color == CORRIDOR_MA_SWIMMER_COLOR
-        or "maroc" in spec.label.lower()
-    )
-    if is_moroccan:
-        return {
-            "color": spec.color,
-            "linewidth": 3.2,
-            "linestyle": "--",
-            "marker": "s",
-            "markersize": 8,
-            "markeredgecolor": "#1e293b",
-            "markeredgewidth": 1.0,
-            "zorder": 8,
-        }
-    return {
-        "color": spec.color,
-        "linewidth": 3.4,
-        "linestyle": "-",
-        "marker": "o",
-        "markersize": 8,
-        "markeredgecolor": "#1e293b",
-        "markeredgewidth": 1.0,
-        "zorder": 8,
-    }
-
-
-def apply_corridor_chart_theme(fig, ax) -> None:
-    """Applique fond et grilles cohérents aux graphiques couloir.
-
-    Args:
-        fig: Figure matplotlib.
-        ax: Axe principal.
-
-    Returns:
-        None
-    """
-    fig.patch.set_facecolor(CORRIDOR_CHART_FIGURE_FACECOLOR)
-    ax.set_facecolor(CORRIDOR_CHART_AXES_FACECOLOR)
-    ax.grid(alpha=CORRIDOR_GRID_ALPHA, color="#94a3b8", linestyle="-", linewidth=0.6)
+# --- Extraction splits / profils normalisés (métier, sans matplotlib) ---
 
 
 def parse_split_distance_m(value: object) -> Optional[int]:
@@ -1458,311 +1440,6 @@ def compute_group_percentiles_df(
     return wide.sort_index()
 
 
-def draw_percentile_corridor_bands(
-    ax,
-    x_values: Sequence,
-    df_percentiles: pd.DataFrame,
-    *,
-    outer_low: str = "p10",
-    outer_high: str = "p90",
-    inner_low: str = "p25",
-    inner_high: str = "p75",
-    median_col: str = "p50",
-    below_median_outer_color: str = CORRIDOR_BELOW_MEDIAN_OUTER_COLOR,
-    below_median_inner_color: str = CORRIDOR_BELOW_MEDIAN_INNER_COLOR,
-    above_median_outer_color: str = CORRIDOR_ABOVE_MEDIAN_OUTER_COLOR,
-    above_median_inner_color: str = CORRIDOR_ABOVE_MEDIAN_INNER_COLOR,
-    median_color: str = CORRIDOR_MEDIAN_COLOR,
-    median_linewidth: float = CORRIDOR_MEDIAN_LINEWIDTH,
-    outer_alpha: float = CORRIDOR_BAND_OUTER_ALPHA,
-    inner_alpha: float = CORRIDOR_BAND_INNER_ALPHA,
-    outer_label_below: str = "Couloir P10–P50 (sous médiane)",
-    outer_label_above: str = "Couloir P50–P90 (au-dessus médiane)",
-    inner_label_below: str = "_nolegend_",
-    inner_label_above: str = "_nolegend_",
-    median_label: str = "Médiane du groupe",
-    zorder_bands: int = 1,
-    zorder_median: int = 3,
-) -> None:
-    """Trace un couloir percentile divergent autour de la médiane (P50).
-
-    Les domaines P10–P90 et P25–P75 sont scindés en deux moitiés : sous la
-    médiane (bleu, dégradé clair→foncé vers P50) et au-dessus (ambre, idem).
-    La ligne médiane matérialise le point neutre (carte divergente, Munzner 2014).
-
-    Args:
-        ax: Axe matplotlib cible.
-        x_values (Sequence): Abscisses alignées sur l'index de ``df_percentiles``.
-        df_percentiles (pd.DataFrame): Colonnes ``p10``…``p90`` (ou équivalent).
-        outer_low (str): Colonne borne basse externe (ex. ``p10``).
-        outer_high (str): Colonne borne haute externe (ex. ``p90``).
-        inner_low (str): Colonne borne basse interne (ex. ``p25``).
-        inner_high (str): Colonne borne haute interne (ex. ``p75``).
-        median_col (str): Colonne médiane (ex. ``p50``).
-        below_median_outer_color (str): Couleur bande externe sous la médiane.
-        below_median_inner_color (str): Couleur bande interne sous la médiane.
-        above_median_outer_color (str): Couleur bande externe au-dessus de la médiane.
-        above_median_inner_color (str): Couleur bande interne au-dessus de la médiane.
-        median_color (str): Couleur ligne médiane (point neutre divergent).
-        median_linewidth (float): Épaisseur de la ligne médiane.
-        outer_alpha (float): Transparence bandes externes.
-        inner_alpha (float): Transparence bandes internes.
-        outer_label_below (str): Libellé légende bande externe sous médiane.
-        outer_label_above (str): Libellé légende bande externe au-dessus médiane.
-        inner_label_below (str): Libellé légende bande interne sous médiane.
-        inner_label_above (str): Libellé légende bande interne au-dessus médiane.
-        median_label (str): Libellé légende médiane.
-        zorder_bands (int): Plan de dessin des bandes.
-        zorder_median (int): Plan de dessin de la médiane.
-
-    Returns:
-        None
-    """
-    if df_percentiles.empty:
-        return
-    if median_col not in df_percentiles.columns:
-        return
-
-    x = list(x_values)
-    median = df_percentiles[median_col]
-
-    has_outer = outer_low in df_percentiles.columns and outer_high in df_percentiles.columns
-    has_inner = inner_low in df_percentiles.columns and inner_high in df_percentiles.columns
-
-    if has_outer and len(x) > 1:
-        ax.fill_between(
-            x,
-            df_percentiles[outer_low],
-            median,
-            color=below_median_outer_color,
-            alpha=outer_alpha,
-            linewidth=0,
-            label=outer_label_below,
-            zorder=zorder_bands,
-        )
-        ax.fill_between(
-            x,
-            median,
-            df_percentiles[outer_high],
-            color=above_median_outer_color,
-            alpha=outer_alpha,
-            linewidth=0,
-            label=outer_label_above,
-            zorder=zorder_bands,
-        )
-        for edge_col, edge_color in (
-            (outer_low, CORRIDOR_BELOW_MEDIAN_EDGE_COLOR),
-            (outer_high, CORRIDOR_ABOVE_MEDIAN_EDGE_COLOR),
-        ):
-            ax.plot(
-                x,
-                df_percentiles[edge_col],
-                color=edge_color,
-                alpha=CORRIDOR_BAND_EDGE_ALPHA,
-                linewidth=0.8,
-                linestyle="-",
-                label="_nolegend_",
-                zorder=zorder_bands + 1,
-            )
-
-    if has_inner and len(x) > 1:
-        ax.fill_between(
-            x,
-            df_percentiles[inner_low],
-            median,
-            color=below_median_inner_color,
-            alpha=inner_alpha,
-            linewidth=0,
-            label=inner_label_below,
-            zorder=zorder_bands + 2,
-        )
-        ax.fill_between(
-            x,
-            median,
-            df_percentiles[inner_high],
-            color=above_median_inner_color,
-            alpha=inner_alpha,
-            linewidth=0,
-            label=inner_label_above,
-            zorder=zorder_bands + 2,
-        )
-
-    ax.plot(
-        x,
-        median,
-        color=median_color,
-        linewidth=median_linewidth,
-        linestyle="-",
-        solid_capstyle="round",
-        label=median_label,
-        zorder=zorder_median,
-    )
-    if len(x) == 1:
-        x0 = x[0]
-        median_v = float(median.iloc[0])
-        if has_outer:
-            ax.scatter(
-                [x0, x0],
-                [
-                    float(df_percentiles[outer_low].iloc[0]),
-                    float(df_percentiles[outer_high].iloc[0]),
-                ],
-                color=[
-                    CORRIDOR_BELOW_MEDIAN_EDGE_COLOR,
-                    CORRIDOR_ABOVE_MEDIAN_EDGE_COLOR,
-                ],
-                s=45,
-                marker="_",
-                linewidths=2.2,
-                zorder=zorder_median + 1,
-                label="_nolegend_",
-            )
-        if has_inner:
-            ax.scatter(
-                [x0, x0],
-                [
-                    float(df_percentiles[inner_low].iloc[0]),
-                    float(df_percentiles[inner_high].iloc[0]),
-                ],
-                color=[
-                    below_median_inner_color,
-                    above_median_inner_color,
-                ],
-                s=40,
-                marker="o",
-                edgecolors="#1e293b",
-                linewidths=0.8,
-                alpha=0.9,
-                zorder=zorder_median + 1,
-                label="_nolegend_",
-            )
-        ax.scatter(
-            [x0],
-            [median_v],
-            color=median_color,
-            s=55,
-            marker="o",
-            edgecolors="#1e293b",
-            linewidths=0.8,
-            zorder=zorder_median + 2,
-            label="_nolegend_",
-        )
-
-
-def draw_decile_corridor_bands(
-    ax,
-    x_values: Sequence,
-    df_deciles: pd.DataFrame,
-    *,
-    median_color: str = CORRIDOR_MEDIAN_COLOR,
-    median_linewidth: float = CORRIDOR_MEDIAN_LINEWIDTH,
-    band_alpha: float = DECILE_BAND_ALPHA,
-    zorder_bands: int = 1,
-    zorder_median: int = 12,
-) -> None:
-    """Trace un couloir en 10 bandes déciles (≈ 10 % du peloton chacune).
-
-    Les bandes D10–D6 (Pmin→P50) utilisent une rampe bleue ; D5–D1 (P50→Pmax)
-    une rampe ambre, avec la médiane P50 comme point de bascule divergent.
-
-    Args:
-        ax: Axe matplotlib cible.
-        x_values (Sequence): Abscisses alignées sur l'index de ``df_deciles``.
-        df_deciles (pd.DataFrame): Colonnes ``pmin``, ``p10``…``p90``, ``pmax``.
-        median_color (str): Couleur de la ligne médiane (point neutre divergent).
-        median_linewidth (float): Épaisseur de la ligne médiane.
-        band_alpha (float): Transparence des bandes déciles.
-        zorder_bands (int): Plan de dessin des bandes.
-        zorder_median (int): Plan de dessin de la médiane.
-
-    Returns:
-        None
-    """
-    if df_deciles.empty:
-        return
-    x = list(x_values)
-    boundary_cols = ["pmin"] + [f"p{p}" for p in DECILE_CORRIDOR_PERCENTILES] + ["pmax"]
-    for col in boundary_cols:
-        if col not in df_deciles.columns:
-            return
-
-    decile_labels = (
-        "D10 (10 % les plus rapides)",
-        "D9",
-        "D8",
-        "D7",
-        "D6",
-        "D5",
-        "D4",
-        "D3",
-        "D2",
-        "D1 (10 % les plus lents)",
-    )
-    median_split_idx = 5
-    for idx in range(10):
-        low_col = boundary_cols[idx]
-        high_col = boundary_cols[idx + 1]
-        if idx < median_split_idx:
-            palette = DECILE_BAND_COLORS_BELOW_MEDIAN
-            palette_idx = idx
-            edge_color = DECILE_EDGE_BELOW_COLOR
-        else:
-            palette = DECILE_BAND_COLORS_ABOVE_MEDIAN
-            palette_idx = idx - median_split_idx
-            edge_color = DECILE_EDGE_ABOVE_COLOR
-        color = palette[palette_idx] if palette_idx < len(palette) else "#808080"
-        if len(x) > 1:
-            ax.fill_between(
-                x,
-                df_deciles[low_col],
-                df_deciles[high_col],
-                color=color,
-                alpha=band_alpha,
-                linewidth=0,
-                label=decile_labels[idx] if idx in (0, 9) else "_nolegend_",
-                zorder=zorder_bands + idx,
-            )
-            ax.plot(
-                x,
-                df_deciles[high_col],
-                color=edge_color,
-                alpha=DECILE_EDGE_ALPHA,
-                linewidth=0.55,
-                linestyle="-",
-                label="_nolegend_",
-                zorder=zorder_bands + idx + 1,
-            )
-        else:
-            x0 = x[0]
-            y_mid = float(
-                (df_deciles[low_col].iloc[0] + df_deciles[high_col].iloc[0]) / 2.0
-            )
-            ax.scatter(
-                [x0],
-                [y_mid],
-                color=color,
-                alpha=0.95,
-                s=36,
-                marker="s",
-                edgecolors=edge_color,
-                linewidths=0.7,
-                label=decile_labels[idx] if idx in (0, 9) else "_nolegend_",
-                zorder=zorder_bands + idx,
-            )
-
-    if "p50" in df_deciles.columns:
-        ax.plot(
-            x,
-            df_deciles["p50"],
-            color=median_color,
-            linewidth=median_linewidth,
-            linestyle="-",
-            solid_capstyle="round",
-            label="Médiane (D5)",
-            zorder=zorder_median,
-        )
-
-
 def mean_normalized_profile_for_swimmer(
     split_df: pd.DataFrame,
     name: str,
@@ -1797,79 +1474,29 @@ def mean_normalized_profile_for_swimmer(
     )
 
 
-def plot_normalized_pacing_profiles_on_ax(
-    ax,
-    split_df: pd.DataFrame,
-    specs: Sequence[CorridorSwimmerSpec],
-) -> List[str]:
-    """Trace les profils de pacing normalisés (lignes) pour des nageurs cibles.
 
-    Args:
-        ax: Axe matplotlib cible.
-        split_df (pd.DataFrame): Splits avec ``speed_pct``.
-        specs (Sequence[CorridorSwimmerSpec]): Nageurs à superposer.
-
-    Returns:
-        List[str]: Messages d'avertissement par nageur introuvable.
-    """
-    messages: List[str] = []
-    for spec in specs:
-        if not spec.name.strip():
-            continue
-        profile = mean_normalized_profile_for_swimmer(
-            split_df, spec.name, spec.year_of_birth
-        )
-        if profile.empty:
-            yob_txt = (
-                f" ({spec.year_of_birth})" if spec.year_of_birth is not None else ""
-            )
-            messages.append(
-                f"{spec.label} introuvable ou sans splits exploitables "
-                f"(splits intermédiaires requis) : {spec.name}{yob_txt}"
-            )
-            continue
-        n_swims = int(profile["n_swims"].max()) if "n_swims" in profile.columns else 1
-        legend_label = (
-            f"{spec.label} (moy. {n_swims} nages)" if n_swims > 1 else spec.label
-        )
-        line_kw = corridor_swimmer_line_kwargs(spec)
-        ax.plot(
-            profile["split_distance"],
-            profile["speed_pct"],
-            label=legend_label,
-            **line_kw,
-        )
-    return messages
-
-
-# --- Tracé matplotlib des nageurs cibles ---
-
-
-def plot_corridor_swimmer_specs(
-    ax,
+def build_corridor_swimmer_series(
     long_df: pd.DataFrame,
     specs: Sequence[CorridorSwimmerSpec],
     *,
     fuzzy_min_ratio: float = 0.55,
     source_df: Optional[pd.DataFrame] = None,
     nom_event: Optional[str] = None,
-) -> List[str]:
-    """Trace plusieurs nageurs (âge × temps en secondes) sur un axe matplotlib.
-
-    Pour chaque spec, résout le nageur, trace la courbe et annote le dernier point.
-    Collecte les messages d'erreur pour affichage dans l'UI.
+) -> Tuple[List[CorridorSwimmerSeries], List[str]]:
+    """Résout les nageurs et construit les séries âge × temps (sans tracer).
 
     Args:
-        ax: Axe matplotlib cible.
         long_df (pd.DataFrame): Données longues du peloton.
-        specs (Sequence[CorridorSwimmerSpec]): Nageurs à tracer.
+        specs (Sequence[CorridorSwimmerSpec]): Nageurs à résoudre.
         fuzzy_min_ratio (float): Seuil fuzzy pour la résolution.
         source_df (Optional[pd.DataFrame]): DataFrame brut pour diagnostics.
         nom_event (Optional[str]): Épreuve pour ``corridor_swimmer_missing_hint``.
 
     Returns:
-        List[str]: Messages d'erreur ou d'avertissement par nageur introuvable.
+        Tuple[List[CorridorSwimmerSeries], List[str]]: Séries exploitables et
+            messages d'erreur / avertissement pour l'UI.
     """
+    series_list: List[CorridorSwimmerSeries] = []
     messages: List[str] = []
     for spec in specs:
         if not spec.name.strip():
@@ -1912,42 +1539,73 @@ def plot_corridor_swimmer_specs(
                 f"{spec.label} : pas de points âge/temps exploitables pour {spec.name}"
             )
             continue
-        line_kw = corridor_swimmer_line_kwargs(spec)
-        ax.plot(
-            df_plot["Age_swim"],
-            df_plot["SwimTimeSeconds"],
-            label=spec.label,
-            **line_kw,
-        )
+        age_vals = tuple(float(v) for v in df_plot["Age_swim"].tolist())
+        time_vals = tuple(float(v) for v in df_plot["SwimTimeSeconds"].tolist())
         last = df_plot.iloc[-1]
-        ax.scatter(
-            last["Age_swim"],
-            last["SwimTimeSeconds"],
-            color=spec.color,
-            marker=line_kw.get("marker", "o"),
-            s=(line_kw.get("markersize", 7) ** 2) * 1.8,
-            edgecolors=line_kw.get("markeredgecolor", "white"),
-            linewidths=line_kw.get("markeredgewidth", 0.9),
-            zorder=line_kw.get("zorder", 7) + 1,
-        )
         yob_ann = (
             f" ({int(resolved_yob)})"
             if resolved_yob is not None
             else ""
         )
-        ax.annotate(
-            f"{resolved_name}{yob_ann}",
-            (last["Age_swim"], last["SwimTimeSeconds"]),
-            xytext=(8, 0),
-            textcoords="offset points",
-            color=spec.color,
-            fontsize=9,
-            fontweight="bold",
+        series_list.append(
+            CorridorSwimmerSeries(
+                label=spec.label,
+                color=spec.color,
+                ages=age_vals,
+                times=time_vals,
+                annotation_text=f"{resolved_name}{yob_ann}",
+                last_age=float(last["Age_swim"]),
+                last_time=float(last["SwimTimeSeconds"]),
+            )
         )
-    return messages
+    return series_list, messages
 
 
-# --- Construction des kwargs pour graph_service ---
+def build_normalized_pacing_series(
+    split_df: pd.DataFrame,
+    specs: Sequence[CorridorSwimmerSpec],
+) -> Tuple[List[NormalizedPacingSeries], List[str]]:
+    """Construit les profils de pacing normalisés pour des nageurs cibles.
+
+    Args:
+        split_df (pd.DataFrame): Splits avec ``speed_pct``.
+        specs (Sequence[CorridorSwimmerSpec]): Nageurs à résoudre.
+
+    Returns:
+        Tuple[List[NormalizedPacingSeries], List[str]]: Profils exploitables et
+            messages d'avertissement pour l'UI.
+    """
+    series_list: List[NormalizedPacingSeries] = []
+    messages: List[str] = []
+    for spec in specs:
+        if not spec.name.strip():
+            continue
+        profile = mean_normalized_profile_for_swimmer(
+            split_df, spec.name, spec.year_of_birth
+        )
+        if profile.empty:
+            yob_txt = (
+                f" ({spec.year_of_birth})" if spec.year_of_birth is not None else ""
+            )
+            messages.append(
+                f"{spec.label} introuvable ou sans splits exploitables "
+                f"(splits intermédiaires requis) : {spec.name}{yob_txt}"
+            )
+            continue
+        n_swims = int(profile["n_swims"].max()) if "n_swims" in profile.columns else 1
+        legend_label = (
+            f"{spec.label} (moy. {n_swims} nages)" if n_swims > 1 else spec.label
+        )
+        series_list.append(
+            NormalizedPacingSeries(
+                label=legend_label,
+                color=spec.color,
+                distances=tuple(float(v) for v in profile["split_distance"].tolist()),
+                speed_pct=tuple(float(v) for v in profile["speed_pct"].tolist()),
+            )
+        )
+    return series_list, messages
+
 
 
 def build_corridor_chart_plot_kwargs(

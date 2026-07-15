@@ -1,28 +1,19 @@
-"""Application desktop Pacing (Flet) : navigation, graphiques et prefetch.
+"""Application desktop Pacing (Flet) : présentation uniquement.
 
-Ce module est le point d'entrée principal de l'interface desktop. Il charge
-les données Extranat, précalcule les graphiques et caches au démarrage,
-gère la sidebar (filtres, recherche nageur) et affiche les figures matplotlib.
+L'UI gère widgets, interactions et cache d'images. Le métier (chargement,
+calculs, figures) passe par ``services.app_service.PacingAppService``.
 
-Le flux au démarrage :
-1. **Bootstrap** — ``_bootstrap_startup`` affiche ``TriplePrefetchProgress``.
-2. **Prefetch** — graphes notebook, cache event swimmers, Parquet USA, couloirs.
-3. **UI** — construction sidebar + zone graphique ; lecture du cache JSON.
-4. **Interaction** — changement de filtres → rendu ou hit cache ``graph_render_registry``.
-
-Point d'entrée : ``flet run app/interfaces/desktop_flet.py``.
+Point d'entrée : ``python app/interfaces/desktop_flet.py``.
 """
 import asyncio
 import concurrent.futures
 from collections import OrderedDict
 import datetime as dt
 import json
-import os
 import threading
 import traceback
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import flet as ft
-import matplotlib.pyplot as plt
 import pandas as pd
 
 from project_path import PROJECT_DIR, ensure_project_imports
@@ -30,22 +21,9 @@ from project_path import PROJECT_DIR, ensure_project_imports
 ensure_project_imports()
 
 from loading_progress import TriplePrefetchProgress
-from services.corridor_data import build_corridor_chart_plot_kwargs, CORRIDOR_CHART_STYLE_VERSION
-from services.frmnatation_html_results_data_loader import (
-    DEFAULT_FRMNATATION_HTML_RESULTS_DIR,
-    FrmnatationHtmlResultsDataLoader,
-)
-from services.usaswimming_competitions_data_loader import (
-    DEFAULT_USASWIMMING_COMPETITIONS_DIR,
-    DEFAULT_USASWIMMING_PARQUET_DIR,
-    UsaswimmingCompetitionsDataLoader,
-)
 from swimmer_search import SwimmerSearch
 from desktop_helpers import (
-    CORRIDOR_CHART_PNG_DPI,
     _event_combinations,
-    _figure_to_base64,
-    _materialize_df_scope,
     _normalize_text,
     _pick_preferred_corridor_distance,
     _pick_preferred_corridor_stroke,
@@ -53,15 +31,14 @@ from desktop_helpers import (
     _primary_swimmer_name_and_yob,
     _resolve_scope_filters,
     _slugify,
-    load_data,
 )
+from services.app_service import CORRIDOR_CHART_STYLE_VERSION, PacingAppService
 from services.graph_service import (
     EVENT_COUNTS_SORT_OPTIONS,
     EVENT_COUNTS_SORT_STROKE_DISTANCE,
     GRAPH_CATEGORIES,
     GRAPH_CHRONOS_PAR_NAGE,
     GRAPHES_NOTEBOOK,
-    GRAPHES_PAR_KEY,
     SCOPE_EVENT_COUNTS_GRAPHS,
     SCOPE_GENDER_FILTER_GRAPHS,
     SCOPE_NO_FILTER_GRAPHS,
@@ -82,75 +59,51 @@ from services.graph_service import (
     RELAY_CATEGORY_NAME,
     RELAY_SPLIT_CHART_STYLE_VERSION,
     SPLIT_COMPARISON_CATEGORY_NAME,
-    ServiceGraphe,
-    unwrap_matplotlib_figure,
 )
 from services.stroke_labels import stroke_code_to_label
-
-# --- Chemins d'export et flags de prefetch au démarrage ---
-
-GRAPH_EXPORT_PATH = PROJECT_DIR / "data" / "exports" / "prefetched_graphs.json"
-EVENT_SWIMMERS_EXPORT_PATH = (
-    PROJECT_DIR / "data" / "exports" / "prefetched_event_swimmers.json"
-)
-EXPORT_IMAGE_BASE64_TO_JSON = True
-ENABLE_PERSISTENT_GRAPH_CACHE = True
-ENABLE_NOTEBOOK_PREFETCH_ON_START = True
-ENABLE_EVENT_SWIMMERS_CACHE_PREFETCH_ON_START = True
-ENABLE_SCOPE_PERFORMANCES_CACHE_PREFETCH_ON_START = True
-SCOPE_PERFORMANCES_PREFETCH_LIMIT = int(
-    os.environ.get("PACING_SCOPE_PERFORMANCES_PREFETCH_LIMIT", "48")
-)
-COUNTRY_FRANCE = "France"
-COUNTRY_MOROCCO = "Maroc"
-COUNTRY_USA = "États-Unis"
-USA_CORRIDOR_GRAPH_NAME = "Couloir de performance (AgeGroup) - USA Swimming"
-USA_CORRIDOR_COLS = ("Event", "SwimTimeSeconds", "AgeGroup", "Gender", "Name")
-USA_CORRIDOR_MIN_POINTS = 100
-
-CORRIDOR_GRAPH_NAME = "Couloir de performance (âge) - nageur cible"
-CORRIDOR_GLOBAL_GRAPH_NAME = "Couloir de performance global (âge)"
-CORRIDOR_GLOBAL_DECILES_GRAPH_NAME = "Couloir de performance global (déciles 10-90)"
-CORRIDOR_CATEGORY = "Couloirs de performance"
-CORRIDOR_SWIMMER_UI_GRAPHS: Tuple[str, ...] = (
-    CORRIDOR_GRAPH_NAME,
-    CORRIDOR_GLOBAL_GRAPH_NAME,
+from services.paths import USASWIMMING_PARQUET_DIR as DEFAULT_USASWIMMING_PARQUET_DIR
+from desktop_settings import (
+    CORRIDOR_CATEGORY,
+    CORRIDOR_CHART_PREFETCH_GRAPH_NAMES,
+    CORRIDOR_CHART_PREFETCH_LIMIT,
+    CORRIDOR_FR_TARGET_SWIMMER_GRAPHS,
     CORRIDOR_GLOBAL_DECILES_GRAPH_NAME,
+    CORRIDOR_GLOBAL_GRAPH_NAME,
+    CORRIDOR_GRAPH_NAME,
+    CORRIDOR_SWIMMER_UI_GRAPHS,
+    COUNTRY_FRANCE,
+    COUNTRY_MOROCCO,
+    COUNTRY_USA,
+    ENABLE_CORRIDOR_CHART_PREFETCH_ON_START,
+    ENABLE_EVENT_SWIMMERS_CACHE_PREFETCH_ON_START,
+    ENABLE_HEATMAP_CHART_PREFETCH_ON_START,
+    ENABLE_MEDIAN_VS_BEST_CHART_PREFETCH_ON_START,
+    ENABLE_NOTEBOOK_PREFETCH_ON_START,
+    ENABLE_PERSISTENT_GRAPH_CACHE,
+    ENABLE_RELAY_CHART_PREFETCH_ON_START,
+    ENABLE_SCOPE_PERFORMANCES_CACHE_PREFETCH_ON_START,
+    EVENT_SWIMMERS_EXPORT_PATH,
+    EXPORT_IMAGE_BASE64_TO_JSON,
+    GRAPH_EXPORT_PATH,
+    HEATMAP_CHART_PREFETCH_SWIMMER_LIMIT,
+    HEATMAP_DROPDOWN_SWIMMER_LIMIT,
+    MEDIAN_VS_BEST_CHART_PREFETCH_LIMIT,
+    RELAY_CHART_PREFETCH_LIMIT,
+    SCOPE_PERFORMANCES_PREFETCH_GRAPHS,
+    SCOPE_PERFORMANCES_PREFETCH_LIMIT,
+    USA_CORRIDOR_COLS,
+    USA_CORRIDOR_GRAPH_NAME,
+    USA_CORRIDOR_MIN_POINTS,
 )
-CORRIDOR_FR_TARGET_SWIMMER_GRAPHS: Tuple[str, ...] = (CORRIDOR_GRAPH_NAME,)
+
+# --- Constantes UI locales ---
+
 CHART_UPDATE_AFTER_FILTER_DEBOUNCE_SEC = 0.1
 SCOPE_PERFORMANCES_CACHE_MAX_ENTRIES = 64
-SCOPE_PERFORMANCES_PREFETCH_GRAPHS: Tuple[str, ...] = (
-    CORRIDOR_GLOBAL_GRAPH_NAME,
-    CORRIDOR_GRAPH_NAME,
-)
-ENABLE_CORRIDOR_CHART_PREFETCH_ON_START = True
-CORRIDOR_CHART_PREFETCH_LIMIT = int(
-    os.environ.get("PACING_CORRIDOR_CHART_PREFETCH_LIMIT", "96")
-)
-CORRIDOR_CHART_PREFETCH_GRAPH_NAMES: Tuple[str, ...] = (
-    CORRIDOR_GLOBAL_GRAPH_NAME,
-    CORRIDOR_GRAPH_NAME,
-)
-ENABLE_HEATMAP_CHART_PREFETCH_ON_START = True
-HEATMAP_CHART_PREFETCH_SWIMMER_LIMIT = int(
-    os.environ.get("PACING_HEATMAP_PREFETCH_SWIMMER_LIMIT", "32")
-)
-ENABLE_MEDIAN_VS_BEST_CHART_PREFETCH_ON_START = True
-MEDIAN_VS_BEST_CHART_PREFETCH_LIMIT = int(
-    os.environ.get("PACING_MEDIAN_VS_BEST_PREFETCH_LIMIT", "96")
-)
 SPLIT_COMPARISON_PREFETCH_GRAPH_NAMES: Tuple[str, ...] = (
     MEDIAN_VS_BEST_SWIMMER_GRAPH_NAME,
     MEDIAN_VS_TOP10_SWIMMER_GRAPH_NAME,
     MEDIAN_SPEED_BY_GENDER_GRAPH_NAME,
-)
-ENABLE_RELAY_CHART_PREFETCH_ON_START = True
-RELAY_CHART_PREFETCH_LIMIT = int(
-    os.environ.get("PACING_RELAY_CHART_PREFETCH_LIMIT", "48")
-)
-HEATMAP_DROPDOWN_SWIMMER_LIMIT = int(
-    os.environ.get("PACING_HEATMAP_DROPDOWN_SWIMMER_LIMIT", "400")
 )
 HEATMAP_SWIMMER_SEARCH_LABEL = "Rechercher un nageur (heatmap)"
 HEATMAP_SWIMMER_SEARCH_TOOLTIP = "Nom du nageur — toutes les performances Extranat"
@@ -286,31 +239,27 @@ class PacingDesktopApp:
 
     def _run_usaswimming_parquet_cache_worker(self) -> None:
         startup = self._startup_prefetch_ui
-        # Workers adaptés à la machine (voir services.machine_workers).
-        loader = UsaswimmingCompetitionsDataLoader()
-        available_years = loader.available_years()
-
         try:
-            if not available_years:
+            years = self.app.available_years_usa()
+            if not years:
                 self._advance_startup_parquet(
                     "Aucune source USA Swimming detectee",
                     units=1,
                     show_graph_progress=True,
                 )
                 return
-
             self._advance_startup_parquet(
                 "Verification du cache parquet",
                 units=0,
                 show_graph_progress=True,
             )
-            loader.build_parquet_cache(
-                progress_callback=lambda message: self._advance_startup_parquet(
+            self.app.ensure_usa_parquet_cache(
+                progress=lambda message: self._advance_startup_parquet(
                     message,
                     units=0,
                     show_graph_progress=True,
                 ),
-                progress_step_callback=lambda message, _index, _total: self._advance_startup_parquet(
+                progress_step=lambda message, _index, _total: self._advance_startup_parquet(
                     message,
                     units=1,
                     show_graph_progress=True,
@@ -323,15 +272,13 @@ class PacingDesktopApp:
     def _bootstrap_startup(self) -> None:
         """pipeline de démarrrage"""
         try:
-            self.df: pd.DataFrame = load_data()
+            self.app = PacingAppService()
+            self.df: pd.DataFrame = self.app.load_extranat()
             self.df_nav: pd.DataFrame = self.df.copy()
-            self.usaswimming_loader = UsaswimmingCompetitionsDataLoader(
-                base_dir=DEFAULT_USASWIMMING_COMPETITIONS_DIR,
-                parquet_dir=DEFAULT_USASWIMMING_PARQUET_DIR,
-            )
-            self.frmnatation_loader = FrmnatationHtmlResultsDataLoader(
-                base_dir=DEFAULT_FRMNATATION_HTML_RESULTS_DIR
-            )
+            # Compat : alias vers la façade (évite loaders directs dans le reste du fichier)
+            self.usaswimming_loader = self.app.usaswimming_loader
+            self.frmnatation_loader = self.app.frmnatation_loader
+            self.graph_svc = self.app.graph_svc
             self._frm_df_cache: Optional[pd.DataFrame] = None
             self._usa_events_cache: Optional[List[str]] = None
             self._usa_df_by_event: "OrderedDict[str, pd.DataFrame]" = OrderedDict()
@@ -440,7 +387,7 @@ class PacingDesktopApp:
                 max_workers=1,
                 thread_name_prefix="pacing-chart",
             )
-            self.graph_svc = ServiceGraphe()
+            self.graph_svc = self.app.graph_svc
 
             # Widgets Flet
             self.country_dd: ft.Dropdown
@@ -528,7 +475,7 @@ class PacingDesktopApp:
                 middle_total = 1
                 parquet_total = max(
                     1,
-                    len(UsaswimmingCompetitionsDataLoader().available_years()),
+                    len(self.app.available_years_usa()),
                 )
                 startup = TriplePrefetchProgress(
                     self.page,
@@ -1354,21 +1301,16 @@ class PacingDesktopApp:
         """
         options = self._notebook_prefetch_options(spec.key)
         render_key = self._notebook_service_render_key(spec)
-        graph_svc = ServiceGraphe()
-        try:
-            raw = graph_svc.build_figure_prefetch(spec, self.df, self.df_nav)
-            if raw is None:
-                return (spec, render_key, options, "no_figure", spec.name, None, None)
-            fig = unwrap_matplotlib_figure(raw)
-        except Exception as exc: 
-            return (spec, render_key, options, "error", spec.name, None, str(exc))
-
-        if fig is None:
-            return (spec, render_key, options, "no_figure", spec.name, None, None)
-
-        image_base64 = _figure_to_base64(fig)
-        plt.close(fig)
-        return (spec, render_key, options, "ok", spec.name, image_base64, None)
+        result = self.app.compute_notebook_prefetch(spec, self.df, self.df_nav)
+        return (
+            spec,
+            render_key,
+            options,
+            str(result.get("status", "error")),
+            str(result.get("chart_title") or spec.name),
+            result.get("image_base64"),
+            result.get("error"),
+        )
 
     def _prefetch_service_notebook_graphs_skip_existing(self) -> None:
         """Parcourt ``GRAPHES_NOTEBOOK`` : si le rendu est déjà dans le JSON, sinon génère et enregistre."""
@@ -1940,7 +1882,7 @@ class PacingDesktopApp:
             and self.selected_pool
         ):
             return []
-        return self.frmnatation_loader.list_swimmer_labels(
+        return self.app.morocco_swimmer_labels(
             stroke=self.selected_stroke,
             distance=int(self.selected_distance),
             pool=self.selected_pool,
@@ -1948,7 +1890,7 @@ class PacingDesktopApp:
         )
 
     def _moroccan_corridor_swimmer_labels_for_event(self, event: str) -> List[str]:
-        return self.frmnatation_loader.list_swimmer_labels(
+        return self.app.morocco_swimmer_labels(
             event=str(event).strip(),
             gender=self.selected_corridor_gender,
         )
@@ -2419,52 +2361,12 @@ class PacingDesktopApp:
     def _infer_frmnatation_year_of_birth(
         self, nom_event: str, nom_nageur: str
     ) -> Optional[int]:
-        """Déduit l'année de naissance la plus fréquente pour un nom sur l'épreuve."""
-        df = self.frmnatation_loader.load()
-        if df.empty:
-            return None
-        scoped = df[
-            (df["Event"].astype(str).str.strip() == str(nom_event).strip())
-            & (df["Name"].astype(str).str.strip() == str(nom_nageur).strip())
-        ]
-        if scoped.empty or "Year_of_birth" not in scoped.columns:
-            return None
-        yobs = pd.to_numeric(scoped["Year_of_birth"], errors="coerce").dropna()
-        if yobs.empty:
-            return None
-        return int(yobs.mode().iloc[0])
+        return self.app.infer_frmnatation_year_of_birth(nom_event, nom_nageur)
 
     def _infer_yob_from_df_scope(
         self, df_scope: pd.DataFrame, nom_event: str, nom_nageur: str
     ) -> Optional[int]:
-        """Année de naissance la plus fréquente pour un nom dans le périmètre courant."""
-        if df_scope.empty or "Event" not in df_scope.columns:
-            return None
-        scoped = df_scope[
-            df_scope["Event"].astype(str).str.strip() == str(nom_event).strip()
-        ]
-        if scoped.empty:
-            return None
-        target = str(nom_nageur).strip()
-        yobs: List[int] = []
-        for row in scoped.itertuples(index=False):
-            swimmers = getattr(row, "swimmer", None)
-            if not isinstance(swimmers, list):
-                continue
-            for sw in swimmers:
-                if not isinstance(sw, dict):
-                    continue
-                if str(sw.get("Name", "")).strip() != target:
-                    continue
-                try:
-                    yob = sw.get("Year_of_birth")
-                    if yob is not None and yob == yob:
-                        yobs.append(int(yob))
-                except (TypeError, ValueError):
-                    pass
-        if not yobs:
-            return None
-        return int(pd.Series(yobs).mode().iloc[0])
+        return self.app.infer_yob_from_df_scope(df_scope, nom_event, nom_nageur)
 
     def _frm_rows_for_corridor_swimmer(
         self,
@@ -2473,28 +2375,11 @@ class PacingDesktopApp:
         nom_nageur: str,
         year_of_birth: Optional[int],
     ) -> Tuple[Optional[str], Optional[int], pd.DataFrame]:
-        """Perfs FRM au format Extranat pour le tracé âge × temps."""
-        if not isinstance(nom_nageur, str) or not nom_nageur.strip():
-            return None, None, pd.DataFrame()
-        yob = year_of_birth
-        if yob is None:
-            yob = self._infer_frmnatation_year_of_birth(nom_event, nom_nageur.strip())
-        rows = self.frmnatation_loader.rows_for_swimmer(
+        return self.app.frm_rows_for_corridor_swimmer(
             nom_event=nom_event,
-            nom_nageur=nom_nageur.strip(),
-            year_of_birth=yob,
+            nom_nageur=nom_nageur,
+            year_of_birth=year_of_birth,
         )
-        if rows.empty and yob is not None:
-            rows = self.frmnatation_loader.rows_for_swimmer(
-                nom_event=nom_event,
-                nom_nageur=nom_nageur.strip(),
-                year_of_birth=None,
-            )
-            if not rows.empty and "Year_of_birth" in rows.columns:
-                yob_series = pd.to_numeric(rows["Year_of_birth"], errors="coerce")
-                if yob_series.notna().any():
-                    yob = int(yob_series.mode().iloc[0])
-        return nom_nageur.strip(), yob, rows
 
     def _build_corridor_chart_plot_kwargs(
         self,
@@ -2512,63 +2397,18 @@ class PacingDesktopApp:
         df_scope: Optional[pd.DataFrame] = None,
         nom_event: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Paramètres communs pour les couloirs âge × temps (nageur choisi + surcouche)."""
-        from services.corridor_data import CORRIDOR_FR_SWIMMER_COLOR, CORRIDOR_MA_SWIMMER_COLOR
-
-        primary_yob_resolved = primary_yob
-        if (
-            primary_yob_resolved is None
-            and isinstance(primary_name, str)
-            and primary_name.strip()
-        ):
-            if morocco_primary and nom_event:
-                primary_yob_resolved = self._infer_frmnatation_year_of_birth(
-                    nom_event, primary_name.strip()
-                )
-            elif not morocco_primary:
-                _, primary_yob_resolved = PacingDesktopApp._parse_corridor_swimmer_label(
-                    self.corridor_swimmer_dd.value
-                )
-                if (
-                    primary_yob_resolved is None
-                    and df_scope is not None
-                    and nom_event
-                ):
-                    primary_yob_resolved = self._infer_yob_from_df_scope(
-                        df_scope, nom_event, primary_name.strip()
-                    )
-
-        ov_yob = overlay_yob
-        if (
-            ov_yob is None
-            and isinstance(overlay_name, str)
-            and overlay_name.strip()
-            and overlay_df is not None
-            and not overlay_df.empty
-        ):
-            ev = (
-                str(overlay_df["Event"].iloc[0])
-                if "Event" in overlay_df.columns
-                else (nom_event or "")
-            )
-            if ev:
-                ov_yob = self._infer_frmnatation_year_of_birth(ev, overlay_name.strip())
-
-        g = self._normalize_gender_value(gender or self.selected_corridor_gender)
-        gender_filter = g if g in ("F", "M") else None
-        color = primary_color or (
-            CORRIDOR_MA_SWIMMER_COLOR if morocco_primary else CORRIDOR_FR_SWIMMER_COLOR
-        )
-        return build_corridor_chart_plot_kwargs(
-            gender_filter=gender_filter,
+        return self.app.build_corridor_plot_kwargs(
             primary_name=primary_name,
-            primary_yob=primary_yob_resolved,
+            primary_yob=primary_yob,
             primary_df=primary_df,
-            primary_label=primary_label,
-            primary_color=color,
             overlay_name=overlay_name,
-            overlay_yob=ov_yob,
+            overlay_yob=overlay_yob,
             overlay_df=overlay_df,
+            gender=gender or self.selected_corridor_gender,
+            primary_label=primary_label,
+            morocco_primary=morocco_primary,
+            df_scope=df_scope,
+            nom_event=nom_event,
         )
 
     def _moroccan_corridor_overlay_bundle(
@@ -2579,37 +2419,15 @@ class PacingDesktopApp:
         nom_event: str,
         usa_mode: bool = False,
     ) -> Tuple[Optional[str], Optional[int], pd.DataFrame]:
-        """Données FRM pour tracer le nageur marocain (sans mélanger au couloir de référence)."""
-        if not isinstance(ma_name, str) or not ma_name.strip():
-            return None, None, pd.DataFrame()
-        yob_int: Optional[int] = None
-        if ma_yob is not None:
-            try:
-                yob_int = int(ma_yob)
-            except (TypeError, ValueError):
-                yob_int = None
-        if yob_int is None:
-            yob_int = self._infer_frmnatation_year_of_birth(
-                str(nom_event).strip(), ma_name.strip()
-            )
-        if usa_mode:
-            rows = self.frmnatation_loader.usa_overlay_rows_for_swimmer(
-                nom_event=str(nom_event).strip(),
-                nom_nageur=ma_name.strip(),
-                year_of_birth=yob_int,
-            )
-        else:
-            rows = self.frmnatation_loader.rows_for_swimmer(
-                nom_event=nom_event,
-                nom_nageur=ma_name.strip(),
-                year_of_birth=yob_int,
-            )
-        return ma_name.strip(), yob_int, rows
+        return self.app.moroccan_corridor_overlay_bundle(
+            ma_name=ma_name,
+            ma_yob=ma_yob,
+            nom_event=nom_event,
+            usa_mode=usa_mode,
+        )
 
     def _get_frmnatation_nav_df(self) -> pd.DataFrame:
-        if self._frm_df_cache is None:
-            self._frm_df_cache = self.frmnatation_loader.load()
-        return self._frm_df_cache.copy()
+        return self.app.get_frmnatation_df()
 
     def _apply_nav_df_for_country(self) -> None:
         self._nav_combos_cache_key = None
@@ -2624,70 +2442,33 @@ class PacingDesktopApp:
         self._heatmap_dropdown_df_len = None
         self._registry_swimmer_names_cache = None
         self._scope_performances_cache.clear()
-        if self.selected_country == COUNTRY_MOROCCO:
-            self.df_nav = self._get_frmnatation_nav_df()
-        else:
-            self.df_nav = self.df.copy()
+        self.app.clear_scope_cache()
+        self.df_nav = self.app.nav_df_for_country(self.selected_country, self.df)
 
     def _available_categories_for_country(self) -> List[str]:
-        return list(GRAPH_CATEGORIES.keys())
+        return self.app.available_categories(self.selected_country)
 
     def _available_graphs_for_category(self, category: str) -> List[str]:
-        if self.selected_country == COUNTRY_USA and category == CORRIDOR_CATEGORY:
-            return [USA_CORRIDOR_GRAPH_NAME]
-        graphs = list(GRAPH_CATEGORIES.get(category, []))
-        return [
-            g
-            for g in graphs
-            if g not in (CORRIDOR_GLOBAL_GRAPH_NAME, USA_CORRIDOR_GRAPH_NAME)
-        ]
+        return self.app.available_graphs(self.selected_country, category)
 
     def _ensure_usa_events_loaded(self) -> List[str]:
-        if self._usa_events_cache is not None:
-            return self._usa_events_cache
-        with self._usa_events_load_lock:
-            if self._usa_events_cache is None:
-                self._usa_events_cache = self.usaswimming_loader.available_events()
-        return self._usa_events_cache
+        return self.app.list_usa_events()
 
     def _warm_usa_events_cache(self) -> None:
-        """Précharge la liste d'épreuves USA (thread de fond) pour un changement de pays plus fluide."""
+        """Précharge la liste d'épreuves USA (thread de fond)."""
         try:
             self._ensure_usa_events_loaded()
         except Exception:
             pass
 
     def _get_usa_corridor_df(self, event: str) -> pd.DataFrame:
-        event_key = str(event).strip()
-        cached = self._usa_df_by_event.get(event_key)
-        if cached is not None:
-            self._usa_df_by_event.move_to_end(event_key)
-            return cached
-        df_usa = self.usaswimming_loader.load(
-            columns=list(USA_CORRIDOR_COLS),
-            event=event_key,
-        )
-        self._usa_df_by_event[event_key] = df_usa
-        self._usa_df_by_event.move_to_end(event_key)
-        if len(self._usa_df_by_event) > 32:
-            self._usa_df_by_event.popitem(last=False)
-        return df_usa
+        return self.app.get_usa_corridor_df(event)
 
     def _usa_swimmer_names_for_event(self, event: str) -> List[str]:
         """Noms distincts USA Swimming pour une épreuve."""
-        gender = self._normalize_gender_value(self.selected_corridor_gender)
-        gender_key = gender if gender in ("F", "M") else "all"
-        cache_key = (str(event).strip(), gender_key)
-        cached = self._usa_names_by_event_key.get(cache_key)
-        if cached is not None:
-            return cached
-        loader_gender = gender if gender in ("F", "M") else None
-        names = self.usaswimming_loader.list_names_for_event(
-            str(event).strip(),
-            gender=loader_gender,
+        return self.app.usa_swimmer_names(
+            event, gender=self._normalize_gender_value(self.selected_corridor_gender)
         )
-        self._usa_names_by_event_key[cache_key] = names
-        return names
 
     def _corridor_swimmer_labels_for_current_scope(self) -> List[str]:
         """Liste des nageurs pour la recherche / dropdown (USA, France ou Maroc)."""
@@ -4224,7 +4005,7 @@ class PacingDesktopApp:
             self._scope_performances_cache.move_to_end(key)
             return cached
 
-        df_scope = _materialize_df_scope(
+        df_scope = self.app.materialize_scope(
             self.df_nav,
             graph_name,
             stroke,
@@ -4837,7 +4618,7 @@ class PacingDesktopApp:
         return False
 
     def _compute_usa_corridor_chart_payload(self, snap: Dict[str, Any]) -> Dict[str, Any]:
-        """prépare l'image du couloir USA pour l'interface"""
+        """prépare l'image du couloir USA pour l'interface (cache UI + façade métier)."""
         category = str(snap["category"])
         graph_name = str(snap["graph"])
         usa_event = snap.get("usa_event")
@@ -4862,114 +4643,10 @@ class PacingDesktopApp:
                 "error": None,
             }
 
-        if not usa_event:
-            return {
-                "render_key": render_key,
-                "category": category,
-                "graph_name": graph_name,
-                "country": COUNTRY_USA,
-                "usa_event": usa_event,
-                "status": "empty_scope",
-                "image_base64": None,
-                "chart_title": "Sélectionnez une épreuve USA Swimming",
-                "row_count": 0,
-                "error": None,
-            }
-
-        df_usa = self._get_usa_corridor_df(str(usa_event))
-        if df_usa.empty:
-            return {
-                "render_key": render_key,
-                "category": category,
-                "graph_name": graph_name,
-                "country": COUNTRY_USA,
-                "usa_event": usa_event,
-                "status": "empty_scope",
-                "image_base64": None,
-                "chart_title": f"Aucune donnée pour {usa_event}",
-                "row_count": 0,
-                "error": None,
-            }
-
-        spec = GRAPHES_PAR_KEY["performance_corridor_global_by_agegroup"]
-        gender = self._normalize_gender_value(snap.get("corridor_gender") or "all")
-        kwargs: Dict[str, Any] = {
-            "nom_event": str(usa_event),
-            "min_points": USA_CORRIDOR_MIN_POINTS,
-        }
-        if gender in ("F", "M"):
-            kwargs["gender"] = gender
-        swimmer_name = snap.get("corridor_name")
-        corridor_yob = snap.get("corridor_yob")
-        if isinstance(swimmer_name, str) and swimmer_name.strip():
-            kwargs["nom_nageur"] = swimmer_name.strip()
-            if corridor_yob is not None:
-                try:
-                    kwargs["year_of_birth"] = int(corridor_yob)
-                except (TypeError, ValueError):
-                    pass
-
-        ma_name = snap.get("moroccan_corridor_name")
-        ma_yob = snap.get("moroccan_corridor_yob")
-        _, ma_plot_yob, ma_overlay_df = self._moroccan_corridor_overlay_bundle(
-            ma_name=ma_name if isinstance(ma_name, str) else None,
-            ma_yob=ma_yob if ma_yob is not None else None,
-            nom_event=str(usa_event),
-            usa_mode=True,
-        )
-        if not ma_overlay_df.empty and isinstance(ma_name, str) and ma_name.strip():
-            kwargs["overlay_nageur"] = ma_name.strip()
-            if ma_plot_yob is not None:
-                kwargs["overlay_year_of_birth"] = int(ma_plot_yob)
-            kwargs["overlay_df"] = ma_overlay_df
-
-        fig, meta = self.graph_svc.build_figure(spec, df_usa, **kwargs)
-        chart_title = f"Couloir de performance global (AgeGroup) - {usa_event}"
-        if isinstance(meta, dict):
-            if meta.get("message") != "ok":
-                err = str(meta.get("message", ""))
-                if err:
-                    chart_title = err
-            elif meta.get("overlay_swimmer_message"):
-                chart_title = str(meta["overlay_swimmer_message"])
-            elif meta.get("swimmer_message"):
-                chart_title = str(meta["swimmer_message"])
-
-        if fig is None:
-            return {
-                "render_key": render_key,
-                "category": category,
-                "graph_name": graph_name,
-                "country": COUNTRY_USA,
-                "usa_event": usa_event,
-                "status": "no_figure",
-                "image_base64": None,
-                "chart_title": chart_title,
-                "row_count": len(df_usa),
-                "error": None,
-                "corridor_name": snap.get("corridor_name"),
-                "corridor_gender": snap.get("corridor_gender"),
-            }
-
-        image_base64 = _figure_to_base64(fig, dpi=CORRIDOR_CHART_PNG_DPI)
-        plt.close(fig)
-        return {
-            "render_key": render_key,
-            "category": category,
-            "graph_name": graph_name,
-            "country": COUNTRY_USA,
-            "usa_event": usa_event,
-            "status": "ok",
-            "image_base64": image_base64,
-            "chart_title": chart_title,
-            "row_count": len(df_usa),
-            "error": None,
-            "corridor_name": snap.get("corridor_name"),
-            "corridor_gender": snap.get("corridor_gender"),
-        }
+        return self.app.compute_usa_corridor_chart_payload(snap, render_key=render_key)
 
     def _compute_chart_payload(self, *, snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """point central qui produit tout ce qu'il faut pour afficher le graphique : à partir du snapshot courant"""
+        """Cache UI puis délégation métier à ``PacingAppService``."""
         snap = snapshot if snapshot is not None else self._chart_render_snapshot()
         if snap.get("country") == COUNTRY_USA:
             return self._compute_usa_corridor_chart_payload(snap)
@@ -5001,170 +4678,13 @@ class PacingDesktopApp:
                 "error": None,
             }
 
-        stroke_r, distance_r, pool_r = _resolve_scope_filters(
-            self.df_nav,
-            graph_name,
-            stroke,
-            distance,
-            pool,
+        return self.app.compute_chart_payload(
+            snap,
+            df_extranat=self.df,
+            df_nav=self.df_nav,
+            render_key=render_key,
+            needs_moroccan_overlay=self._needs_moroccan_corridor_swimmer_dd(),
         )
-        df_scope = self._get_cached_scope_performances(
-            graph_name=graph_name,
-            stroke=stroke_r,
-            distance=distance_r,
-            pool=pool_r,
-        )
-        country = str(snap.get("country") or COUNTRY_FRANCE)
-        is_morocco = country == COUNTRY_MOROCCO
-        corridor_ref_df = (
-            self._get_frmnatation_nav_df() if is_morocco else self.df
-        )
-
-        ma_name = snap.get("moroccan_corridor_name")
-        ma_yob = snap.get("moroccan_corridor_yob")
-        ma_plot_name: Optional[str] = None
-        ma_plot_yob: Optional[int] = None
-        ma_plot_df = pd.DataFrame()
-        primary_name = snap.get("corridor_name")
-        primary_yob = snap.get("corridor_yob")
-        primary_df = pd.DataFrame()
-        nom_event: Optional[str] = None
-        if stroke_r and distance_r is not None and pool_r:
-            nom_event = f"{int(distance_r)} {stroke_r} {pool_r}"
-
-        if (
-            is_morocco
-            and graph_name in CORRIDOR_SWIMMER_UI_GRAPHS
-            and nom_event
-            and isinstance(primary_name, str)
-            and primary_name.strip()
-        ):
-            primary_name, primary_yob, primary_df = self._frm_rows_for_corridor_swimmer(
-                nom_event=nom_event,
-                nom_nageur=primary_name,
-                year_of_birth=primary_yob if primary_yob is not None else None,
-            )
-        elif (
-            self._needs_moroccan_corridor_swimmer_dd()
-            and graph_name in CORRIDOR_SWIMMER_UI_GRAPHS
-            and nom_event
-        ):
-            ma_plot_name, ma_plot_yob, ma_plot_df = self._moroccan_corridor_overlay_bundle(
-                ma_name=ma_name if isinstance(ma_name, str) else None,
-                ma_yob=ma_yob if ma_yob is not None else None,
-                nom_event=nom_event,
-                usa_mode=False,
-            )
-        if df_scope.empty:
-            return {
-                "render_key": render_key,
-                "category": category,
-                "graph_name": graph_name,
-                "stroke": stroke_r,
-                "distance": distance_r,
-                "pool": pool_r,
-                "status": "empty_scope",
-                "image_base64": None,
-                "chart_title": graph_name,
-                "row_count": 0,
-                "error": None,
-                "corridor_name": snap.get("corridor_name"),
-                "corridor_yob": snap.get("corridor_yob"),
-                "deciles_name": snap.get("deciles_name"),
-                "deciles_yob": snap.get("deciles_yob"),
-                "heatmap": snap.get("heatmap"),
-                "pacing": snap.get("pacing"),
-                "chronos_sample_size": snap.get("chronos_sample_size"),
-            }
-
-        df_filtered = df_scope[df_scope["SwimTimeSeconds"].notna()].copy()
-        corridor_plot_kwargs = self._build_corridor_chart_plot_kwargs(
-            primary_name=primary_name if is_morocco else snap.get("corridor_name"),
-            primary_yob=primary_yob if is_morocco else snap.get("corridor_yob"),
-            primary_df=primary_df if not primary_df.empty else None,
-            overlay_name=None if is_morocco else ma_plot_name,
-            overlay_yob=None if is_morocco else ma_plot_yob,
-            overlay_df=ma_plot_df if not is_morocco and not ma_plot_df.empty else None,
-            gender=snap.get("corridor_gender"),
-            primary_label="Nageur cible (Maroc)" if is_morocco else "Nageur cible (France)",
-            morocco_primary=is_morocco,
-            df_scope=df_scope,
-            nom_event=nom_event,
-        )
-        fig, chart_title = self.graph_svc.desktop_build_figure(
-            graph_name,
-            df=corridor_ref_df,
-            df_scope=df_scope,
-            df_filtered=df_filtered,
-            stroke=stroke_r,
-            distance=distance_r,
-            pool=pool_r,
-            selected_distance=distance,
-            selected_chronos_sample_size=int(snap.get("chronos_sample_size", 5000)),
-            selected_pacing_swimmers=list(snap.get("pacing") or []),
-            selected_heatmap_swimmer=snap.get("heatmap"),
-            selected_corridor_swimmer_name=primary_name or snap.get("corridor_name"),
-            selected_corridor_swimmer_yob=primary_yob
-            if is_morocco
-            else snap.get("corridor_yob"),
-            moroccan_corridor_swimmer_name=ma_plot_name,
-            moroccan_corridor_swimmer_yob=ma_plot_yob,
-            moroccan_corridor_df=ma_plot_df if not ma_plot_df.empty else None,
-            corridor_plot_kwargs=corridor_plot_kwargs,
-            corridor_reference_df=corridor_ref_df,
-            event_counts_sort=str(
-                snap.get("event_counts_sort", EVENT_COUNTS_SORT_STROKE_DISTANCE)
-            ),
-        )
-        if fig is None:
-            return {
-                "render_key": render_key,
-                "category": category,
-                "graph_name": graph_name,
-                "stroke": stroke_r,
-                "distance": distance_r,
-                "pool": pool_r,
-                "status": "no_figure",
-                "image_base64": None,
-                "chart_title": chart_title,
-                "row_count": len(df_scope),
-                "error": None,
-                "corridor_name": snap.get("corridor_name"),
-                "corridor_yob": snap.get("corridor_yob"),
-                "deciles_name": snap.get("deciles_name"),
-                "deciles_yob": snap.get("deciles_yob"),
-                "heatmap": snap.get("heatmap"),
-                "pacing": snap.get("pacing"),
-                "chronos_sample_size": snap.get("chronos_sample_size"),
-            }
-
-        png_dpi = (
-            CORRIDOR_CHART_PNG_DPI
-            if graph_name in CORRIDOR_SWIMMER_UI_GRAPHS
-            else None
-        )
-        image_base64 = _figure_to_base64(fig, dpi=png_dpi)
-        plt.close(fig)
-        return {
-            "render_key": render_key,
-            "category": category,
-            "graph_name": graph_name,
-            "stroke": stroke_r,
-            "distance": distance_r,
-            "pool": pool_r,
-            "status": "ok",
-            "image_base64": image_base64,
-            "chart_title": chart_title,
-            "row_count": len(df_scope),
-            "error": None,
-            "corridor_name": snap.get("corridor_name"),
-            "corridor_yob": snap.get("corridor_yob"),
-            "deciles_name": snap.get("deciles_name"),
-            "deciles_yob": snap.get("deciles_yob"),
-            "heatmap": snap.get("heatmap"),
-            "pacing": snap.get("pacing"),
-            "chronos_sample_size": snap.get("chronos_sample_size"),
-        }
 
     def _register_chart_payload(self, payload: Dict[str, Any]) -> None:
         status = str(payload.get("status", ""))

@@ -26,12 +26,12 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from services.normalize import normalize_gender_code
+from services.paths import FRMNATATION_PROCESSED_DIR
+
 # --- Chemins par défaut ---
 
-_PROJECT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_FRMNATATION_HTML_RESULTS_DIR = (
-    _PROJECT_DIR / "data" / "processed" / "frmnatation" / "html_results"
-)
+DEFAULT_FRMNATATION_HTML_RESULTS_DIR = FRMNATATION_PROCESSED_DIR
 
 
 def _normalize_gender(value: Any) -> str:
@@ -46,14 +46,8 @@ def _normalize_gender(value: Any) -> str:
     Returns:
         str: ``"F"``, ``"M"`` ou ``"all"`` si le genre est inconnu ou absent.
     """
-    if value is None:
-        return "all"
-    s = str(value).strip().upper()
-    if s in ("F", "FEMME", "FEMALE", "W"):
-        return "F"
-    if s in ("M", "H", "HOMME", "MALE", "MAN"):
-        return "M"
-    return "all"
+    code = normalize_gender_code(value)
+    return code if code is not None else "all"
 
 
 def _swimmer_label(name: str, yob: Any) -> str:

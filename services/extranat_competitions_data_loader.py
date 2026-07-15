@@ -25,12 +25,11 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 import pandas as pd
 
+from services.paths import EXTRANAT_PROCESSED_DIR
+
 # --- Chemins par défaut ---
 
-_PROJECT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_EXTRANAT_COMPETITIONS_DIR = (
-    _PROJECT_DIR / "data" / "processed" / "extranat" / "competitions_per_type"
-)
+DEFAULT_EXTRANAT_COMPETITIONS_DIR = EXTRANAT_PROCESSED_DIR
 
 
 class ExtranatCompetitionsDataLoader:

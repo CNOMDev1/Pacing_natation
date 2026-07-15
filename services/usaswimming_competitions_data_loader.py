@@ -25,10 +25,10 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 import pandas as pd
 
 from services.machine_workers import recommended_cache_build_workers
+from services.paths import USASWIMMING_PARQUET_DIR, USASWIMMING_PROCESSED_DIR
 
-_PROJECT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_USASWIMMING_COMPETITIONS_DIR = (_PROJECT_DIR / "data" / "processed" / "usaswimming")
-DEFAULT_USASWIMMING_PARQUET_DIR = (DEFAULT_USASWIMMING_COMPETITIONS_DIR / "_parquet_cache")
+DEFAULT_USASWIMMING_COMPETITIONS_DIR = USASWIMMING_PROCESSED_DIR
+DEFAULT_USASWIMMING_PARQUET_DIR = USASWIMMING_PARQUET_DIR
 
 
 def _default_parquet_engine() -> str:
