@@ -17,11 +17,11 @@ Pacing permet d’explorer des chronos et des splits, de comparer des nageurs et
 | Couche | Modules |
 |--------|---------|
 | Config / domaine | `paths.py`, `settings.py`, `normalize.py`, `scope.py`, `graph_catalog.py` |
-| Données / ingestion | `*_data_loader.py`, `extranat_service.py`, `extranat_http.py`, `extranat_parse.py` |
+| Données / ingestion | `*_data_loader.py`, `extranat_service.py`, `extranat_http.py`, `extranat_parse.py`, `extranat_results.py`, `extranat_competitions.py` |
 | Analytics | `corridor_data.py`, `graph_compute.py` |
-| Rendu | `rendering/`, `graph_desktop.py` |
-| Application | `app_service.py` (façade UI), `use_cases.py`, `graph_service.py` |
-| Présentation | `desktop_flet.py` + mixins prefetch / registry / corridor-swimmer → `PacingAppService` seul |
+| Rendu / plots | `rendering/`, `graph_plots.py` (`GraphPlotsMixin`), `graph_desktop.py` |
+| Application | `app_service.py` (façade UI), `use_cases.py`, `graph_service.py` (orchestration) |
+| Présentation | `desktop_flet.py` + mixins (prefetch, registry, corridor, heatmap, handlers) → `PacingAppService` |
 
 ## Tests
 

@@ -668,6 +668,14 @@ def _preprocess_json_directory(
             print("  [WARN] racine JSON non objet, ignore.")
             continue
 
+        # Validation schéma Pydantic (non bloquante : log si échec)
+        try:
+            from app.models.frmn_models import FrmCompetition
+
+            FrmCompetition.model_validate(raw)
+        except Exception as exc:  # noqa: BLE001 — validation best-effort
+            print(f"  [WARN] validation Pydantic FRM {input_path.name}: {exc}")
+
         competition = load_competition_from_raw(raw)
         cleaned, n_before, n_after, n_names = preprocess_competition(competition)
         total_before += n_before

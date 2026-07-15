@@ -177,6 +177,13 @@ class FrmnatationHtmlResultsDataLoader:
             return []
         if not isinstance(comp, dict):
             return []
+        # Validation schéma Pydantic (best-effort, non bloquante)
+        try:
+            from app.models.frmn_models import FrmCompetition
+
+            FrmCompetition.model_validate(comp)
+        except Exception:
+            pass
         return self._build_rows_from_comp(comp)
 
     def load(self) -> pd.DataFrame:

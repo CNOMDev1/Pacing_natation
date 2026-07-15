@@ -388,6 +388,13 @@ def save_data_by_competition(df: pd.DataFrame, append: bool = False) -> None:
         else:
             combined = group
         combined = combined.drop(columns=["_year"], errors="ignore")
+        # Validation schéma Pydantic avant écriture (best-effort)
+        try:
+            from app.models.usaswimming_models import NageursList
+
+            NageursList.model_validate(combined.to_dict(orient="records"))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARN] validation Pydantic USA {fname}: {exc}")
         combined.to_json(path, orient="records", date_format="iso", force_ascii=False, indent=2)
     print(f"Données enregistrées par année et compétition dans {USASWIMMING_DATA_DIR}")
 

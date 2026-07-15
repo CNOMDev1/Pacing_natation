@@ -480,6 +480,14 @@ def clean_file(input_path: Path, output_path: Path) -> None:
     if not isinstance(data, list):
         raise ValueError(f"Le fichier {input_path} ne contient pas une liste JSON.")
 
+    # Validation schéma Pydantic (non bloquante : log si échec)
+    try:
+        from app.models.usaswimming_models import NageursList
+
+        NageursList.model_validate(data)
+    except Exception as exc:  # noqa: BLE001 — validation best-effort
+        print(f"  [WARN] validation Pydantic USA {input_path.name}: {exc}")
+
     cleaned_performances: List[Dict[str, Any]] = []
     for rec in data:
         try:
