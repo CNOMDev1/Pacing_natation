@@ -16,17 +16,18 @@ from services.corridor_data import (
     CORRIDOR_CHART_STYLE_VERSION,
     CORRIDOR_FR_SWIMMER_COLOR,
     CORRIDOR_MA_SWIMMER_COLOR,
-    build_corridor_chart_plot_kwargs,
 )
 from services.frmnatation_html_results_data_loader import (
     DEFAULT_FRMNATATION_HTML_RESULTS_DIR,
     FrmnatationHtmlResultsDataLoader,
 )
-from services.graph_service import (
+from services.graph_catalog import (
     EVENT_COUNTS_SORT_STROKE_DISTANCE,
     GRAPH_CATEGORIES,
     GRAPHES_NOTEBOOK,
     GRAPHES_PAR_KEY,
+)
+from services.graph_service import (
     ServiceGraphe,
     unwrap_matplotlib_figure,
 )
@@ -38,6 +39,7 @@ from services.paths import (
     USASWIMMING_PROCESSED_DIR,
 )
 from services.scope import materialize_df_scope, resolve_scope_filters
+from services.use_cases import BuildCorridorChart, PrefetchGraphs
 from services.usaswimming_competitions_data_loader import (
     UsaswimmingCompetitionsDataLoader,
 )
@@ -118,6 +120,8 @@ class PacingAppService:
             None
         """
         self.graph_svc = ServiceGraphe()
+        self.corridor_charts = BuildCorridorChart(self.graph_svc)
+        self.prefetch_graphs = PrefetchGraphs(self.graph_svc)
         self.usaswimming_loader = UsaswimmingCompetitionsDataLoader(
             base_dir=USASWIMMING_PROCESSED_DIR,
             parquet_dir=USASWIMMING_PARQUET_DIR,
@@ -630,7 +634,7 @@ class PacingAppService:
         color = (
             CORRIDOR_MA_SWIMMER_COLOR if morocco_primary else CORRIDOR_FR_SWIMMER_COLOR
         )
-        return build_corridor_chart_plot_kwargs(
+        return self.corridor_charts.build_plot_kwargs(
             gender_filter=gender_filter,
             primary_name=primary_name,
             primary_yob=primary_yob_resolved,

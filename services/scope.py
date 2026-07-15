@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from services.graph_service import (
+from services.graph_catalog import (
     SCOPE_GENDER_FILTER_GRAPHS,
     SCOPE_NO_FILTER_GRAPHS,
     SCOPE_NO_STROKE_GRAPHS,

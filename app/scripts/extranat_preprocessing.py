@@ -1173,6 +1173,14 @@ def clean_extranat_directory() -> None:
             print(f"  [WARN] {relative} ne contient pas un objet JSON racine, ignoré.")
             continue
 
+        # Validation schéma Pydantic (non bloquante : log si échec)
+        try:
+            from app.models.extranat_models import CompetitionExtranat
+
+            CompetitionExtranat.model_validate(raw)
+        except Exception as exc:  # noqa: BLE001 — validation best-effort
+            print(f"  [WARN] validation Pydantic {relative}: {exc}")
+
         default_gender = infer_extranat_gender_from_filename(input_path)
         cleaned = clean_extranat_competition(raw, default_gender=default_gender)
         output_path.parent.mkdir(parents=True, exist_ok=True)

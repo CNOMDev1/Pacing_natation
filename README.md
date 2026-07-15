@@ -16,25 +16,18 @@ Pacing permet d’explorer des chronos et des splits, de comparer des nageurs et
 
 | Couche | Modules |
 |--------|---------|
-| Config | `paths.py`, `settings.py` (`PACING_*`) |
-| Domaine | `normalize.py`, `stroke_labels.py` |
-| Données | `*_data_loader.py` |
-| Ingestion | `*_service.py`, `app/scripts/*` |
-| Analytics | `corridor_data.py`, `graph_compute.py` (sans matplotlib) |
-| Rendu | `rendering/` (matplotlib) |
-| Application | `graph_service.py`, `use_cases.py` |
-| UI / API | `app/interfaces/`, `app/routers/` |
-
-## Architecture (services/)
-
-| Couche | Modules |
-|--------|---------|
-| Config / domaine | `paths.py`, `settings.py`, `normalize.py`, `scope.py` |
-| Données / ingestion | `*_data_loader.py`, `*_service.py` |
+| Config / domaine | `paths.py`, `settings.py`, `normalize.py`, `scope.py`, `graph_catalog.py` |
+| Données / ingestion | `*_data_loader.py`, `extranat_service.py`, `extranat_http.py`, `extranat_parse.py` |
 | Analytics | `corridor_data.py`, `graph_compute.py` |
-| Rendu | `rendering/` |
-| Application | `graph_service.py`, **`app_service.py`** (façade UI) |
-| Présentation | `app/interfaces/desktop_flet.py` → appelle uniquement `PacingAppService` |
+| Rendu | `rendering/`, `graph_desktop.py` |
+| Application | `app_service.py` (façade UI), `use_cases.py`, `graph_service.py` |
+| Présentation | `desktop_flet.py` + mixins prefetch / registry / corridor-swimmer → `PacingAppService` seul |
+
+## Tests
+
+```bash
+PYTHONPATH=. pytest tests/ -q
+```
 
 ## Prérequis
 
