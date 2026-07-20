@@ -61,13 +61,15 @@ playwright install chromium
 
 Toutes les commandes ci-dessous s’exécutent depuis la racine du projet.
 
-### Interfaces
+### API FastAPI
 
-| Interface | Commande |
-|-----------|----------|
-| Desktop | `python app/interfaces/desktop_flet.py` |
-| API | `uvicorn app.main:app --reload` |
-| Notebooks | `jupyter notebook app/visualization/` |
+```bash
+uvicorn app.main:app --reload
+```
+
+- Doc interactive Swagger : [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+- Prototype métier : `/api/v1/pays`, `/api/v1/nageur/recherche`, `/api/v1/couloir`, `/api/v1/comparaison`
+- Contrat JSON : `docs/api_contract.md`
 
 ### Scripts et services (`services/`)
 
