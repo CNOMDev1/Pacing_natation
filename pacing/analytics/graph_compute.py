@@ -15,6 +15,7 @@ from pacing.analytics.corridor_data import (
     CORRIDOR_FR_SWIMMER_COLOR,
     CORRIDOR_MA_SWIMMER_COLOR,
     CorridorSwimmerSpec,
+    corridor_norm_name,
     parse_event_distance_m,
 )
 from pacing.domain.stroke_labels import (

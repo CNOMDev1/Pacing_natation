@@ -24,6 +24,8 @@ dependencies = [
     "seaborn>=0.13.0",
     "flet>=0.24.0",
     "flet-desktop>=0.24.0",
+    "nicegui>=2.0.0",
+    "httpx>=0.27.0",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +40,7 @@ dev = [
 
 [project.scripts]
 pacing-desktop = "pacing.ui.desktop.app:run"
+pacing-web = "pacing.ui.web.app:run"
 
 [tool.setuptools.packages.find]
 include = ["pacing*"]
