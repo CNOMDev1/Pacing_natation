@@ -10,6 +10,7 @@
 # Lancer :
 #   Desktop   : python -m pacing.ui.desktop.app
 #   Web       : python -m pacing.ui.web.app   (API FastAPI doit tourner)
+#   DearPyGUI : python -m pacing.ui.dearpygui.app  (API FastAPI doit tourner)
 #   API       : uvicorn pacing.api.main:app --reload
 #   Notebooks : jupyter notebook app/visualization/
 
@@ -45,6 +46,9 @@ flet-desktop>=0.24.0
 # --- Interface web NiceGUI (client API) ---
 nicegui>=2.0.0
 httpx>=0.27.0
+
+# --- Prototype desktop DearPyGUI (client API) ---
+dearpygui>=1.11.0
 
 # --- Notebooks Jupyter ---
 jupyter>=1.0.0

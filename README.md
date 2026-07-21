@@ -18,7 +18,7 @@ pacing/
 ├── rendering/     # Matplotlib pur
 ├── application/   # Use cases (BuildCorridorChart, PrefetchGraphs, ServiceGraphe)
 ├── api/           # FastAPI
-└── ui/            # Desktop Flet + web NiceGUI + widgets
+└── ui/            # Desktop Flet + web NiceGUI + DearPyGUI + widgets
 ```
 
 Principe : **calcul sans matplotlib**, **rendu sans logique métier lourde**, **UI sans scraping**.
@@ -66,8 +66,9 @@ playwright install chromium
 
 | Interface | Commande |
 |-----------|----------|
-| Desktop | `python -m pacing.ui.desktop.app` (ou `pacing-desktop` / `python app/interfaces/desktop_flet.py`) |
+| Desktop (Flet) | `python -m pacing.ui.desktop.app` (ou `pacing-desktop`) |
 | Web (NiceGUI) | `python -m pacing.ui.web.app` (ou `pacing-web`) — API FastAPI requise |
+| Desktop (DearPyGUI) | `python -m pacing.ui.dearpygui.app` (ou `pacing-dpg`) — API FastAPI requise |
 | API | `uvicorn pacing.api.main:app --reload` (ou `uvicorn app.main:app --reload`) |
 | Notebooks | `jupyter notebook app/visualization/` |
 
