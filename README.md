@@ -25,6 +25,12 @@ Principe : **calcul sans matplotlib**, **rendu sans logique métier lourde**, **
 
 Les chemins `app/` et `services/` restent disponibles via des **shims de compatibilité**.
 
+## Tests
+
+```bash
+PYTHONPATH=. pytest tests/ -q
+```
+
 ## Prérequis
 
 - **Python 3.10+**
@@ -43,6 +49,17 @@ pip install -e .
 playwright install chromium
 ```
 
+## Dépendances principales
+
+| Catégorie | Paquets | Usage |
+|-----------|---------|-------|
+| API | `fastapi`, `uvicorn`, `pydantic` | Serveur REST |
+| Scraping | `requests`, `beautifulsoup4`, `playwright` | Extranat, Omega, USA Swimming |
+| Données | `pandas`, `pyarrow`, `numpy` | DataFrames, cache Parquet |
+| Visualisation | `matplotlib`, `seaborn` | Graphiques |
+| Interfaces | `flet` | Application desktop |
+| Notebooks | `jupyter`, `notebook`, `ipykernel` | Analyses dans `app/visualization/` |
+
 ## Utilisation
 
 ### Interfaces
@@ -52,6 +69,10 @@ playwright install chromium
 | Desktop | `python -m pacing.ui.desktop.app` (ou `pacing-desktop` / `python app/interfaces/desktop_flet.py`) |
 | API | `uvicorn pacing.api.main:app --reload` (ou `uvicorn app.main:app --reload`) |
 | Notebooks | `jupyter notebook app/visualization/` |
+
+- Doc interactive Swagger : [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+- Prototype métier : `/api/v1/pays`, `/api/v1/nageur/recherche`, `/api/v1/couloir`, `/api/v1/comparaison`
+- Contrat JSON : `docs/api_contract.md`
 
 ### Ingestion & ETL
 
@@ -76,7 +97,7 @@ Exemples : `PACING_CORRIDOR_CHART_PREFETCH_LIMIT`, `PACING_HEATMAP_PREFETCH_SWIM
 Pacing/
 ├── pacing/               # Package applicatif (architecture en couches)
 ├── app/                  # Shims + notebooks visualization/
-├── services/             # Shims + secrets locaux (bearer_token, state.json)
+├── services/             # Shims + cœur API (`api_core`) + secrets locaux
 ├── data/                 # raw / processed / exports (hors git)
 ├── docs/
 ├── pyproject.toml
