@@ -6,28 +6,24 @@ Application d’analyse du **pacing** et des performances en natation, à partir
 
 Pacing permet d’explorer des chronos et des splits, de comparer des nageurs et de visualiser le rythme de course (pacing, couloirs de performance, distributions de temps, etc.) sur des compétitions françaises, marocaines et américaines.
 
-## Fonctionnalités principales
+## Architecture
 
-- **Interface desktop (Flet)** : recherche des nageurs selon le nom, le prénom ou l’année de naissance, filtres par épreuve, graphiques interactifs, couloirs de performance.
-- **API FastAPI** (`app/main.py`) : endpoints pour Extranat, Omega et USA Swimming.
-- **Notebooks Jupyter** : analyses et graphiques reproductibles (`app/visualization/`).
-
-## Architecture (services/)
-
-| Couche | Modules |
-|--------|---------|
-| Config / domaine | `paths.py`, `settings.py`, `normalize.py`, `scope.py`, `graph_catalog.py` |
-| Données / ingestion | `*_data_loader.py`, `extranat_service.py`, `extranat_http.py`, `extranat_parse.py`, `extranat_results.py`, `extranat_competitions.py` |
-| Analytics | `corridor_data.py`, `graph_compute.py` |
-| Rendu / plots | `rendering/`, `graph_plots.py` (`GraphPlotsMixin`), `graph_desktop.py` |
-| Application | `app_service.py` (façade UI), `use_cases.py`, `graph_service.py` (orchestration) |
-| Présentation | `desktop_flet.py` + mixins (prefetch, registry, corridor, heatmap, handlers) → `PacingAppService` |
-
-## Tests
-
-```bash
-PYTHONPATH=. pytest tests/ -q
 ```
+pacing/
+├── config/        # Chemins + settings (PACING_*)
+├── domain/        # Normalisation, labels nage, schémas
+├── ingestion/     # Scraping + ETL par source
+├── data/          # Loaders / repositories
+├── analytics/     # Calculs purs (sans matplotlib)
+├── rendering/     # Matplotlib pur
+├── application/   # Use cases (BuildCorridorChart, PrefetchGraphs, ServiceGraphe)
+├── api/           # FastAPI
+└── ui/            # Desktop Flet + widgets
+```
+
+Principe : **calcul sans matplotlib**, **rendu sans logique métier lourde**, **UI sans scraping**.
+
+Les chemins `app/` et `services/` restent disponibles via des **shims de compatibilité**.
 
 ## Prérequis
 
@@ -42,75 +38,47 @@ PYTHONPATH=. pytest tests/ -q
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e .
+# ou : pip install -r requirements.txt
 playwright install chromium
 ```
 
-## Dépendances principales
-
-| Catégorie | Paquets | Usage |
-|-----------|---------|-------|
-| API | `fastapi`, `uvicorn`, `pydantic` | Serveur REST |
-| Scraping | `requests`, `beautifulsoup4`, `playwright` | Extranat, Omega, USA Swimming |
-| Données | `pandas`, `pyarrow`, `numpy` | DataFrames, cache Parquet |
-| Visualisation | `matplotlib`, `seaborn` | Graphiques (`services/rendering`, `graph_service`) |
-| Interfaces | `flet` | Application desktop |
-| Notebooks | `jupyter`, `notebook`, `ipykernel` | Analyses dans `app/visualization/` |
-
 ## Utilisation
-
-Toutes les commandes ci-dessous s’exécutent depuis la racine du projet.
 
 ### Interfaces
 
 | Interface | Commande |
 |-----------|----------|
-| Desktop | `python app/interfaces/desktop_flet.py` |
-| API | `uvicorn app.main:app --reload` |
+| Desktop | `python -m pacing.ui.desktop.app` (ou `pacing-desktop` / `python app/interfaces/desktop_flet.py`) |
+| API | `uvicorn pacing.api.main:app --reload` (ou `uvicorn app.main:app --reload`) |
 | Notebooks | `jupyter notebook app/visualization/` |
 
-### Scripts et services (`services/`)
+### Ingestion & ETL
 
-| Script | Commande | Rôle |
-|--------|----------|------|
-| Cache Parquet USA Swimming | `python services/build_usaswimming_parquet_cache.py [--years 2023 2024]` | Convertit les JSON annuels en Parquet |
-| Scraping Extranat | `python services/extranat_service.py` | Récupère les résultats depuis extranat.ffnatation.fr |
-| Scraping Omega | `python -m services.omega_service` | Télécharge les PDF « Total Ranking » depuis omegatiming.com |
-| Scraping USA Swimming | `python services/usaswimming_service.py` | Interroge l’API Sisense (token requis) |
+| Script | Commande |
+|--------|----------|
+| Scraping Extranat | `python -m pacing.ingestion.extranat.service` |
+| Scraping Omega | `python -m pacing.ingestion.omega.service` |
+| Scraping USA Swimming | `python -m pacing.ingestion.usaswimming.service` |
+| Token USA Swimming | `python -m pacing.ingestion.usaswimming.get_token` |
+| Prétraitement Extranat | `python -m pacing.ingestion.extranat.preprocessing` |
+| Prétraitement FRM | `python -m pacing.ingestion.frmnatation.preprocessing` |
+| Prétraitement USA | `python -m pacing.ingestion.usaswimming.preprocessing` |
+| Cache Parquet USA | via `UsaswimmingCompetitionsDataLoader.build_parquet_cache()` |
 
-Les modules `services/*_data_loader.py` sont importés par les interfaces ; ils ne sont en général pas lancés directement.
+### Settings prefetch (`PACING_*`)
+
+Exemples : `PACING_CORRIDOR_CHART_PREFETCH_LIMIT`, `PACING_HEATMAP_PREFETCH_SWIMMER_LIMIT`, `PACING_ENABLE_CORRIDOR_CHART_PREFETCH`. Voir `pacing/config/settings.py`.
 
 ## Structure des dossiers
 
 ```
 Pacing/
-├── app/
-│   ├── interfaces/       # UI desktop (Flet) et helpers
-│   ├── models/           # Modèles Pydantic / structures de données
-│   ├── routers/          # Routes FastAPI
-│   ├── scripts/          # Prétraitements (Extranat, FRM Natation, USA Swimming)
-│   ├── visualization/    # Notebooks Jupyter
-│   └── main.py           # Point d'entrée FastAPI
-├── data/
-│   ├── raw/              # Données brutes (scraping)
-│   │   ├── extranat/
-│   │   ├── omega/        # PDFs par année sous pdfs/
-│   │   └── usaswimming/
-│   └── processed/        # JSON/HTML normalisés, caches Parquet
-│       ├── extranat/competitions_per_type/
-│       ├── frmnatation/html_results/   # Résultats marocains (HTML → JSON)
-│       └── usaswimming/                # JSON par année + _parquet_cache/
-├── docs/                 # Rapports, captures d'écran
-├── services/             # Cœur métier : scraping, loaders, graphiques, couloirs
-│   ├── corridor_data.py              # Préparation des couloirs de performance
-│   ├── graph_service.py              # Tous les graphiques matplotlib
-│   ├── *_data_loader.py              # Chargement JSON/Parquet → DataFrame
-│   ├── extranat_service.py           # Scraping Extranat
-│   ├── omega_service.py              # Scraping Omega (PDF)
-│   └── usaswimming_service.py        # Scraping API USA Swimming
+├── pacing/               # Package applicatif (architecture en couches)
+├── app/                  # Shims + notebooks visualization/
+├── services/             # Shims + secrets locaux (bearer_token, state.json)
+├── data/                 # raw / processed / exports (hors git)
+├── docs/
+├── pyproject.toml
 └── requirements.txt
 ```
-
-## Captures d'écran
-
-Captures déposées dans [`docs/screenshots/`](docs/screenshots/) (desktop, notebooks).
