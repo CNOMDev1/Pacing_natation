@@ -9,6 +9,7 @@
 #
 # Lancer :
 #   Desktop   : python -m pacing.ui.desktop.app
+#   Web       : python -m pacing.ui.web.app   (API FastAPI doit tourner)
 #   API       : uvicorn pacing.api.main:app --reload
 #   Notebooks : jupyter notebook app/visualization/
 
@@ -40,6 +41,10 @@ seaborn>=0.13.0
 # --- Interface desktop Flet ---
 flet>=0.24.0
 flet-desktop>=0.24.0
+
+# --- Interface web NiceGUI (client API) ---
+nicegui>=2.0.0
+httpx>=0.27.0
 
 # --- Notebooks Jupyter ---
 jupyter>=1.0.0
