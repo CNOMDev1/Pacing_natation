@@ -1,13 +1,15 @@
-# Installation (à la racine du projet Pacing/) :
+# Installation (à la racine du dépôt Pacing/) :
 #   python -m venv .venv
-#   source .venv/bin/activate          
-#   pip install -r requirements.txt
+#   source .venv/bin/activate
+#   pip install -e .          # recommandé (pyproject.toml)
+#   # ou : pip install -r requirements.txt
 #   playwright install chromium
 #
 # Python 3.10+ requis.
 #
 # Lancer :
-#   Desktop   : python app/interfaces/desktop_flet.py
+#   Desktop   : python -m pacing.ui.desktop.app
+#   API       : uvicorn pacing.api.main:app --reload
 #   Notebooks : jupyter notebook app/visualization/
 
 # --- API FastAPI ---
@@ -19,7 +21,7 @@ pydantic>=2.0.0
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 
-# --- Extraction PDF Omega via Claude (app/scripts/omega_pdf_to_json_claude.py) ---
+# --- Extraction PDF Omega via Claude ---
 anthropic>=0.40.0
 python-dotenv>=1.0.0
 
@@ -31,15 +33,15 @@ pandas>=2.0.0
 pyarrow>=14.0.0
 numpy>=1.24.0
 
-# --- Visualisation (graph_service, Flet, notebooks) ---
+# --- Visualisation ---
 matplotlib>=3.7.0
 seaborn>=0.13.0
 
-# --- Interface desktop Flet (ft.run) ---
+# --- Interface desktop Flet ---
 flet>=0.24.0
 flet-desktop>=0.24.0
 
-# --- Notebooks Jupyter (app/visualization/*.ipynb) ---
+# --- Notebooks Jupyter ---
 jupyter>=1.0.0
 notebook>=7.0.0
 ipykernel>=6.25.0

@@ -1,10 +1,5 @@
-"""Package services : couche métier Pacing.
+"""Package services : shims de compatibilité vers ``pacing.*``.
 
-Organisation :
-- ``paths`` / ``settings`` / ``normalize`` / ``scope`` — config et domaine
-- ``*_data_loader`` / ``*_service`` — données et ingestion
-- ``corridor_data`` / ``graph_compute`` — analytics (sans matplotlib)
-- ``rendering`` — tracé matplotlib
-- ``graph_service`` — orchestration graphes
-- ``app_service`` — façade application pour l'UI desktop
+Préférer les imports directs ``from pacing.…``. Les modules ici
+réexportent les symboles pour ne pas casser le code existant.
 """
