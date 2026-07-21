@@ -1,1 +1,1 @@
-# Routers API métier (Pacing) + shims vers pacing.api.routers
+# Router API métier (Pacing) — ``app.routers.pacing``

@@ -2,22 +2,18 @@
 from fastapi import FastAPI
 
 from app.routers import pacing
-from pacing.api.routers import extranat, omega, usaswimming
 
 app = FastAPI(
     title="Pacing",
     version="0.2.0",
     description=(
-        "API Pacing métier (couloir, recherche nageur, référentiels) "
-        "et ingestion (Omega, Extranat, USA Swimming). "
+        "API Pacing métier (couloir, recherche nageur, référentiels). "
         "Doc interactive : /docs"
     ),
+    swagger_ui_parameters={"defaultModelsExpandDepth": -1},
 )
 
 app.include_router(pacing.router)
-app.include_router(omega.router)
-app.include_router(extranat.router)
-app.include_router(usaswimming.router)
 
 
 @app.get("/")

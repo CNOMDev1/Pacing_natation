@@ -1,1 +1,1 @@
-"""Package UI Pacing (desktop Flet, web NiceGUI, widgets)."""
+"""Package UI Pacing (desktop Flet, web NiceGUI, DearPyGUI, widgets)."""
