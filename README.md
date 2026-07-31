@@ -69,6 +69,7 @@ playwright install chromium
 | Desktop (Flet) | `python -m pacing.ui.desktop.app` (ou `pacing-desktop`) |
 | Web (NiceGUI) | `python -m pacing.ui.web.app` (ou `pacing-web`) — API FastAPI requise |
 | Desktop (DearPyGUI) | `python -m pacing.ui.dearpygui.app` (ou `pacing-dpg`) — API FastAPI requise |
+| iPad / macOS (SwiftUI) | `open ios/PacingApp/PacingApp.xcodeproj` — voir `docs/ios_mac_exploration_5_5.md` |
 | API | `uvicorn pacing.api.main:app --reload` (ou `uvicorn app.main:app --reload`) |
 | Notebooks | `jupyter notebook app/visualization/` |
 
@@ -77,6 +78,7 @@ Variables utiles : `PACING_API_BASE_URL` (défaut `http://127.0.0.1:8000`), `PAC
 - Doc interactive Swagger : [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 - Prototype métier : `/api/v1/pays`, `/api/v1/nageur/recherche`, `/api/v1/couloir`, `/api/v1/comparaison`
 - Contrat JSON : `docs/api_contract.md`
+- Exploration iOS/macOS (§5.5) : `docs/ios_mac_exploration_5_5.md`
 
 ### Ingestion & ETL
 
@@ -103,6 +105,7 @@ Pacing/
 ├── app/                  # Shims + notebooks visualization/
 ├── services/             # Shims + cœur API (`api_core`) + secrets locaux
 ├── data/                 # raw / processed / exports (hors git)
+├── ios/                 # Prototype SwiftUI iPad/macOS (§5.5)
 ├── docs/
 ├── pyproject.toml
 └── requirements.txt
