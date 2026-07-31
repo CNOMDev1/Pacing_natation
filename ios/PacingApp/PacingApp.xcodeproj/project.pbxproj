@@ -1,0 +1,360 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		325D9F4068A84C3CAC1BB39A /* PacingAppApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A325D9F4068A84C3CAC1BB39 /* PacingAppApp.swift */; };
+		C8FC5B27D7EC4B9DA5212DC9 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC8FC5B27D7EC4B9DA5212D /* ContentView.swift */; };
+		75D297868A8A4731ADF561DB /* APIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A75D297868A8A4731ADF561 /* APIModels.swift */; };
+		27E9E022AD53498D9190239B /* PacingAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A27E9E022AD53498D919023 /* PacingAPIClient.swift */; };
+		2592F0E44B044082B130F4ED /* MockPacingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2592F0E44B044082B130F4 /* MockPacingService.swift */; };
+		A3001E894AC245C9B35585BA /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3001E894AC245C9B35585 /* AppStore.swift */; };
+		062DCDBC12584723AD9D9C7E /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A062DCDBC12584723AD9D9C /* HomeView.swift */; };
+		B766AC6009BD4E519F175492 /* SwimmerSearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB766AC6009BD4E519F1754 /* SwimmerSearchView.swift */; };
+		8CBF718EB07F471FB500A2B8 /* CorridorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8CBF718EB07F471FB500A2 /* CorridorView.swift */; };
+		73FCB03A17164B23BBB06889 /* CompareView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A73FCB03A17164B23BBB068 /* CompareView.swift */; };
+		A41B20FFBBF74A18B8893254 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA41B20FFBBF74A18B88932 /* SettingsView.swift */; };
+		91C364EC80F0448FA3490D8F /* CorridorChartView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A91C364EC80F0448FA3490D /* CorridorChartView.swift */; };
+		093D17B2FB424F90A17669FD /* ThemeAndFormat.swift in Sources */ = {isa = PBXBuildFile; fileRef = A093D17B2FB424F90A17669 /* ThemeAndFormat.swift */; };
+		5385A528300F4DDF8AB184F3 /* SampleCorridor.json in Resources */ = {isa = PBXBuildFile; fileRef = A5385A528300F4DDF8AB184 /* SampleCorridor.json */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		5EE435852C7E4F169254F224 /* PacingApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PacingApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A325D9F4068A84C3CAC1BB39 /* PacingAppApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacingAppApp.swift; sourceTree = "<group>"; };
+		AC8FC5B27D7EC4B9DA5212D /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A75D297868A8A4731ADF561 /* APIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIModels.swift; sourceTree = "<group>"; };
+		A27E9E022AD53498D919023 /* PacingAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacingAPIClient.swift; sourceTree = "<group>"; };
+		A2592F0E44B044082B130F4 /* MockPacingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockPacingService.swift; sourceTree = "<group>"; };
+		AA3001E894AC245C9B35585 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
+		A062DCDBC12584723AD9D9C /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		AB766AC6009BD4E519F1754 /* SwimmerSearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwimmerSearchView.swift; sourceTree = "<group>"; };
+		A8CBF718EB07F471FB500A2 /* CorridorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CorridorView.swift; sourceTree = "<group>"; };
+		A73FCB03A17164B23BBB068 /* CompareView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompareView.swift; sourceTree = "<group>"; };
+		AA41B20FFBBF74A18B88932 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A91C364EC80F0448FA3490D /* CorridorChartView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CorridorChartView.swift; sourceTree = "<group>"; };
+		A093D17B2FB424F90A17669 /* ThemeAndFormat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeAndFormat.swift; sourceTree = "<group>"; };
+		A5385A528300F4DDF8AB184 /* SampleCorridor.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = SampleCorridor.json; sourceTree = "<group>"; };
+		A292F88D825404FC3955458 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A598CEFC28EBF474BBF78FF /* PacingApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PacingApp.entitlements; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		E9B9C66927C5460E9BAD504F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		7646F98F68DC4A74B5514CC0 /* Root */ = {
+			isa = PBXGroup;
+			children = (
+				7646F98F68DC4A74B5514CC1 /* PacingApp */,
+				7646F98F68DC4A74B5514CC2 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		7646F98F68DC4A74B5514CC1 /* PacingApp */ = {
+			isa = PBXGroup;
+			children = (
+				A325D9F4068A84C3CAC1BB39 /* PacingAppApp.swift */,
+				AC8FC5B27D7EC4B9DA5212D /* ContentView.swift */,
+				7646F98F68DC4A74B5514CC4 /* Models */,
+				7646F98F68DC4A74B5514CC5 /* Services */,
+				7646F98F68DC4A74B5514CC6 /* Views */,
+				7646F98F68DC4A74B5514CC7 /* Utilities */,
+				7646F98F68DC4A74B5514CC8 /* Resources */,
+				A292F88D825404FC3955458 /* Info.plist */,
+				A598CEFC28EBF474BBF78FF /* PacingApp.entitlements */,
+			);
+			path = PacingApp;
+			sourceTree = "<group>";
+		};
+		7646F98F68DC4A74B5514CC2 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				5EE435852C7E4F169254F224 /* PacingApp.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		7646F98F68DC4A74B5514CC4 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				A75D297868A8A4731ADF561 /* APIModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		7646F98F68DC4A74B5514CC5 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				A27E9E022AD53498D919023 /* PacingAPIClient.swift */,
+				A2592F0E44B044082B130F4 /* MockPacingService.swift */,
+				AA3001E894AC245C9B35585 /* AppStore.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		7646F98F68DC4A74B5514CC6 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				A062DCDBC12584723AD9D9C /* HomeView.swift */,
+				AB766AC6009BD4E519F1754 /* SwimmerSearchView.swift */,
+				A8CBF718EB07F471FB500A2 /* CorridorView.swift */,
+				A73FCB03A17164B23BBB068 /* CompareView.swift */,
+				AA41B20FFBBF74A18B88932 /* SettingsView.swift */,
+				A91C364EC80F0448FA3490D /* CorridorChartView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		7646F98F68DC4A74B5514CC7 /* Utilities */ = {
+			isa = PBXGroup;
+			children = (
+				A093D17B2FB424F90A17669 /* ThemeAndFormat.swift */,
+			);
+			path = Utilities;
+			sourceTree = "<group>";
+		};
+		7646F98F68DC4A74B5514CC8 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				A5385A528300F4DDF8AB184 /* SampleCorridor.json */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		BF10EF9839B9491B887824A7 /* PacingApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 621DD5FC192C43E59A806B35 /* Build configuration list for PBXNativeTarget "PacingApp" */;
+			buildPhases = (
+				652F43C6EF3C46B4B0B75D5F /* Sources */,
+				E9B9C66927C5460E9BAD504F /* Frameworks */,
+				63B7F727372F4B14828B1719 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = PacingApp;
+			productName = PacingApp;
+			productReference = 5EE435852C7E4F169254F224 /* PacingApp.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		7646F98F68DC4A74B5514CC3 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					BF10EF9839B9491B887824A7 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = E19A4C4A75434C32AA4E23DD /* Build configuration list for PBXProject "PacingApp" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = fr;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				fr,
+				Base,
+			);
+			mainGroup = 7646F98F68DC4A74B5514CC0 /* Root */;
+			productRefGroup = 7646F98F68DC4A74B5514CC2 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				BF10EF9839B9491B887824A7 /* PacingApp */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		63B7F727372F4B14828B1719 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5385A528300F4DDF8AB184F3 /* SampleCorridor.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		652F43C6EF3C46B4B0B75D5F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				325D9F4068A84C3CAC1BB39A /* PacingAppApp.swift in Sources */,
+				C8FC5B27D7EC4B9DA5212DC9 /* ContentView.swift in Sources */,
+				75D297868A8A4731ADF561DB /* APIModels.swift in Sources */,
+				27E9E022AD53498D9190239B /* PacingAPIClient.swift in Sources */,
+				2592F0E44B044082B130F4ED /* MockPacingService.swift in Sources */,
+				A3001E894AC245C9B35585BA /* AppStore.swift in Sources */,
+				062DCDBC12584723AD9D9C7E /* HomeView.swift in Sources */,
+				B766AC6009BD4E519F175492 /* SwimmerSearchView.swift in Sources */,
+				8CBF718EB07F471FB500A2B8 /* CorridorView.swift in Sources */,
+				73FCB03A17164B23BBB06889 /* CompareView.swift in Sources */,
+				A41B20FFBBF74A18B8893254 /* SettingsView.swift in Sources */,
+				91C364EC80F0448FA3490D8F /* CorridorChartView.swift in Sources */,
+				093D17B2FB424F90A17669FD /* ThemeAndFormat.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		B3F4F7022C6148298771E0C9 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		5EE237EC3D33424DA5095ACD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		3D7DE855824C42C98E37608B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = PacingApp/PacingApp.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PacingApp/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Pacing;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.sports";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Pacing / XLab";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = fr.xlab.pacing.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A5A9E3C64C7A480E830CBE76 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = PacingApp/PacingApp.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PacingApp/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Pacing;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.sports";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Pacing / XLab";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = fr.xlab.pacing.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		E19A4C4A75434C32AA4E23DD /* Build configuration list for PBXProject "PacingApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B3F4F7022C6148298771E0C9 /* Debug */,
+				5EE237EC3D33424DA5095ACD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		621DD5FC192C43E59A806B35 /* Build configuration list for PBXNativeTarget "PacingApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3D7DE855824C42C98E37608B /* Debug */,
+				A5A9E3C64C7A480E830CBE76 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 7646F98F68DC4A74B5514CC3 /* Project object */;
+}
