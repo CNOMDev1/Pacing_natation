@@ -156,6 +156,8 @@ class FrmCompetition(BaseModel):
     SwimYear: Optional[int] = Field(None, description="Année de la compétition")
     location: Optional[str] = Field(None, description="Lieu de la compétition")
     Country: Optional[str] = Field(None, description="Code pays (ex. MAR)")
+    source_format: Optional[str] = Field(None, description="Origine du JSON (ex. llamaextract_pdf)")
+    source_file: Optional[str] = Field(None, description="Fichier PDF source LlamaExtract")
     epreuves: list[FrmEpreuve] = Field(
         default_factory=list, description="Liste des épreuves"
     )
@@ -163,11 +165,11 @@ class FrmCompetition(BaseModel):
     model_config = {"extra": "ignore", "str_strip_whitespace": True}
 
     @classmethod
-    def from_json_file(cls, path: str) -> FrmCompetition:
+    def from_json_file(cls, path: str | Path) -> FrmCompetition:
         """Charge et valide une compétition FRM depuis un fichier JSON.
 
         Args:
-            path (str): Chemin vers le fichier ``.json``.
+            path (str | Path): Chemin vers le fichier ``.json``.
 
         Returns:
             FrmCompetition: Instance validée.

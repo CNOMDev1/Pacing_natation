@@ -13,6 +13,7 @@ Le flux de données :
 Point d'entrée type : ``NageursList`` (``RootModel[list[NageurRecord]]``).
 """
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field, RootModel
@@ -48,7 +49,10 @@ class NageurRecord(BaseModel):
     Name: Optional[str] = Field(None, description="Nom du nageur")
     Federation: Optional[str] = Field(None, description="Fédération / pays du nageur")
     Team: Optional[str] = Field(None, description="Club / équipe du nageur")
+    Club: Optional[str] = Field(None, description="Club (alias de Team dans certains exports)")
     DateOfBirth: Optional[datetime] = Field(None, description="Date de naissance (si disponible)")
+    Year_of_birth: Optional[int] = Field(None, description="Année de naissance")
+    Nationality: Optional[str] = Field(None, description="Nationalité (code pays)")
     Event: Optional[str] = Field(None, description="Code de l'épreuve (ex: 800 FR SCM, 50 FR LCM)")
     Gender: Optional[str] = Field(None, description="Catégorie (Male / Female)")
     Session: Optional[str] = Field(None, description="Session (Prelim / TimedFinal / Final, etc.)")
@@ -64,8 +68,21 @@ class NageurRecord(BaseModel):
     TimeStandard: Optional[str] = Field(None, description="Time standard atteint (ex: AAA, JR NATS, etc.)")
 
     model_config = {
+        "extra": "ignore",
         "str_strip_whitespace": True,
     }
+
+    def resolved_year_of_birth(self) -> Optional[int]:
+        """Retourne ``Year_of_birth`` ou l'année extraite de ``DateOfBirth``."""
+        if self.Year_of_birth is not None:
+            return self.Year_of_birth
+        if self.DateOfBirth is not None:
+            return self.DateOfBirth.year
+        return None
+
+    def resolved_club(self) -> Optional[str]:
+        """Retourne le club depuis ``Club`` ou ``Team``."""
+        return self.Club or self.Team
 
 
 class NageursList(RootModel[list[NageurRecord]]):
@@ -76,3 +93,26 @@ class NageursList(RootModel[list[NageurRecord]]):
     """
 
     root: list[NageurRecord]
+
+    @classmethod
+    def from_json_file(cls, path: str | Path) -> "NageursList":
+        """Charge et valide une liste de performances USA Swimming depuis un JSON.
+
+        Args:
+            path (str | Path): Chemin vers le fichier ``.json`` (racine = liste).
+
+        Returns:
+            NageursList: Instance validée.
+
+        Raises:
+            ValidationError: Si le JSON ne respecte pas le schéma.
+            OSError: Si le fichier est illisible.
+            ValueError: Si la racine JSON n'est pas une liste.
+        """
+        import json
+
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            raise ValueError(f"Le fichier {path} ne contient pas une liste JSON.")
+        return cls.model_validate(data)

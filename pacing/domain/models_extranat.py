@@ -13,7 +13,8 @@ Le flux de données :
 3. **Prétraitement** — ``extranat_preprocessing`` convertit vers le format
    unifié Pacing (Meet, Event, SwimTimeSeconds, etc.).
 """
-from typing import Optional, Union
+from pathlib import Path
+from typing import Any, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -61,6 +62,12 @@ class Performance(BaseModel):
     temps: Optional[str] = Field(None, description="Temps affiché (ex: 00:26.14)")
     points: Optional[int] = Field(None, description="Points FFN")
     mpp: Optional[str] = Field(None, description="Meilleure performance personnelle (optionnel)")
+    splits: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Passages intermédiaires (distance, cumul, split, …)",
+    )
+
+    model_config = {"extra": "ignore"}
 
     @field_validator("nageur", mode="before")
     @classmethod
@@ -92,6 +99,8 @@ class Epreuve(BaseModel):
     categorie: str = Field(..., description="Dames, Messieurs, etc.")
     tour: str = Field(..., description="Finale A, Séries, etc. + date")
     performances: list[Performance] = Field(default_factory=list, description="Liste des résultats")
+
+    model_config = {"extra": "ignore"}
 
 
 class CompetitionExtranat(BaseModel):
@@ -129,11 +138,11 @@ class CompetitionExtranat(BaseModel):
     model_config = {"extra": "ignore"}
 
     @classmethod
-    def from_json_file(cls, path: str) -> "CompetitionExtranat":
+    def from_json_file(cls, path: str | Path) -> "CompetitionExtranat":
         """Charge et valide une compétition depuis un fichier JSON.
 
         Args:
-            path (str): Chemin vers le fichier ``.json``.
+            path (str | Path): Chemin vers le fichier ``.json``.
 
         Returns:
             CompetitionExtranat: Instance validée.

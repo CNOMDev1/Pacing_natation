@@ -29,9 +29,10 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# --- Chemins source / sortie ---
+from pydantic import ValidationError
 
 from pacing.config.paths import FRMNATATION_PROCESSED_DIR, FRMNATATION_RAW_DIR
+from pacing.domain.models_frmn import FrmCompetition, FrmNageur
 
 FRMNATATION_HTML_RESULTS_DIR = FRMNATATION_RAW_DIR / "html_results"
 FRMNATATION_LLAMAEXTRACT_DIR = FRMNATATION_RAW_DIR / "json_from_pdfs_llamaextract"
@@ -272,8 +273,52 @@ def _normalize_epreuve_stroke_and_event(
     return out, changed
 
 
+def _normalize_frm_nageur(swimmer: FrmNageur) -> Tuple[Dict[str, Any], bool]:
+    """Normalise un nageur FRM typé ; retourne (dict, True si modifié)."""
+    out = swimmer.model_dump()
+    changed = False
+
+    raw = swimmer.Name
+    if isinstance(raw, str):
+        raw_clean = _clean_raw_name(raw)
+        normalized = normalize_frm_name(raw_clean)
+        new_name = normalized if normalized else raw_clean
+        if new_name != raw:
+            out["Name"] = new_name
+            changed = True
+
+    age_group = age_to_age_group(out.get("Age"))
+    if age_group != out.get("AgeGroup"):
+        if age_group is None:
+            out.pop("AgeGroup", None)
+        else:
+            out["AgeGroup"] = age_group
+        changed = True
+
+    return out, changed
+
+
 def _normalize_swimmer(swimmer: Any) -> Tuple[Any, bool]:
     """Normalise swimmer.Name et swimmer.AgeGroup ; retourne (swimmer, True si modifié)."""
+    if isinstance(swimmer, FrmNageur):
+        return _normalize_frm_nageur(swimmer)
+
+    if isinstance(swimmer, list):
+        normalized: List[Dict[str, Any]] = []
+        changed = False
+        for item in swimmer:
+            if isinstance(item, FrmNageur):
+                nageur_out, item_changed = _normalize_frm_nageur(item)
+            elif isinstance(item, dict):
+                nageur_out, item_changed = _normalize_swimmer(item)
+            else:
+                continue
+            normalized.append(nageur_out)
+            changed = changed or item_changed
+        if not normalized:
+            return swimmer, False
+        return normalized if len(normalized) > 1 else normalized[0], changed
+
     if not isinstance(swimmer, dict):
         return swimmer, False
 
@@ -530,25 +575,49 @@ def llamaextract_to_competition(data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def load_competition_from_raw(raw: Dict[str, Any]) -> Dict[str, Any]:
+def load_competition_from_raw(raw: Dict[str, Any]) -> FrmCompetition:
     """Charge une competition brute (HTML ou LlamaExtract) au schema unifie.
 
     Args:
         raw (Dict[str, Any]): JSON brut lu depuis le disque.
 
     Returns:
-        Dict[str, Any]: Structure competition prete pour ``preprocess_competition``.
+        FrmCompetition: Structure competition validee pour ``preprocess_competition``.
     """
     if is_llamaextract_competition(raw):
-        return llamaextract_to_competition(raw)
-    return raw
+        return FrmCompetition.model_validate(llamaextract_to_competition(raw))
+    return FrmCompetition.model_validate(raw)
+
+
+def load_competition_from_path(input_path: Path, *, label: str) -> FrmCompetition:
+    """Charge une competition FRM depuis un fichier JSON.
+
+    Args:
+        input_path (Path): Chemin du fichier source.
+        label (str): ``html_results`` ou ``llamaextract``.
+
+    Returns:
+        FrmCompetition: Instance validee.
+
+    Raises:
+        ValidationError: Si le JSON ne respecte pas le schema.
+        OSError: Si le fichier est illisible.
+    """
+    if label == "html_results":
+        return FrmCompetition.from_json_file(input_path)
+
+    with input_path.open("r", encoding="utf-8") as f:
+        raw = json.load(f)
+    if not isinstance(raw, dict):
+        raise ValueError(f"{input_path.name} ne contient pas un objet JSON racine.")
+    return load_competition_from_raw(raw)
 
 
 # --- Pretraitement competition et batch ---
 
 
 def preprocess_competition(
-    data: Dict[str, Any],
+    data: FrmCompetition,
 ) -> Tuple[Dict[str, Any], int, int, int]:
     """Nettoie une compétition FRM Natation (filtrage + normalisation).
 
@@ -556,40 +625,26 @@ def preprocess_competition(
     codes nage et met à jour ``Event``.
 
     Args:
-        data (Dict[str, Any]): JSON brut d'une compétition.
+        data (FrmCompetition): Compétition FRM validée.
 
     Returns:
         Tuple[Dict[str, Any], int, int, int]: Données nettoyées, nombre de
             performances avant filtrage, après filtrage, et noms modifiés.
     """
-    epreuves = data.get("epreuves")
-    if not isinstance(epreuves, list):
-        return data, 0, 0, 0
-
     before = 0
     after = 0
     names_changed = 0
     filtered_epreuves: List[Dict[str, Any]] = []
 
-    for epreuve in epreuves:
-        if not isinstance(epreuve, dict):
-            continue
-
-        performances = epreuve.get("performances")
-        if not isinstance(performances, list):
-            filtered_epreuves.append(epreuve)
-            continue
-
+    for epreuve in data.epreuves:
         kept: List[Dict[str, Any]] = []
-        for perf in performances:
-            if not isinstance(perf, dict):
-                continue
+        for perf in epreuve.performances:
             before += 1
-            if swim_time_seconds_is_null(perf.get("SwimTimeSeconds")):
+            if swim_time_seconds_is_null(perf.SwimTimeSeconds):
                 continue
 
-            perf_out = dict(perf)
-            swimmer, changed = _normalize_swimmer(perf.get("swimmer"))
+            perf_out = perf.model_dump()
+            swimmer, changed = _normalize_swimmer(perf.swimmer)
             if changed:
                 names_changed += 1
             perf_out["swimmer"] = swimmer
@@ -599,12 +654,12 @@ def preprocess_competition(
         if not kept:
             continue
 
-        epreuve_out = dict(epreuve)
+        epreuve_out = epreuve.model_dump()
         epreuve_out["performances"] = kept
         epreuve_out, _ = _normalize_epreuve_stroke_and_event(epreuve_out)
         filtered_epreuves.append(epreuve_out)
 
-    out = dict(data)
+    out = data.model_dump()
     out["epreuves"] = filtered_epreuves
     return out, before, after, names_changed
 
@@ -645,14 +700,15 @@ def _preprocess_json_directory(
         output_path = output_dir / input_path.name
         print(f"[{label}] [{idx}/{len(json_files)}] {input_path.name}")
 
-        with input_path.open("r", encoding="utf-8") as f:
-            raw = json.load(f)
-
-        if not isinstance(raw, dict):
-            print("  [WARN] racine JSON non objet, ignore.")
+        try:
+            competition = load_competition_from_path(input_path, label=label)
+        except ValidationError as exc:
+            print(f"  [WARN] JSON invalide, ignore: {exc}")
+            continue
+        except (OSError, ValueError) as exc:
+            print(f"  [WARN] illisible ou format incorrect, ignore: {exc}")
             continue
 
-        competition = load_competition_from_raw(raw)
         cleaned, n_before, n_after, n_names = preprocess_competition(competition)
         total_before += n_before
         total_after += n_after
