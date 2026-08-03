@@ -13,7 +13,7 @@ Le flux de données :
    de ``SwimTimeSeconds`` / ``Speed``.
 4. **Filtres** — exclusion YOB invalides, splits aberrants et doublons ``1 LCM/SCM``.
 
-Point d'entrée CLI : ``python -m app.scripts.extranat_preprocessing``.
+Point d'entrée CLI : ``python -m pacing.ingestion.extranat.preprocessing``.
 """
 import json
 import re

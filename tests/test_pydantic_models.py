@@ -4,9 +4,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.models.extranat_models import CompetitionExtranat
-from app.models.frmn_models import FrmCompetition
-from app.models.usaswimming_models import NageurRecord, NageursList
+from pacing.domain.models_extranat import CompetitionExtranat
+from pacing.domain.models_frmn import FrmCompetition
+from pacing.domain.models_usaswimming import NageurRecord, NageursList
 from pacing.ingestion.extranat.preprocessing import clean_extranat_competition
 from pacing.ingestion.frmnatation.preprocessing import preprocess_competition
 from pacing.ingestion.usaswimming.preprocessing import clean_record

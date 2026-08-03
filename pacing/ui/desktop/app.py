@@ -10,8 +10,20 @@ Le flux au démarrage :
 3. **UI** — construction sidebar + zone graphique ; lecture du cache JSON.
 4. **Interaction** — changement de filtres → rendu ou hit cache ``graph_render_registry``.
 
-Point d'entrée : ``python -m pacing.ui.desktop.app``.
+Point d'entrée : ``python -m pacing.ui.desktop.app`` ou ``python pacing/ui/desktop/app.py``.
 """
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+
+# Lancement direct du fichier (sans ``pip install -e .`` ni ``-m``).
+if __package__ is None:
+    _project_root = Path(__file__).resolve().parents[3]
+    _root_str = str(_project_root)
+    if _root_str not in sys.path:
+        sys.path.insert(0, _root_str)
+
 import asyncio
 import concurrent.futures
 from collections import OrderedDict

@@ -12,7 +12,7 @@
 #   Web       : python -m pacing.ui.web.app   (API FastAPI doit tourner)
 #   DearPyGUI : python -m pacing.ui.dearpygui.app  (API FastAPI doit tourner)
 #   API       : uvicorn pacing.api.main:app --reload
-#   Notebooks : jupyter notebook app/visualization/
+#   Notebooks : jupyter notebook notebooks/
 
 # --- API FastAPI ---
 fastapi>=0.100.0

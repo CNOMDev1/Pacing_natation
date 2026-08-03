@@ -18,7 +18,7 @@ Le flux de donnees :
    (BK, FL, IM) et reconstruction du libelle ``Event``.
 5. **Categories** --- ajout de ``AgeGroup`` USA Swimming a partir de l'age.
 
-Point d'entree CLI : ``python -m app.scripts.frmnatation_preprocessing``.
+Point d'entree CLI : ``python -m pacing.ingestion.frmnatation.preprocessing``.
 """
 
 from __future__ import annotations

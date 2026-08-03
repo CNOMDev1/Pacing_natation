@@ -1,7 +1,7 @@
 """Point d'entrée de l'API FastAPI Pacing."""
 from fastapi import FastAPI
 
-from app.routers import pacing
+from pacing.api.routers.pacing import router
 
 app = FastAPI(
     title="Pacing",
@@ -13,7 +13,7 @@ app = FastAPI(
     swagger_ui_parameters={"defaultModelsExpandDepth": -1},
 )
 
-app.include_router(pacing.router)
+app.include_router(router)
 
 
 @app.get("/")

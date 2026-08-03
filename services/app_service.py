@@ -44,7 +44,7 @@ from services.usaswimming_competitions_data_loader import (
     UsaswimmingCompetitionsDataLoader,
 )
 
-# Constantes partagées (évite que services importe app/interfaces)
+# Constantes partagées (évite les imports circulaires avec l'UI desktop)
 COUNTRY_FRANCE = "France"
 COUNTRY_MOROCCO = "Maroc"
 COUNTRY_USA = "États-Unis"

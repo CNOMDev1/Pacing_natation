@@ -23,7 +23,7 @@ pacing/
 
 Principe : **calcul sans matplotlib**, **rendu sans logique métier lourde**, **UI sans scraping**.
 
-Les chemins `app/` et `services/` restent disponibles via des **shims de compatibilité**.
+Le dossier `services/` reste disponible pour le cœur API legacy (`api_core`) et les secrets locaux.
 
 ## Tests
 
@@ -58,7 +58,7 @@ playwright install chromium
 | Données | `pandas`, `pyarrow`, `numpy` | DataFrames, cache Parquet |
 | Visualisation | `matplotlib`, `seaborn` | Graphiques |
 | Interfaces | `flet` | Application desktop |
-| Notebooks | `jupyter`, `notebook`, `ipykernel` | Analyses dans `app/visualization/` |
+| Notebooks | `jupyter`, `notebook`, `ipykernel` | Analyses dans `notebooks/` |
 
 ## Utilisation
 
@@ -70,8 +70,8 @@ playwright install chromium
 | Web (NiceGUI) | `python -m pacing.ui.web.app` (ou `pacing-web`) — API FastAPI requise |
 | Desktop (DearPyGUI) | `python -m pacing.ui.dearpygui.app` (ou `pacing-dpg`) — API FastAPI requise |
 | iPad / macOS (SwiftUI) | `open ios/PacingApp/PacingApp.xcodeproj` — voir `docs/ios_mac_exploration_5_5.md` |
-| API | `uvicorn pacing.api.main:app --reload` (ou `uvicorn app.main:app --reload`) |
-| Notebooks | `jupyter notebook app/visualization/` |
+| API | `uvicorn pacing.api.main:app --reload` |
+| Notebooks | `jupyter notebook notebooks/` |
 
 Variables utiles : `PACING_API_BASE_URL` (défaut `http://127.0.0.1:8000`), `PACING_WEB_PORT` (défaut `8080`).
 
@@ -102,8 +102,8 @@ Exemples : `PACING_CORRIDOR_CHART_PREFETCH_LIMIT`, `PACING_HEATMAP_PREFETCH_SWIM
 ```
 Pacing/
 ├── pacing/               # Package applicatif (architecture en couches)
-├── app/                  # Shims + notebooks visualization/
-├── services/             # Shims + cœur API (`api_core`) + secrets locaux
+├── services/             # Cœur API legacy (`api_core`) + shims + secrets locaux
+├── notebooks/            # Jupyter notebooks d'analyse
 ├── data/                 # raw / processed / exports (hors git)
 ├── ios/                 # Prototype SwiftUI iPad/macOS (§5.5)
 ├── docs/

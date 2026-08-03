@@ -1,7 +1,7 @@
 """Modèles Pydantic pour le contrat HTTP de l'API Pacing (/api/v1).
 
 Valident les query params et les payloads JSON exposés à NiceGUI / iOS.
-Distincts des modèles d'ingestion (``extranat_models``, ``frmn_models``, …).
+Distincts des modèles d'ingestion (``pacing.domain.models_*``).
 """
 from __future__ import annotations
 
