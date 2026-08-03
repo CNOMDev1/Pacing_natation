@@ -21,9 +21,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from collections import defaultdict
 
-# --- Chemins source / sortie ---
+from pydantic import ValidationError
 
 from pacing.config.paths import USASWIMMING_PROCESSED_DIR, USASWIMMING_RAW_DIR
+from pacing.domain.models_usaswimming import NageurRecord, NageursList
 
 DATA_DIR = USASWIMMING_RAW_DIR
 OUTPUT_DIR = USASWIMMING_PROCESSED_DIR
@@ -288,35 +289,40 @@ def parse_event(raw_event: str) -> Tuple[Optional[int], Optional[str], Optional[
     return distance, stroke_code, course
 
 
-def clean_record(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def clean_record(rec: NageurRecord) -> Optional[Dict[str, Any]]:
     """Nettoie un enregistrement USA Swimming (une performance).
 
     Valide le nom, normalise genre/chrono/pays et dérive Distance, Stroke,
     Course et Speed. Retourne None si le nom est invalide.
 
     Args:
-        rec (Dict[str, Any]): Ligne brute du JSON source.
+        rec (NageurRecord): Ligne validée du JSON source.
 
     Returns:
         Optional[Dict[str, Any]]: Performance nettoyée ou None si rejetée.
     """
     cleaned: Dict[str, Any] = {}
 
-    name = str(rec.get("Name", "")).strip()
-    year_of_birth_raw = rec.get("Year_of_birth")
-    nationality_raw = rec.get("Nationality")
-    federation = str(rec.get("Federation", "")).strip()
-    event = str(rec.get("Event", "")).strip()
-    gender = str(rec.get("Gender", "")).strip()
-    meet = str(rec.get("Meet", "")).strip()
-    swim_date = str(rec.get("SwimDate", "")).strip()
-    swim_time_raw = rec.get("SwimTime", "")
+    name = str(rec.Name or "").strip()
+    year_of_birth_raw = rec.resolved_year_of_birth()
+    nationality_raw = rec.Nationality
+    federation = str(rec.Federation or "").strip()
+    event = str(rec.Event or "").strip()
+    gender = str(rec.Gender or "").strip()
+    meet = str(rec.Meet or "").strip()
+    swim_date_raw = rec.SwimDate
+    swim_date = (
+        swim_date_raw.strftime("%Y-%m-%d")
+        if isinstance(swim_date_raw, datetime)
+        else str(swim_date_raw or "").strip()
+    )
+    swim_time_raw = rec.SwimTime
     swim_time = sanitize_swim_time(swim_time_raw)
-    swim_time_seconds = rec.get("SwimTimeSeconds")
-    session_raw = rec.get("Session")
-    agegroup_raw = rec.get("AgeGroup")
-    time_standard_raw = rec.get("TimeStandard")
-    rank_raw = rec.get("Rank", rec.get("Place"))
+    swim_time_seconds = rec.SwimTimeSeconds
+    session_raw = rec.Session
+    agegroup_raw = rec.AgeGroup
+    time_standard_raw = rec.TimeStandard
+    rank_raw = rec.Rank if rec.Rank is not None else rec.Place
 
     session = str(session_raw).strip() if session_raw is not None else None
     age_group = str(agegroup_raw).strip() if agegroup_raw is not None else None
@@ -351,9 +357,9 @@ def clean_record(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             yob_int = None
         if yob_int is not None:
             cleaned["Year_of_birth"] = yob_int
-        elif "Year_of_birth" in rec:
+        elif rec.Year_of_birth is not None or rec.DateOfBirth is not None:
             cleaned["Year_of_birth"] = None
-    elif "Year_of_birth" in rec:
+    elif rec.Year_of_birth is not None or rec.DateOfBirth is not None:
         cleaned["Year_of_birth"] = None
 
     nat_value = nationality_raw or inferred_nat
@@ -393,6 +399,10 @@ def clean_record(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         cleaned["TimeStandard"] = time_standard
     if rank is not None:
         cleaned["Rank"] = rank
+
+    club = rec.resolved_club()
+    if club:
+        cleaned["Club"] = club.strip()
 
     g = gender.lower()
     if g in {"f", "female", "femme", "girl", "women"}:
@@ -474,20 +484,20 @@ def clean_file(input_path: Path, output_path: Path) -> None:
         None
 
     Raises:
+        ValidationError: Si le JSON ne respecte pas le schéma ``NageursList``.
         ValueError: Si la racine JSON n'est pas une liste.
     """
-    with input_path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    if not isinstance(data, list):
-        raise ValueError(f"Le fichier {input_path} ne contient pas une liste JSON.")
+    try:
+        records = NageursList.from_json_file(input_path)
+    except ValueError as exc:
+        raise ValueError(f"Le fichier {input_path} ne contient pas une liste JSON.") from exc
 
     cleaned_performances: List[Dict[str, Any]] = []
-    for rec in data:
+    for rec in records.root:
         try:
             cleaned = clean_record(rec)
         except Exception:
-            cleaned = {"_raw": rec}
+            cleaned = {"_raw": rec.model_dump()}
         if cleaned is None:
             continue
         cleaned_performances.append(cleaned)
@@ -592,7 +602,12 @@ def clean_usaswimming_directory() -> None:
         relative = input_path.relative_to(DATA_DIR)
         output_path = OUTPUT_DIR / relative
         print(f"[{idx}/{len(json_files)}] Nettoyage de {relative} -> {output_path}")
-        clean_file(input_path, output_path)
+        try:
+            clean_file(input_path, output_path)
+        except ValidationError as exc:
+            print(f"  [WARN] {relative} JSON invalide, ignoré: {exc}")
+        except ValueError as exc:
+            print(f"  [WARN] {relative} ignoré: {exc}")
 
     print(f"Nettoyage terminé. Fichiers écrits dans {OUTPUT_DIR}")
 
