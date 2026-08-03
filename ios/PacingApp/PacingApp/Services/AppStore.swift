@@ -11,6 +11,10 @@ final class AppStore: ObservableObject {
         didSet { UserDefaults.standard.set(apiBaseURL, forKey: Keys.apiURL) }
     }
 
+    @Published var projectPath: String {
+        didSet { UserDefaults.standard.set(projectPath, forKey: Keys.projectPath) }
+    }
+
     @Published var selection: EventSelection
     @Published var isAPIReachable: Bool = false
     @Published var lastError: String?
@@ -21,10 +25,13 @@ final class AppStore: ObservableObject {
     @Published var isLoading: Bool = false
     /// True si l'API répond, même si l'utilisateur est encore en mode Démo.
     @Published var apiAvailable: Bool = false
+    @Published var isTestingConnection: Bool = false
+    @Published var connectionStatusMessage: String?
 
     private enum Keys {
         static let mode = "pacing.dataMode"
         static let apiURL = "pacing.apiBaseURL"
+        static let projectPath = "pacing.projectPath"
     }
 
     init() {
@@ -32,6 +39,8 @@ final class AppStore: ObservableObject {
         // Par défaut Live dès qu'on cible les vraies données terrain.
         dataMode = savedMode ?? .live
         apiBaseURL = UserDefaults.standard.string(forKey: Keys.apiURL) ?? "http://127.0.0.1:8000"
+        projectPath = UserDefaults.standard.string(forKey: Keys.projectPath)
+            ?? LocalAPIServerLauncher.shared.defaultProjectPath
         selection = EventSelection()
     }
 
@@ -56,6 +65,69 @@ final class AppStore: ObservableObject {
         } else {
             isAPIReachable = false
         }
+    }
+
+    /// Teste l'API ; sur macOS, lance uvicorn si le serveur ne répond pas.
+    func testConnection() async {
+        isTestingConnection = true
+        lastError = nil
+        defer { isTestingConnection = false }
+
+        if await client.ping() {
+            connectionStatusMessage = "API déjà en ligne."
+            await refreshConnection()
+            return
+        }
+
+        let endpoint = parseAPIEndpoint()
+
+        #if os(macOS)
+        let launchResult = LocalAPIServerLauncher.shared.startIfNeeded(
+            projectPath: projectPath,
+            host: endpoint.host,
+            port: endpoint.port
+        )
+
+        switch launchResult {
+        case .alreadyRunning:
+            connectionStatusMessage = "Serveur uvicorn déjà lancé par l'app."
+        case .started(let command):
+            connectionStatusMessage = "Démarrage : \(command) …"
+        case .unreachable(let reason):
+            connectionStatusMessage = reason
+            lastError = reason
+            await refreshConnection()
+            return
+        case .unsupportedPlatform:
+            break
+        }
+
+        for attempt in 1...30 {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if await client.ping() {
+                connectionStatusMessage = "API connectée (tentative \(attempt))."
+                await refreshConnection()
+                return
+            }
+        }
+
+        connectionStatusMessage = "uvicorn lancé mais l'API ne répond pas encore. Vérifie le chemin projet et le port."
+        lastError = connectionStatusMessage
+        await refreshConnection()
+        #else
+        connectionStatusMessage = "Sur iPad, lance uvicorn sur un Mac : uvicorn \(LocalAPIServerLauncher.uvicornTarget) --reload"
+        lastError = connectionStatusMessage
+        await refreshConnection()
+        #endif
+    }
+
+    private func parseAPIEndpoint() -> (host: String, port: Int) {
+        guard let url = URL(string: apiBaseURL),
+              let host = url.host else {
+            return ("127.0.0.1", 8000)
+        }
+        let port = url.port ?? 8000
+        return (host, port)
     }
 
     /// Bascule vers l'API Live et vérifie la connexion.

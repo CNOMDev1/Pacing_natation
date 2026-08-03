@@ -11,6 +11,7 @@
 		C8FC5B27D7EC4B9DA5212DC9 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC8FC5B27D7EC4B9DA5212D /* ContentView.swift */; };
 		75D297868A8A4731ADF561DB /* APIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A75D297868A8A4731ADF561 /* APIModels.swift */; };
 		27E9E022AD53498D9190239B /* PacingAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A27E9E022AD53498D919023 /* PacingAPIClient.swift */; };
+		B1C2D3E4F5A6478990ABCD01 /* LocalAPIServerLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1C2D3E4F5A6478990ABCD /* LocalAPIServerLauncher.swift */; };
 		2592F0E44B044082B130F4ED /* MockPacingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2592F0E44B044082B130F4 /* MockPacingService.swift */; };
 		A3001E894AC245C9B35585BA /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3001E894AC245C9B35585 /* AppStore.swift */; };
 		062DCDBC12584723AD9D9C7E /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A062DCDBC12584723AD9D9C /* HomeView.swift */; };
@@ -29,6 +30,7 @@
 		AC8FC5B27D7EC4B9DA5212D /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A75D297868A8A4731ADF561 /* APIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIModels.swift; sourceTree = "<group>"; };
 		A27E9E022AD53498D919023 /* PacingAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacingAPIClient.swift; sourceTree = "<group>"; };
+		AB1C2D3E4F5A6478990ABCD /* LocalAPIServerLauncher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalAPIServerLauncher.swift; sourceTree = "<group>"; };
 		A2592F0E44B044082B130F4 /* MockPacingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockPacingService.swift; sourceTree = "<group>"; };
 		AA3001E894AC245C9B35585 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
 		A062DCDBC12584723AD9D9C /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
@@ -98,6 +100,7 @@
 			isa = PBXGroup;
 			children = (
 				A27E9E022AD53498D919023 /* PacingAPIClient.swift */,
+				AB1C2D3E4F5A6478990ABCD /* LocalAPIServerLauncher.swift */,
 				A2592F0E44B044082B130F4 /* MockPacingService.swift */,
 				AA3001E894AC245C9B35585 /* AppStore.swift */,
 			);
@@ -207,6 +210,7 @@
 				C8FC5B27D7EC4B9DA5212DC9 /* ContentView.swift in Sources */,
 				75D297868A8A4731ADF561DB /* APIModels.swift in Sources */,
 				27E9E022AD53498D9190239B /* PacingAPIClient.swift in Sources */,
+				B1C2D3E4F5A6478990ABCD01 /* LocalAPIServerLauncher.swift in Sources */,
 				2592F0E44B044082B130F4ED /* MockPacingService.swift in Sources */,
 				A3001E894AC245C9B35585BA /* AppStore.swift in Sources */,
 				062DCDBC12584723AD9D9C7E /* HomeView.swift in Sources */,
