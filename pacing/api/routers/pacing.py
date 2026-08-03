@@ -1,7 +1,7 @@
 """Router FastAPI prototype : couloir + recherche nageur (+ pays).
 
-Endpoints minimaux branchés sur ``services.api_core`` / ``PacingAppService``.
-Entrées / sorties validées par ``app.models.api_models`` (Pydantic).
+Endpoints minimaux branchés sur ``services.api_core``.
+Entrées / sorties validées par ``pacing.api.schemas`` (Pydantic).
 Doc interactive : ``/docs``.
 """
 from __future__ import annotations
@@ -10,7 +10,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.models.api_models import (
+from pacing.api.schemas import (
     CompareParams,
     CompareResponse,
     CorridorParams,

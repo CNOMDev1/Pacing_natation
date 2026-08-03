@@ -5,8 +5,8 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 import pytest
 
-from app.main import app
-from app.models.api_models import (
+from pacing.api.main import app
+from pacing.api.schemas import (
     CorridorParams,
     CorridorType,
     CountriesResponse,

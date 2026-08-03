@@ -12,7 +12,7 @@ Le flux de données :
 3. **Batch** — ``clean_usaswimming_directory()`` parcourt récursivement
    tous les JSON bruts en conservant l'arborescence.
 
-Point d'entrée CLI : ``python -m app.scripts.usaswimming_preprocessing``.
+Point d'entrée CLI : ``python -m pacing.ingestion.usaswimming.preprocessing``.
 """
 import json
 import re

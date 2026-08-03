@@ -9,11 +9,12 @@ Par défaut, seules les années 2014 à 2026 sont traitées (les années 2000 à
 
 Point d'entrée CLI :
 
-    python -m app.scripts.omega_pdf_to_json_claude
+    python -m pacing.ingestion.omega.pdf_to_json_claude
 
 Configuration :
 
-    Renseigner ``app/scripts/.env`` (ou exporter les variables d'environnement).
+    Renseigner ``pacing/ingestion/omega/.env`` ou un ``.env`` à la racine du dépôt
+    (ou exporter les variables d'environnement).
 
     ANTHROPIC_API_KEY (obligatoire) : clé API Anthropic.
     CLAUDE_MODEL (optionnel) : modèle Claude (défaut ``claude-sonnet-4-20250514``).
@@ -42,8 +43,7 @@ from pacing.config.paths import OMEGA_RAW_DIR, PROJECT_DIR
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = PROJECT_DIR
 load_dotenv(_SCRIPT_DIR / ".env")
-# Compat : ancien emplacement app/scripts/.env
-load_dotenv(PROJECT_DIR / "app" / "scripts" / ".env")
+load_dotenv(PROJECT_DIR / ".env")
 
 PDF_BASE_DIR = OMEGA_RAW_DIR / "pdfs"
 JSON_BASE_DIR = PROJECT_DIR / "data" / "omega_json_endpoint_single"
@@ -463,7 +463,7 @@ def run_extraction(
     if not api_key:
         raise RuntimeError(
             "Variable ANTHROPIC_API_KEY manquante. "
-            "Renseignez-la dans app/scripts/.env ou exportez-la dans le terminal."
+            "Renseignez-la dans pacing/ingestion/omega/.env ou exportez-la dans le terminal."
         )
 
     client = anthropic.Anthropic(api_key=api_key)
