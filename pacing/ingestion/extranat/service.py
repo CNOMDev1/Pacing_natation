@@ -15,7 +15,7 @@ Le flux de données :
 4. **Orchestration** — ``get_all_results_by_type()`` / ``main()`` enchaînent types,
    compétitions et résultats ; ``generate_resume()`` produit un bilan d'erreurs.
 
-Point d'entrée CLI : ``python services/extranat_service.py``.
+Point d'entrée CLI : ``python -m pacing.ingestion.extranat.service``.
 """
 from __future__ import annotations
 
@@ -2180,10 +2180,10 @@ def main():
     """Point d'entrée CLI : scrape types/compétitions selon les arguments.
 
     Usage typique :
-    - ``python services/extranat_service.py`` → tous les types (mode intl)
-    - ``python services/extranat_service.py debug`` → logs verbeux
-    - ``python services/extranat_service.py intl 7 fast`` → idtyp=7 sans pause
-    - ``python services/extranat_service.py 2025`` → compétitions de l'année 2025
+    - ``python -m pacing.ingestion.extranat.service`` → tous les types (mode intl)
+    - ``python -m pacing.ingestion.extranat.service debug`` → logs verbeux
+    - ``python -m pacing.ingestion.extranat.service intl 7 fast`` → idtyp=7 sans pause
+    - ``python -m pacing.ingestion.extranat.service 2025`` → compétitions de l'année 2025
 
     Sauvegarde les résultats dans ``competitions_per_type/`` et les résumés
     dans ``Resumes/``.

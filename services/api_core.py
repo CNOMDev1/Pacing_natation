@@ -12,14 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from services.app_service import (
-    COUNTRY_FRANCE,
-    COUNTRY_MOROCCO,
-    COUNTRY_USA,
-    PacingAppService,
-    USA_CORRIDOR_MIN_POINTS,
-)
-from services.corridor_data import (
+from pacing.analytics.corridor_data import (
     STANDARD_CORRIDOR_PERCENTILES,
     compute_corridor_percentiles_df,
     corridor_age_limits,
@@ -27,8 +20,15 @@ from services.corridor_data import (
     prepare_corridor_long_df,
     resolve_corridor_swimmer_flexible,
 )
-from services.normalize import normalize_gender_code, normalize_text
-from services.scope import event_combinations
+from pacing.application.scope import event_combinations
+from pacing.domain.normalize import normalize_gender_code, normalize_text
+from services.app_service import (
+    COUNTRY_FRANCE,
+    COUNTRY_MOROCCO,
+    COUNTRY_USA,
+    PacingAppService,
+    USA_CORRIDOR_MIN_POINTS,
+)
 
 # Codes API stables → libellés UI / loaders
 _COUNTRY_BY_CODE: Dict[str, str] = {

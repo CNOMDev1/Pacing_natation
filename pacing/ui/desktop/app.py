@@ -290,7 +290,7 @@ class PacingDesktopApp:
 
     def _run_usaswimming_parquet_cache_worker(self) -> None:
         startup = self._startup_prefetch_ui
-        # Workers adaptés à la machine (voir services.machine_workers).
+        # Workers adaptés à la machine (voir pacing.data.machine_workers).
         loader = UsaswimmingCompetitionsDataLoader()
         available_years = loader.available_years()
 
