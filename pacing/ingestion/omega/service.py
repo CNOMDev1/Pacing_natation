@@ -706,7 +706,7 @@ def run_download_between_years(start_year: int, end_year: int) -> None:
 def main():
     """Point d'entrée CLI : télécharge les PDF Total Ranking sur une plage d'années.
 
-    Usage : ``python -m services.omega_service [start_year end_year]``.
+    Usage : ``python -m pacing.ingestion.omega.service [start_year end_year]``.
     Sans arguments, utilise ``START_YEAR`` et ``END_YEAR``.
 
     Returns:

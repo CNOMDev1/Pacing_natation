@@ -12,37 +12,34 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from services.corridor_data import (
+from pacing.analytics.corridor_data import (
     CORRIDOR_CHART_STYLE_VERSION,
     CORRIDOR_FR_SWIMMER_COLOR,
     CORRIDOR_MA_SWIMMER_COLOR,
 )
-from services.frmnatation_html_results_data_loader import (
-    DEFAULT_FRMNATATION_HTML_RESULTS_DIR,
-    FrmnatationHtmlResultsDataLoader,
-)
-from services.graph_catalog import (
+from pacing.application.build_corridor_chart import BuildCorridorChart
+from pacing.application.graph_service import (
     EVENT_COUNTS_SORT_STROKE_DISTANCE,
     GRAPH_CATEGORIES,
     GRAPHES_NOTEBOOK,
     GRAPHES_PAR_KEY,
-)
-from services.graph_service import (
     ServiceGraphe,
     unwrap_matplotlib_figure,
 )
-from services.normalize import normalize_gender_code
-from services.paths import (
+from pacing.application.prefetch_graphs import PrefetchGraphs
+from pacing.application.scope import materialize_df_scope, resolve_scope_filters
+from pacing.config.paths import (
     EXTRANAT_PROCESSED_DIR,
     FRMNATATION_PROCESSED_DIR,
     USASWIMMING_PARQUET_DIR,
     USASWIMMING_PROCESSED_DIR,
 )
-from services.scope import materialize_df_scope, resolve_scope_filters
-from services.use_cases import BuildCorridorChart, PrefetchGraphs
-from services.usaswimming_competitions_data_loader import (
-    UsaswimmingCompetitionsDataLoader,
+from pacing.data.frmnatation_loader import (
+    DEFAULT_FRMNATATION_HTML_RESULTS_DIR,
+    FrmnatationHtmlResultsDataLoader,
 )
+from pacing.data.usaswimming_loader import UsaswimmingCompetitionsDataLoader
+from pacing.domain.normalize import normalize_gender_code
 
 # Constantes partagées (évite les imports circulaires avec l'UI desktop)
 COUNTRY_FRANCE = "France"
@@ -93,7 +90,7 @@ def _load_extranat_cached() -> pd.DataFrame:
     Returns:
         pd.DataFrame: Performances Extranat aplaties.
     """
-    from services.extranat_competitions_data_loader import ExtranatCompetitionsDataLoader
+    from pacing.data.extranat_loader import ExtranatCompetitionsDataLoader
 
     return ExtranatCompetitionsDataLoader(EXTRANAT_PROCESSED_DIR).load()
 

@@ -311,7 +311,7 @@ def _format_profile_report(info: MachineInfo) -> str:
 def main() -> int:
     """Point d'entrée CLI : affiche le profil machine et les recommandations.
 
-    Usage : ``python -m services.machine_workers``.
+    Usage : ``python -m pacing.data.machine_workers``.
 
     Returns:
         int: Code de sortie (0).

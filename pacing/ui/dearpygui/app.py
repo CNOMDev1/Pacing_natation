@@ -10,12 +10,22 @@ Prérequis : API FastAPI démarrée
 Lancement :
     python -m pacing.ui.dearpygui.app
     # ou : pacing-dpg
+    # ou : python pacing/ui/dearpygui/app.py
 """
 from __future__ import annotations
 
+from pathlib import Path
+import sys
+
+# Lancement direct du fichier (sans ``pip install -e .`` ni ``-m``).
+if __package__ is None:
+    _project_root = Path(__file__).resolve().parents[3]
+    _root_str = str(_project_root)
+    if _root_str not in sys.path:
+        sys.path.insert(0, _root_str)
+
 import os
 import tempfile
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import dearpygui.dearpygui as dpg

@@ -1,5 +1,6 @@
-"""Package services : shims de compatibilité vers ``pacing.*``.
+"""Package services : cœur API legacy et secrets locaux.
 
-Préférer les imports directs ``from pacing.…``. Les modules ici
-réexportent les symboles pour ne pas casser le code existant.
+Préférer ``pacing.*`` pour le métier, l'ingestion et l'UI.
+Ce package conserve ``api_core`` / ``app_service`` (payloads FastAPI)
+et les fichiers secrets (``bearer_token.txt``, ``state.json``).
 """

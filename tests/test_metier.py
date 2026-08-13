@@ -4,7 +4,7 @@ from __future__ import annotations
 import pandas as pd
 from bs4 import BeautifulSoup
 
-from services.corridor_data import (
+from pacing.analytics.corridor_data import (
     build_corridor_chart_plot_kwargs,
     corridor_gender_display_label,
     corridor_norm_name,
@@ -12,16 +12,7 @@ from services.corridor_data import (
     parse_split_distance_m,
     prepare_corridor_long_df,
 )
-from services.extranat_parse import extract_results_from_filter_table
-from services.graph_catalog import (
-    GRAPH_CATEGORIES,
-    GRAPHES_NOTEBOOK,
-    GRAPHES_PAR_KEY,
-    HEATMAP_GRAPH_NAME,
-    MEDIAN_VS_BEST_CHART_STYLE_VERSION,
-    RELAY_SPLIT_CHART_STYLE_VERSION,
-)
-from services.graph_compute import (
+from pacing.analytics.graph_compute import (
     _adaptive_histogram_bin_count,
     _event_display_sort_key,
     _gender_label_for_code,
@@ -31,7 +22,16 @@ from services.graph_compute import (
     _parse_split_speed_mps,
     _smooth_centered_rolling,
 )
-from services.normalize import primary_swimmer_name, primary_swimmer_name_and_yob
+from pacing.application.graph_service import (
+    GRAPH_CATEGORIES,
+    GRAPHES_NOTEBOOK,
+    GRAPHES_PAR_KEY,
+    HEATMAP_GRAPH_NAME,
+    MEDIAN_VS_BEST_CHART_STYLE_VERSION,
+    RELAY_SPLIT_CHART_STYLE_VERSION,
+)
+from pacing.domain.normalize import primary_swimmer_name, primary_swimmer_name_and_yob
+from pacing.ingestion.extranat.service import extract_results_from_filter_table
 
 
 def test_primary_swimmer_name_from_dict() -> None:
@@ -173,7 +173,7 @@ def test_extranat_parse_minimal_table() -> None:
 
 def test_service_graphe_histogram_empty() -> None:
     """plot_histogramme_simple gère un DataFrame vide sans exception."""
-    from services.graph_service import ServiceGraphe
+    from pacing.application.graph_service import ServiceGraphe
 
     fig = ServiceGraphe().plot_histogramme_simple(
         pd.DataFrame({"SwimTimeSeconds": []})

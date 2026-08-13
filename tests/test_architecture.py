@@ -3,19 +3,23 @@ from __future__ import annotations
 
 import pandas as pd
 
-from services.graph_catalog import (
+from pacing.application.graph_service import (
     GRAPH_CATEGORIES,
     GRAPHES_NOTEBOOK,
     SCOPE_NO_FILTER_GRAPHS,
     GraphSpec,
 )
-from services.normalize import (
+from pacing.application.scope import (
+    event_combinations,
+    materialize_df_scope,
+    resolve_scope_filters,
+)
+from pacing.domain.normalize import (
     normalize_gender_code,
     normalize_name,
     normalize_text,
     slugify,
 )
-from services.scope import event_combinations, materialize_df_scope, resolve_scope_filters
 
 
 def test_normalize_text_strips_accents() -> None:

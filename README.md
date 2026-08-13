@@ -23,7 +23,7 @@ pacing/
 
 Principe : **calcul sans matplotlib**, **rendu sans logique métier lourde**, **UI sans scraping**.
 
-Le dossier `services/` reste disponible pour le cœur API legacy (`api_core`) et les secrets locaux.
+Le dossier `services/` conserve le cœur API legacy (`api_core`, `app_service`) et les secrets locaux.
 
 ## Tests
 
@@ -102,7 +102,7 @@ Exemples : `PACING_CORRIDOR_CHART_PREFETCH_LIMIT`, `PACING_HEATMAP_PREFETCH_SWIM
 ```
 Pacing/
 ├── pacing/               # Package applicatif (architecture en couches)
-├── services/             # Cœur API legacy (`api_core`) + shims + secrets locaux
+├── services/             # Cœur API legacy (`api_core`, `app_service`) + secrets locaux
 ├── notebooks/            # Jupyter notebooks d'analyse
 ├── data/                 # raw / processed / exports (hors git)
 ├── ios/                 # Prototype SwiftUI iPad/macOS (§5.5)

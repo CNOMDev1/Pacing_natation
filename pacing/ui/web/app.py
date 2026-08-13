@@ -6,15 +6,30 @@ Prérequis : API FastAPI démarrée (``uvicorn pacing.api.main:app --reload``).
 Lancement :
     python -m pacing.ui.web.app
     # ou : pacing-web
+    # ou : python pacing/ui/web/app.py
 """
 from __future__ import annotations
 
+from pathlib import Path
+import sys
+
+# Lancement direct du fichier (sans ``pip install -e .`` ni ``-m``).
+if __package__ is None:
+    _project_root = Path(__file__).resolve().parents[3]
+    _root_str = str(_project_root)
+    if _root_str not in sys.path:
+        sys.path.insert(0, _root_str)
+
+import asyncio
 import os
+import subprocess
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from nicegui import ui
 
-from pacing.ui.web.api_client import PacingApiError, get_default_client
+from pacing.config.paths import PROJECT_DIR
+from pacing.ui.web.api_client import PacingApiClient, PacingApiError, get_default_client
 from pacing.ui.web.charts import build_compare_figure, build_corridor_figure
 
 STROKE_LABELS = {
@@ -26,6 +41,93 @@ STROKE_LABELS = {
 }
 POOL_LABELS = {"LCM": "50 m", "SCM": "25 m", "SCY": "Yards"}
 GENDER_OPTIONS = {"all": "Tous", "F": "Féminin", "M": "Masculin"}
+
+# Processus uvicorn démarré depuis l'UI (un seul à la fois).
+_API_PROCESS: Optional[subprocess.Popen] = None
+
+
+def _start_api_backend(base_url: str) -> subprocess.Popen:
+    """
+    Lance ``uvicorn pacing.api.main:app --reload`` en arrière-plan.
+
+    Args:
+        base_url (str): URL de base API (host/port extraits).
+
+    Returns:
+        subprocess.Popen: Processus détaché.
+    """
+    parsed = urlparse(base_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 8000
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "pacing.api.main:app",
+            "--reload",
+            "--host",
+            host,
+            "--port",
+            str(port),
+        ],
+        cwd=str(PROJECT_DIR),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+async def _ensure_api_reachable(
+    client: PacingApiClient,
+    status: Any,
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    Ping l'API ; si injoignable, démarre uvicorn puis attend qu'elle réponde.
+
+    Args:
+        client (PacingApiClient): Client HTTP.
+        status (Any): Label NiceGUI de statut.
+
+    Returns:
+        Optional[List[Dict[str, Any]]]: Liste pays si OK, sinon ``None``.
+    """
+    global _API_PROCESS
+
+    try:
+        return client.list_countries()
+    except PacingApiError:
+        pass
+
+    if _API_PROCESS is not None and _API_PROCESS.poll() is None:
+        status.set_text("Statut API : uvicorn déjà lancé, attente…")
+    else:
+        status.set_text("Statut API : lancement de uvicorn en arrière-plan…")
+        status.classes(replace="text-caption")
+        try:
+            _API_PROCESS = _start_api_backend(client.base_url)
+        except OSError as exc:
+            status.set_text(f"Statut API : impossible de lancer uvicorn — {exc}")
+            status.classes(replace="text-caption text-negative")
+            return None
+
+    for _ in range(40):
+        await asyncio.sleep(0.5)
+        if _API_PROCESS is not None and _API_PROCESS.poll() is not None:
+            status.set_text(
+                "Statut API : uvicorn s'est arrêté "
+                "(port occupé ou erreur de démarrage)"
+            )
+            status.classes(replace="text-caption text-negative")
+            return None
+        try:
+            return client.list_countries()
+        except PacingApiError:
+            continue
+
+    status.set_text("Statut API : timeout — uvicorn ne répond pas")
+    status.classes(replace="text-caption text-negative")
+    return None
 
 
 def _nav(active: str) -> None:
@@ -172,30 +274,44 @@ def page_home() -> None:
         with ui.card().classes("w-full p-4"):
             ui.label("Prérequis").classes("text-h6")
             ui.markdown(
-                "1. Lancer l'API : `uvicorn pacing.api.main:app --reload`  \n"
+                "1. Le bouton ci-dessous lance l'API si besoin "
+                "(`uvicorn pacing.api.main:app --reload`)  \n"
                 f"2. Base URL : `{client.base_url}`  \n"
                 "3. Doc Swagger : `/docs`"
             )
             status = ui.label("Statut API : …").classes("text-caption")
 
-            def _ping() -> None:
-                """
-                Vérifie que l'API répond.
+            def _set_ok(countries: List[Dict[str, Any]]) -> None:
+                """Affiche le statut OK avec les codes pays."""
+                codes = ", ".join(c.get("code", "?") for c in countries)
+                status.set_text(f"Statut API : OK ({codes})")
+                status.classes(replace="text-caption text-positive")
 
-                Returns:
-                    None: Met à jour le libellé de statut.
-                """
+            async def _ping_only() -> None:
+                """Ping sans démarrer uvicorn (chargement de page)."""
                 try:
-                    countries = client.list_countries()
-                    codes = ", ".join(c.get("code", "?") for c in countries)
-                    status.set_text(f"Statut API : OK ({codes})")
-                    status.classes(replace="text-caption text-positive")
+                    _set_ok(client.list_countries())
                 except PacingApiError as exc:
                     status.set_text(f"Statut API : erreur — {exc.detail}")
                     status.classes(replace="text-caption text-negative")
 
-            ui.button("Tester la connexion API", on_click=_ping).props("unelevated")
-            _ping()
+            async def _ping_and_start() -> None:
+                """
+                Vérifie l'API et lance uvicorn en arrière-plan si besoin.
+
+                Returns:
+                    None: Met à jour le libellé de statut.
+                """
+                status.set_text("Statut API : vérification…")
+                status.classes(replace="text-caption")
+                countries = await _ensure_api_reachable(client, status)
+                if countries is not None:
+                    _set_ok(countries)
+
+            ui.button(
+                "Tester la connexion API", on_click=_ping_and_start
+            ).props("unelevated")
+            ui.timer(0.1, _ping_only, once=True)
 
         with ui.row().classes("gap-3"):
             ui.button("Données", on_click=lambda: ui.navigate.to("/donnees")).props(
