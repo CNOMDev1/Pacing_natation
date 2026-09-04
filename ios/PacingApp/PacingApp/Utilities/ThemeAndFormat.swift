@@ -2,15 +2,31 @@ import SwiftUI
 
 enum PacingTheme {
     static let accent = Color(red: 0.05, green: 0.35, blue: 0.55)
-    static let bandOuter = Color(red: 0.55, green: 0.72, blue: 0.85).opacity(0.35)
-    static let bandInner = Color(red: 0.30, green: 0.55, blue: 0.72).opacity(0.45)
-    static let median = Color(red: 0.08, green: 0.28, blue: 0.45)
-    static let swimmerA = Color(red: 0.85, green: 0.35, blue: 0.12)
-    static let swimmerB = Color(red: 0.15, green: 0.55, blue: 0.40)
-    static let canvas = Color(red: 0.96, green: 0.97, blue: 0.98)
+    static let canvas = Color(hex: "f8fafc")
+}
+
+private extension Color {
+    init(hex: String, opacity: Double = 1) {
+        let cleaned = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        var value: UInt64 = 0
+        Scanner(string: cleaned).scanHexInt64(&value)
+        self.init(
+            .sRGB,
+            red: Double((value >> 16) & 0xFF) / 255,
+            green: Double((value >> 8) & 0xFF) / 255,
+            blue: Double(value & 0xFF) / 255,
+            opacity: opacity
+        )
+    }
 }
 
 enum TimeFormat {
+    /// Affiche un temps brut en secondes (deux décimales).
+    static func seconds(_ value: Double?) -> String {
+        guard let value, value.isFinite, value >= 0 else { return "—" }
+        return String(format: "%.2f", value)
+    }
+
     /// Convertit des secondes en `m:ss.cc` (affichage coach).
     static func mmss(_ seconds: Double) -> String {
         guard seconds.isFinite, seconds >= 0 else { return "—" }

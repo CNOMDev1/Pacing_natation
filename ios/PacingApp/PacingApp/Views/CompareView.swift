@@ -69,12 +69,13 @@ struct CompareView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    CorridorChartView(
-                        bands: compare.bands,
-                        swimmerA: compare.swimmerA,
-                        swimmerB: compare.swimmerB,
-                        title: "Comparaison sur \(compare.meta.event)"
-                    )
+                    bandTable(compare.bands)
+                    if let a = compare.swimmerA {
+                        swimmerTable(a)
+                    }
+                    if let b = compare.swimmerB {
+                        swimmerTable(b)
+                    }
                 }
 
                 if let error = store.lastError {
@@ -94,5 +95,64 @@ struct CompareView: View {
                 }
             }
         }
+    }
+
+    private func bandTable(_ bands: [CorridorBand]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Bandes (secondes)")
+                .font(.headline)
+            Text("P10 / P25 : plus rapides · P50 : médiane · P75 / P90 : plus lents · n : nombre de courses")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            HStack {
+                Text("Âge").frame(width: 36, alignment: .leading)
+                Text("P10").frame(maxWidth: .infinity)
+                Text("P25").frame(maxWidth: .infinity)
+                Text("P50").frame(maxWidth: .infinity)
+                Text("P75").frame(maxWidth: .infinity)
+                Text("P90").frame(maxWidth: .infinity)
+                Text("n")
+                    .frame(width: 48, alignment: .trailing)
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            ForEach(bands) { band in
+                HStack {
+                    Text(band.xLabel).frame(width: 36, alignment: .leading)
+                    Text(TimeFormat.seconds(band.p10)).frame(maxWidth: .infinity)
+                    Text(TimeFormat.seconds(band.p25)).frame(maxWidth: .infinity)
+                    Text(TimeFormat.seconds(band.p50)).frame(maxWidth: .infinity)
+                    Text(TimeFormat.seconds(band.p75)).frame(maxWidth: .infinity)
+                    Text(TimeFormat.seconds(band.p90)).frame(maxWidth: .infinity)
+                    Text("n=\(band.n)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 48, alignment: .trailing)
+                }
+                .font(.caption.monospacedDigit())
+            }
+        }
+        .padding(12)
+        .background(.background)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func swimmerTable(_ swimmer: CorridorSwimmer) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(swimmer.displayName)
+                .font(.headline)
+            ForEach(swimmer.points) { point in
+                HStack {
+                    Text(point.age.map { String(format: "%.0f", $0) } ?? point.ageGroup ?? "?")
+                        .frame(width: 36, alignment: .leading)
+                    Text(TimeFormat.mmss(point.timeS))
+                    Spacer()
+                }
+                .font(.caption.monospacedDigit())
+            }
+        }
+        .padding(12)
+        .background(.background)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }

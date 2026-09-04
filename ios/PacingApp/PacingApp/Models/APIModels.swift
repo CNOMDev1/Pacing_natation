@@ -174,12 +174,6 @@ struct CorridorBand: Codable, Identifiable, Sendable {
 
     var id: String { ageGroup ?? "\(age ?? -1)" }
 
-    /// Abscisse numérique pour Swift Charts (âge ou index de catégorie).
-    var xValue: Double {
-        if let age { return Double(age) }
-        return Double(ageGroup?.hashValue ?? 0)
-    }
-
     var xLabel: String {
         if let age { return "\(age)" }
         return ageGroup ?? "?"
@@ -197,11 +191,6 @@ struct SwimmerPoint: Codable, Identifiable, Sendable {
     let timeS: Double
 
     var id: String { "\(age ?? 0)-\(ageGroup ?? "")-\(timeS)" }
-
-    var xValue: Double {
-        if let age { return age }
-        return Double(ageGroup?.hashValue ?? 0)
-    }
 
     enum CodingKeys: String, CodingKey {
         case age
