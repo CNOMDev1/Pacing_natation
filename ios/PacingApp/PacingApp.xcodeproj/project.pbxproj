@@ -19,7 +19,6 @@
 		8CBF718EB07F471FB500A2B8 /* CorridorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8CBF718EB07F471FB500A2 /* CorridorView.swift */; };
 		73FCB03A17164B23BBB06889 /* CompareView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A73FCB03A17164B23BBB068 /* CompareView.swift */; };
 		A41B20FFBBF74A18B8893254 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA41B20FFBBF74A18B88932 /* SettingsView.swift */; };
-		91C364EC80F0448FA3490D8F /* CorridorChartView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A91C364EC80F0448FA3490D /* CorridorChartView.swift */; };
 		093D17B2FB424F90A17669FD /* ThemeAndFormat.swift in Sources */ = {isa = PBXBuildFile; fileRef = A093D17B2FB424F90A17669 /* ThemeAndFormat.swift */; };
 		5385A528300F4DDF8AB184F3 /* SampleCorridor.json in Resources */ = {isa = PBXBuildFile; fileRef = A5385A528300F4DDF8AB184 /* SampleCorridor.json */; };
 /* End PBXBuildFile section */
@@ -38,7 +37,6 @@
 		A8CBF718EB07F471FB500A2 /* CorridorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CorridorView.swift; sourceTree = "<group>"; };
 		A73FCB03A17164B23BBB068 /* CompareView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompareView.swift; sourceTree = "<group>"; };
 		AA41B20FFBBF74A18B88932 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
-		A91C364EC80F0448FA3490D /* CorridorChartView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CorridorChartView.swift; sourceTree = "<group>"; };
 		A093D17B2FB424F90A17669 /* ThemeAndFormat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeAndFormat.swift; sourceTree = "<group>"; };
 		A5385A528300F4DDF8AB184 /* SampleCorridor.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = SampleCorridor.json; sourceTree = "<group>"; };
 		A292F88D825404FC3955458 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -115,7 +113,6 @@
 				A8CBF718EB07F471FB500A2 /* CorridorView.swift */,
 				A73FCB03A17164B23BBB068 /* CompareView.swift */,
 				AA41B20FFBBF74A18B88932 /* SettingsView.swift */,
-				A91C364EC80F0448FA3490D /* CorridorChartView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -218,7 +215,6 @@
 				8CBF718EB07F471FB500A2B8 /* CorridorView.swift in Sources */,
 				73FCB03A17164B23BBB06889 /* CompareView.swift in Sources */,
 				A41B20FFBBF74A18B8893254 /* SettingsView.swift in Sources */,
-				91C364EC80F0448FA3490D8F /* CorridorChartView.swift in Sources */,
 				093D17B2FB424F90A17669FD /* ThemeAndFormat.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
