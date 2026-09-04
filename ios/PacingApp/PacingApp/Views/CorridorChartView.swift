@@ -84,7 +84,8 @@ struct CorridorChartView: View {
                     }
                 }
             }
-            .chartYScale(domain: .automatic(includesZero: false))
+            .chartXScale(domain: xDomain)
+            .chartYScale(domain: yDomain)
             .chartYAxis {
                 AxisMarks(position: .leading) { value in
                     AxisGridLine()
@@ -105,6 +106,36 @@ struct CorridorChartView: View {
 
             legend
         }
+    }
+
+    /// Bornes X = min/max des âges présents (bandes + nageurs).
+    private var xDomain: ClosedRange<Double> {
+        let xs = bands.map(\.xValue)
+            + (swimmerA?.points.map(\.xValue) ?? [])
+            + (swimmerB?.points.map(\.xValue) ?? [])
+        return closedRange(from: xs, fallback: 0...1)
+    }
+
+    /// Bornes Y = min/max des temps, inversées (meilleur temps en haut).
+    /// Un tableau `[max, min]` inverse l’axe tout en le calant sur les données.
+    private var yDomain: [Double] {
+        var ys: [Double] = []
+        for band in bands {
+            ys.append(contentsOf: [band.p10, band.p25, band.p50, band.p75, band.p90].compactMap { $0 })
+        }
+        ys.append(contentsOf: swimmerA?.points.map(\.timeS) ?? [])
+        ys.append(contentsOf: swimmerB?.points.map(\.timeS) ?? [])
+        let range = closedRange(from: ys, fallback: 0...1)
+        return [range.upperBound, range.lowerBound]
+    }
+
+    private func closedRange(from values: [Double], fallback: ClosedRange<Double>) -> ClosedRange<Double> {
+        guard let minV = values.min(), let maxV = values.max() else { return fallback }
+        if minV == maxV {
+            let pad = max(abs(minV) * 0.05, 0.5)
+            return (minV - pad)...(maxV + pad)
+        }
+        return minV...maxV
     }
 
     private var legend: some View {
