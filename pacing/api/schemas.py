@@ -168,6 +168,13 @@ class CreateSwimmerRequest(BaseModel):
     gender: Optional[str] = None
     country: CountryCode
     club: Optional[str] = None
+    stroke: StrokeCode
+    distance: int = Field(..., ge=25, le=1500)
+    pool: PoolCode
+    time_s: Optional[float] = Field(None, gt=0)
+    time_text: Optional[str] = None
+    meet_date: Optional[str] = None
+    age: Optional[float] = Field(None, ge=5, le=80)
 
     @field_validator("name")
     @classmethod
@@ -176,6 +183,12 @@ class CreateSwimmerRequest(BaseModel):
         if not cleaned:
             raise ValueError("le nom du nageur ne peut pas être vide")
         return cleaned
+
+    @model_validator(mode="after")
+    def _require_time(self) -> "CreateSwimmerRequest":
+        if self.time_s is None and not (self.time_text or "").strip():
+            raise ValueError("indiquer time_s ou time_text")
+        return self
 
 
 class CreateSwimmerResponse(BaseModel):

@@ -118,7 +118,7 @@ struct SwimmerSearchView: View {
                 Button {
                     showAddSwimmer = true
                 } label: {
-                    Label("Ajouter un nageur", systemImage: "person.badge.plus")
+                    Label("Ajouter une performance", systemImage: "plus.circle")
                 }
             }
         }

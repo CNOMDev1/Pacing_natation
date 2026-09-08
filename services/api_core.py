@@ -21,7 +21,7 @@ from pacing.analytics.corridor_data import (
     resolve_corridor_swimmer_flexible,
 )
 from pacing.application.scope import event_combinations
-from pacing.application.manual_swimmer_store import list_manual_swimmers
+from pacing.application.manual_swimmer_store import list_manual_points, list_manual_swimmers
 from pacing.domain.normalize import normalize_gender_code, normalize_text
 from services.app_service import (
     COUNTRY_FRANCE,
@@ -425,6 +425,16 @@ def build_corridor_payload(
                 df_usa=df_usa,
             )
             if not swimmer_payload["points"]:
+                swimmer_payload = _merge_manual_swimmer_points(
+                    swimmer_payload,
+                    swimmer_name=str(swimmer_name),
+                    swimmer_yob=swimmer_yob,
+                    swimmer_country=swimmer_code or code,
+                    stroke=str(stroke).strip(),
+                    distance=int(distance),
+                    pool=str(pool).strip(),
+                )
+            if not swimmer_payload["points"]:
                 return {
                     "status": "not_found",
                     "meta": meta,
@@ -499,6 +509,15 @@ def build_corridor_payload(
             country_code=swimmer_code or code,
             gender_filter=gender_filter,
         )
+        swimmer_payload = _merge_manual_swimmer_points(
+            swimmer_payload,
+            swimmer_name=str(swimmer_name),
+            swimmer_yob=swimmer_yob,
+            swimmer_country=swimmer_code or code,
+            stroke=str(stroke).strip(),
+            distance=int(distance),
+            pool=str(pool).strip(),
+        )
         if not swimmer_payload["points"]:
             return {
                 "status": "not_found",
@@ -556,6 +575,55 @@ def _build_bands_from_long_df(long_df: pd.DataFrame) -> List[Dict[str, Any]]:
                 entry[str(col)] = round(float(val), 3)
         bands.append(entry)
     return bands
+
+
+def _merge_manual_swimmer_points(
+    payload: Optional[Dict[str, Any]],
+    *,
+    swimmer_name: str,
+    swimmer_yob: Optional[int],
+    swimmer_country: str,
+    stroke: str,
+    distance: int,
+    pool: str,
+) -> Dict[str, Any]:
+    """Complète la courbe nageur avec les performances saisies à la main."""
+    identity, extra = list_manual_points(
+        name=swimmer_name,
+        year_of_birth=swimmer_yob,
+        country=swimmer_country,
+        stroke=stroke,
+        distance=distance,
+        pool=pool,
+    )
+    base = dict(payload or {})
+    points = list(base.get("points") or [])
+    seen = {
+        (round(float(p.get("age")), 3), round(float(p.get("time_s")), 3))
+        for p in points
+        if p.get("age") is not None and p.get("time_s") is not None
+    }
+    for point in extra:
+        key = (round(float(point["age"]), 3), round(float(point["time_s"]), 3))
+        if key in seen:
+            continue
+        seen.add(key)
+        points.append(point)
+    points.sort(key=lambda p: float(p.get("age") or 0))
+    if identity:
+        base["name"] = identity.get("name") or base.get("name") or swimmer_name
+        if base.get("year_of_birth") is None:
+            base["year_of_birth"] = identity.get("year_of_birth")
+        if not base.get("country"):
+            base["country"] = identity.get("country") or swimmer_country
+        if not base.get("gender"):
+            base["gender"] = identity.get("gender")
+    else:
+        base.setdefault("name", swimmer_name)
+        base.setdefault("year_of_birth", swimmer_yob)
+        base.setdefault("country", swimmer_country)
+    base["points"] = points
+    return base
 
 
 def _resolve_swimmer_curve(
@@ -993,6 +1061,26 @@ def build_compare_payload(
             country_code=code_b,
             gender_filter=gender_filter,
         )
+
+    merge_kwargs = {
+        "stroke": str(stroke).strip(),
+        "distance": int(distance),
+        "pool": str(pool).strip(),
+    }
+    swimmer_a = _merge_manual_swimmer_points(
+        swimmer_a,
+        swimmer_name=swimmer_a_name,
+        swimmer_yob=swimmer_a_yob,
+        swimmer_country=code_a,
+        **merge_kwargs,
+    )
+    swimmer_b = _merge_manual_swimmer_points(
+        swimmer_b,
+        swimmer_name=swimmer_b_name,
+        swimmer_yob=swimmer_b_yob,
+        swimmer_country=code_b,
+        **merge_kwargs,
+    )
 
     missing: List[str] = []
     if not swimmer_a["points"]:

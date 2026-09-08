@@ -49,4 +49,22 @@ enum TimeFormat {
         }
         return String(format: "%d.%02d", secs, centis)
     }
+
+    /// Interprète ``63.31`` ou ``1:03.31``.
+    static func parseToSeconds(_ text: String) -> Double? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: ".")
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.contains(":") {
+            let parts = trimmed.split(separator: ":", omittingEmptySubsequences: false)
+            guard parts.count == 2,
+                  let minutes = Double(parts[0]),
+                  let seconds = Double(parts[1])
+            else { return nil }
+            let value = minutes * 60 + seconds
+            return value > 0 ? value : nil
+        }
+        guard let value = Double(trimmed), value > 0 else { return nil }
+        return value
+    }
 }

@@ -136,10 +136,20 @@ struct CreateSwimmerRequest: Codable, Sendable {
     let gender: String?
     let country: CountryCode
     let club: String?
+    let stroke: StrokeCode
+    let distance: Int
+    let pool: PoolCode
+    let timeS: Double?
+    let timeText: String?
+    let meetDate: String?
+    let age: Double?
 
     enum CodingKeys: String, CodingKey {
-        case name, gender, country, club
+        case name, gender, country, club, stroke, distance, pool, age
         case yearOfBirth = "year_of_birth"
+        case timeS = "time_s"
+        case timeText = "time_text"
+        case meetDate = "meet_date"
     }
 }
 
