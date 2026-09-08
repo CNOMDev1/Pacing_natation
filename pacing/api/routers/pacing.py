@@ -78,7 +78,7 @@ def get_nageur_recherche(
 @router.post("/nageur", response_model=CreateSwimmerResponse)
 def post_nageur(body: CreateSwimmerRequest) -> CreateSwimmerResponse:
     """
-    Enregistre un nageur saisi dans ``data/processed/manual_swimmers``.
+    Enregistre une performance (nageur + épreuve + temps) dans ``manual_performances``.
     """
     try:
         payload = save_manual_swimmer(
@@ -87,6 +87,13 @@ def post_nageur(body: CreateSwimmerRequest) -> CreateSwimmerResponse:
             gender=body.gender,
             country=body.country.value,
             club=body.club,
+            stroke=body.stroke.value,
+            distance=body.distance,
+            pool=body.pool.value,
+            time_s=body.time_s,
+            time_text=body.time_text,
+            meet_date=body.meet_date,
+            age=body.age,
         )
         return CreateSwimmerResponse.model_validate(payload)
     except ValueError as exc:

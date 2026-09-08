@@ -238,12 +238,18 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func createSwimmer(
+    func createPerformance(
         name: String,
         yearOfBirth: Int?,
         gender: String?,
         country: CountryCode,
-        club: String?
+        club: String?,
+        stroke: StrokeCode,
+        distance: Int,
+        pool: PoolCode,
+        timeS: Double,
+        meetDate: String?,
+        age: Double?
     ) async throws -> SwimmerSearchResult {
         lastError = nil
         let body = CreateSwimmerRequest(
@@ -251,7 +257,14 @@ final class AppStore: ObservableObject {
             yearOfBirth: yearOfBirth,
             gender: gender,
             country: country,
-            club: club
+            club: club,
+            stroke: stroke,
+            distance: distance,
+            pool: pool,
+            timeS: timeS,
+            timeText: nil,
+            meetDate: meetDate,
+            age: age
         )
         do {
             let response = try await client.createSwimmer(body)
@@ -261,7 +274,7 @@ final class AppStore: ObservableObject {
             return response.swimmer
         } catch {
             do {
-                let saved = try saveSwimmerToProcessedFolder(body)
+                let saved = try savePerformanceToProcessedFolder(body)
                 selectedSwimmer = saved
                 lastError = nil
                 return saved
@@ -272,36 +285,65 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func saveSwimmerToProcessedFolder(_ request: CreateSwimmerRequest) throws -> SwimmerSearchResult {
+    private func savePerformanceToProcessedFolder(_ request: CreateSwimmerRequest) throws -> SwimmerSearchResult {
         let expanded = (projectPath as NSString).expandingTildeInPath
         let dir = URL(fileURLWithPath: expanded)
-            .appendingPathComponent("data/processed/manual_swimmers", isDirectory: true)
+            .appendingPathComponent("data/processed/manual_performances", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
-        let stamp = ISO8601DateFormatter().string(from: Date())
-            .replacingOccurrences(of: ":", with: "")
-            .replacingOccurrences(of: "-", with: "")
         let slug = request.name
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
             .joined(separator: "_")
         let yob = request.yearOfBirth.map(String.init) ?? "na"
-        let filename = "\(slug.isEmpty ? "nageur" : slug)_\(yob)_\(request.country.rawValue)_\(stamp).json"
+        let filename = "\(slug.isEmpty ? "nageur" : slug)_\(yob)_\(request.country.rawValue).json"
         let url = dir.appendingPathComponent(filename)
 
-        let label = request.yearOfBirth.map { "\(request.name) (\($0))" } ?? request.name
-        let payload: [String: Any?] = [
-            "name": request.name,
-            "year_of_birth": request.yearOfBirth,
-            "gender": request.gender,
-            "country": request.country.rawValue,
-            "club": request.club,
-            "label": label,
-            "source": "ios",
-            "created_at": ISO8601DateFormatter().string(from: Date()),
+        var payload: [String: Any] = [:]
+        if let existing = try? Data(contentsOf: url),
+           let parsed = try? JSONSerialization.jsonObject(with: existing) as? [String: Any] {
+            payload = parsed
+        }
+
+        var performances = payload["performances"] as? [[String: Any]] ?? []
+        let ageValue: Double?
+        if let age = request.age {
+            ageValue = age
+        } else if let yobInt = request.yearOfBirth, let meet = request.meetDate, meet.count >= 4 {
+            ageValue = Double((Int(meet.prefix(4)) ?? 0) - yobInt)
+        } else {
+            ageValue = nil
+        }
+        guard let ageValue, let timeS = request.timeS else {
+            throw PacingAPIError.decoding("âge ou temps manquant")
+        }
+        var perf: [String: Any] = [
+            "stroke": request.stroke.rawValue,
+            "distance": request.distance,
+            "pool": request.pool.rawValue,
+            "time_s": timeS,
+            "age": ageValue,
         ]
-        let cleaned = payload.compactMapValues { $0 }
-        let data = try JSONSerialization.data(withJSONObject: cleaned, options: [.prettyPrinted, .sortedKeys])
+        if let meet = request.meetDate {
+            perf["meet_date"] = meet
+        }
+        performances.append(perf)
+
+        let label = request.yearOfBirth.map { "\(request.name) (\($0))" } ?? request.name
+        let now = ISO8601DateFormatter().string(from: Date())
+        payload["name"] = request.name
+        payload["country"] = request.country.rawValue
+        payload["label"] = label
+        payload["source"] = "ios"
+        payload["updated_at"] = now
+        payload["performances"] = performances
+        if let yobInt = request.yearOfBirth { payload["year_of_birth"] = yobInt }
+        if let gender = request.gender { payload["gender"] = gender }
+        if let club = request.club { payload["club"] = club }
+        if payload["created_at"] == nil {
+            payload["created_at"] = now
+        }
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: url, options: .atomic)
 
         return SwimmerSearchResult(
