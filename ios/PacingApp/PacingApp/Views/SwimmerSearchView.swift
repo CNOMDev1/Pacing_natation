@@ -4,6 +4,7 @@ struct SwimmerSearchView: View {
     @EnvironmentObject private var store: AppStore
     @State private var query: String = ""
     @State private var hasSearched = false
+    @State private var showAddSwimmer = false
     @FocusState private var isQueryFocused: Bool
 
     var body: some View {
@@ -112,6 +113,19 @@ struct SwimmerSearchView: View {
             }
         }
         .navigationTitle("Recherche")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showAddSwimmer = true
+                } label: {
+                    Label("Ajouter un nageur", systemImage: "person.badge.plus")
+                }
+            }
+        }
+        .sheet(isPresented: $showAddSwimmer) {
+            AddSwimmerFormView()
+                .environmentObject(store)
+        }
         .task {
             await store.refreshConnection()
         }

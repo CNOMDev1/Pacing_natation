@@ -160,6 +160,32 @@ class SwimmerSearchResult(BaseModel):
     country: CountryCode
 
 
+class CreateSwimmerRequest(BaseModel):
+    """Corps JSON ``POST /nageur`` (saisie iPad)."""
+
+    name: str = Field(..., min_length=1)
+    year_of_birth: Optional[int] = Field(None, ge=1900, le=2100)
+    gender: Optional[str] = None
+    country: CountryCode
+    club: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def _strip_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("le nom du nageur ne peut pas être vide")
+        return cleaned
+
+
+class CreateSwimmerResponse(BaseModel):
+    """Réponse ``POST /nageur``."""
+
+    status: ApiStatus
+    path: str
+    swimmer: SwimmerSearchResult
+
+
 class SwimmerSearchResponse(BaseModel):
     """Réponse ``GET /nageur/recherche``.
 

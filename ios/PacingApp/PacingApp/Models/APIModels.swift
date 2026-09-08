@@ -130,6 +130,25 @@ struct SwimmerSearchResponse: Codable, Sendable {
     let message: String?
 }
 
+struct CreateSwimmerRequest: Codable, Sendable {
+    let name: String
+    let yearOfBirth: Int?
+    let gender: String?
+    let country: CountryCode
+    let club: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name, gender, country, club
+        case yearOfBirth = "year_of_birth"
+    }
+}
+
+struct CreateSwimmerResponse: Codable, Sendable {
+    let status: ApiStatus
+    let path: String
+    let swimmer: SwimmerSearchResult
+}
+
 struct CorridorUnits: Codable, Sendable {
     let age: String?
     let ageGroup: String?
