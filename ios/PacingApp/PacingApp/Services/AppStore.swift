@@ -237,4 +237,79 @@ final class AppStore: ObservableObject {
             isAPIReachable = false
         }
     }
+
+    func createSwimmer(
+        name: String,
+        yearOfBirth: Int?,
+        gender: String?,
+        country: CountryCode,
+        club: String?
+    ) async throws -> SwimmerSearchResult {
+        lastError = nil
+        let body = CreateSwimmerRequest(
+            name: name,
+            yearOfBirth: yearOfBirth,
+            gender: gender,
+            country: country,
+            club: club
+        )
+        do {
+            let response = try await client.createSwimmer(body)
+            isAPIReachable = true
+            apiAvailable = true
+            selectedSwimmer = response.swimmer
+            return response.swimmer
+        } catch {
+            do {
+                let saved = try saveSwimmerToProcessedFolder(body)
+                selectedSwimmer = saved
+                lastError = nil
+                return saved
+            } catch {
+                lastError = error.localizedDescription
+                throw error
+            }
+        }
+    }
+
+    private func saveSwimmerToProcessedFolder(_ request: CreateSwimmerRequest) throws -> SwimmerSearchResult {
+        let expanded = (projectPath as NSString).expandingTildeInPath
+        let dir = URL(fileURLWithPath: expanded)
+            .appendingPathComponent("data/processed/manual_swimmers", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let stamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "")
+            .replacingOccurrences(of: "-", with: "")
+        let slug = request.name
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: "_")
+        let yob = request.yearOfBirth.map(String.init) ?? "na"
+        let filename = "\(slug.isEmpty ? "nageur" : slug)_\(yob)_\(request.country.rawValue)_\(stamp).json"
+        let url = dir.appendingPathComponent(filename)
+
+        let label = request.yearOfBirth.map { "\(request.name) (\($0))" } ?? request.name
+        let payload: [String: Any?] = [
+            "name": request.name,
+            "year_of_birth": request.yearOfBirth,
+            "gender": request.gender,
+            "country": request.country.rawValue,
+            "club": request.club,
+            "label": label,
+            "source": "ios",
+            "created_at": ISO8601DateFormatter().string(from: Date()),
+        ]
+        let cleaned = payload.compactMapValues { $0 }
+        let data = try JSONSerialization.data(withJSONObject: cleaned, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: url, options: .atomic)
+
+        return SwimmerSearchResult(
+            label: label,
+            name: request.name,
+            yearOfBirth: request.yearOfBirth,
+            gender: request.gender,
+            country: request.country
+        )
+    }
 }

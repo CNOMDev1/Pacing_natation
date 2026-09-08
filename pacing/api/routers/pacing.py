@@ -16,11 +16,14 @@ from pacing.api.schemas import (
     CorridorParams,
     CorridorResponse,
     CountriesResponse,
+    CreateSwimmerRequest,
+    CreateSwimmerResponse,
     EventsParams,
     EventsReferentialResponse,
     SwimmerSearchParams,
     SwimmerSearchResponse,
 )
+from pacing.application.manual_swimmer_store import save_manual_swimmer
 from services.api_core import (
     build_compare_payload,
     build_corridor_payload,
@@ -68,6 +71,24 @@ def get_nageur_recherche(
             limit=params.limit,
         )
         return SwimmerSearchResponse.model_validate(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/nageur", response_model=CreateSwimmerResponse)
+def post_nageur(body: CreateSwimmerRequest) -> CreateSwimmerResponse:
+    """
+    Enregistre un nageur saisi dans ``data/processed/manual_swimmers``.
+    """
+    try:
+        payload = save_manual_swimmer(
+            name=body.name,
+            year_of_birth=body.year_of_birth,
+            gender=body.gender,
+            country=body.country.value,
+            club=body.club,
+        )
+        return CreateSwimmerResponse.model_validate(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

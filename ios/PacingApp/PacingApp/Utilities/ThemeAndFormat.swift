@@ -2,6 +2,15 @@ import SwiftUI
 
 enum PacingTheme {
     static let accent = Color(red: 0.05, green: 0.35, blue: 0.55)
+
+    /// Charte Flet / matplotlib (`corridor_data.py`).
+    static let belowMedianOuter = Color(hex: "bfdbfe", opacity: 0.40)
+    static let belowMedianInner = Color(hex: "3b82f6", opacity: 0.55)
+    static let aboveMedianOuter = Color(hex: "fde68a", opacity: 0.40)
+    static let aboveMedianInner = Color(hex: "f59e0b", opacity: 0.55)
+    static let median = Color(hex: "666666")
+    static let swimmerA = Color(hex: "dc2626")
+    static let swimmerB = Color(hex: "059669")
     static let canvas = Color(hex: "f8fafc")
 }
 

@@ -130,6 +130,25 @@ struct SwimmerSearchResponse: Codable, Sendable {
     let message: String?
 }
 
+struct CreateSwimmerRequest: Codable, Sendable {
+    let name: String
+    let yearOfBirth: Int?
+    let gender: String?
+    let country: CountryCode
+    let club: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name, gender, country, club
+        case yearOfBirth = "year_of_birth"
+    }
+}
+
+struct CreateSwimmerResponse: Codable, Sendable {
+    let status: ApiStatus
+    let path: String
+    let swimmer: SwimmerSearchResult
+}
+
 struct CorridorUnits: Codable, Sendable {
     let age: String?
     let ageGroup: String?
@@ -174,6 +193,12 @@ struct CorridorBand: Codable, Identifiable, Sendable {
 
     var id: String { ageGroup ?? "\(age ?? -1)" }
 
+    /// Abscisse numérique (âge ou index de catégorie).
+    var xValue: Double {
+        if let age { return Double(age) }
+        return Double(ageGroup?.hashValue ?? 0)
+    }
+
     var xLabel: String {
         if let age { return "\(age)" }
         return ageGroup ?? "?"
@@ -191,6 +216,11 @@ struct SwimmerPoint: Codable, Identifiable, Sendable {
     let timeS: Double
 
     var id: String { "\(age ?? 0)-\(ageGroup ?? "")-\(timeS)" }
+
+    var xValue: Double {
+        if let age { return age }
+        return Double(ageGroup?.hashValue ?? 0)
+    }
 
     enum CodingKeys: String, CodingKey {
         case age

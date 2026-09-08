@@ -21,6 +21,7 @@ from pacing.analytics.corridor_data import (
     resolve_corridor_swimmer_flexible,
 )
 from pacing.application.scope import event_combinations
+from pacing.application.manual_swimmer_store import list_manual_swimmers
 from pacing.domain.normalize import normalize_gender_code, normalize_text
 from services.app_service import (
     COUNTRY_FRANCE,
@@ -229,14 +230,9 @@ def search_swimmers(
             else None
         )
         if not usa_event:
-            return {
-                "status": "empty",
-                "query": query,
-                "count": 0,
-                "results": [],
-                "message": "Pour US, fournir event ou stroke+distance+pool",
-            }
-        names = app.usa_swimmer_names(usa_event, gender=gender_key)
+            names = []
+        else:
+            names = app.usa_swimmer_names(usa_event, gender=gender_key)
         q_norm = normalize_text(query)
         for name in names:
             if q_norm and q_norm not in normalize_text(name):
@@ -254,8 +250,6 @@ def search_swimmers(
                 break
     else:
         df = _nav_df_for_code("FR")
-        if df.empty:
-            return {"status": "empty", "query": query, "count": 0, "results": []}
         scoped = df
         if event:
             scoped = scoped[scoped["Event"].astype(str).str.strip() == str(event).strip()]
@@ -313,11 +307,28 @@ def search_swimmers(
                 break
         results.sort(key=lambda r: normalize_text(r["label"]))
 
+    merged: List[Dict[str, Any]] = []
+    seen_keys: set[Tuple[str, str, Optional[int]]] = set()
+    for row in list_manual_swimmers(
+        query=query, country=code, gender=gender_key
+    ) + results:
+        key = (
+            str(row.get("country") or ""),
+            str(row.get("name") or ""),
+            row.get("year_of_birth"),
+        )
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        merged.append(row)
+        if len(merged) >= limit_n:
+            break
+
     return {
-        "status": "ok" if results else "empty",
+        "status": "ok" if merged else "empty",
         "query": query,
-        "count": len(results),
-        "results": results,
+        "count": len(merged),
+        "results": merged,
     }
 
 

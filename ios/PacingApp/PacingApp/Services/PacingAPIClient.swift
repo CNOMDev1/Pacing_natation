@@ -50,6 +50,10 @@ struct PacingAPIClient: Sendable {
         return try await get("/api/v1/nageur/recherche", query: params)
     }
 
+    func createSwimmer(_ body: CreateSwimmerRequest) async throws -> CreateSwimmerResponse {
+        try await post("/api/v1/nageur", body: body)
+    }
+
     func fetchCorridor(
         selection: EventSelection,
         corridorType: CorridorType,
@@ -127,6 +131,46 @@ struct PacingAPIClient: Sendable {
         request.timeoutInterval = timeout
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw PacingAPIError.unreachable(baseURL)
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            throw PacingAPIError.unreachable(baseURL)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let detail = String(data: data, encoding: .utf8) ?? "erreur"
+            throw PacingAPIError.http(http.statusCode, detail)
+        }
+
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            throw PacingAPIError.decoding(error.localizedDescription)
+        }
+    }
+
+    private func post<Body: Encodable, T: Decodable>(_ path: String, body: Body) async throws -> T {
+        let base = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: base + path) else {
+            throw PacingAPIError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = timeout
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        do {
+            request.httpBody = try JSONEncoder().encode(body)
+        } catch {
+            throw PacingAPIError.decoding(error.localizedDescription)
+        }
 
         let data: Data
         let response: URLResponse
