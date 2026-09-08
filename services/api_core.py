@@ -310,7 +310,12 @@ def search_swimmers(
     merged: List[Dict[str, Any]] = []
     seen_keys: set[Tuple[str, str, Optional[int]]] = set()
     for row in list_manual_swimmers(
-        query=query, country=code, gender=gender_key
+        query=query,
+        country=code,
+        gender=gender_key,
+        stroke=stroke,
+        distance=distance,
+        pool=pool,
     ) + results:
         key = (
             str(row.get("country") or ""),
