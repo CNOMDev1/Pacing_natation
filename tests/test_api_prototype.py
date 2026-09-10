@@ -5,15 +5,22 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 import pytest
 
+from pacing.api.export_openapi import OPENAPI_PATH, check as openapi_is_fresh
 from pacing.api.main import app
 from pacing.api.schemas import (
+    ApiErrorResponse,
     CorridorParams,
     CorridorType,
     CountriesResponse,
     CountryCode,
+    GraphCatalogResponse,
     SwimmerSearchParams,
 )
-from pacing.application.api_core import list_countries, resolve_country_code
+from pacing.application.api_core import (
+    list_countries,
+    list_graph_catalog,
+    resolve_country_code,
+)
 
 
 def test_resolve_country_code() -> None:
