@@ -28,6 +28,8 @@ struct ContentView: View {
         switch selection ?? .home {
         case .home:
             HomeView()
+        case .events:
+            EventsReferentialView()
         case .search:
             SwimmerSearchView()
         case .corridor:
@@ -54,6 +56,7 @@ struct ContentView: View {
 
 enum AppDestination: String, CaseIterable, Hashable, Identifiable {
     case home
+    case events
     case search
     case corridor
     case compare
@@ -64,6 +67,7 @@ enum AppDestination: String, CaseIterable, Hashable, Identifiable {
     var title: String {
         switch self {
         case .home: return "Accueil"
+        case .events: return "Épreuves"
         case .search: return "Recherche"
         case .corridor: return "Couloir"
         case .compare: return "Comparaison"
@@ -74,6 +78,7 @@ enum AppDestination: String, CaseIterable, Hashable, Identifiable {
     var systemImage: String {
         switch self {
         case .home: return "house"
+        case .events: return "list.bullet.indent"
         case .search: return "magnifyingglass"
         case .corridor: return "chart.xyaxis.line"
         case .compare: return "person.2"

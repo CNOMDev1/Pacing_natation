@@ -1164,14 +1164,23 @@ def list_event_combos(country: str) -> Dict[str, Any]:
     return {"country": code, "strokes": strokes}
 
 
-#: Graphes du catalogue déjà servis par un endpoint HTTP, sous forme de
-#: ``ChartSpec`` (grammaire Pacing) directement traçable par un client non
-#: Python. Les autres graphes du catalogue ne sont aujourd'hui disponibles
-#: que dans l'application Flet, qui les rend en local.
-_ENDPOINT_BY_GRAPH_KEY: Dict[str, str] = {
-    "performance_corridor_global_plot_time": "/api/v1/couloir",
-    "performance_corridor_plot_time": "/api/v1/couloir",
-    "performance_corridor_global_by_agegroup": "/api/v1/couloir",
+#: Graphes déjà servis par un endpoint HTTP sous forme de ``ChartSpec``
+#: (grammaire Pacing), donc traçables par un client non Python. La clé de
+#: premier niveau est le code pays, car le couloir servi par ``/couloir``
+#: change de nature selon le pays : âge en années pour FR/MA, catégorie
+#: d'âge USA Swimming pour US.
+_ENDPOINT_BY_COUNTRY_AND_KEY: Dict[str, Dict[str, str]] = {
+    "FR": {
+        "performance_corridor_global_plot_time": "/api/v1/couloir",
+        "performance_corridor_plot_time": "/api/v1/couloir",
+    },
+    "MA": {
+        "performance_corridor_global_plot_time": "/api/v1/couloir",
+        "performance_corridor_plot_time": "/api/v1/couloir",
+    },
+    "US": {
+        "performance_corridor_global_by_agegroup": "/api/v1/couloir",
+    },
 }
 
 
@@ -1179,10 +1188,15 @@ def list_graph_catalog(country: str) -> Dict[str, Any]:
     """
     Liste le catalogue de graphiques disponibles pour un pays.
 
-    Permet à un client (NiceGUI, iOS) de découvrir les graphiques sans
-    dupliquer le catalogue. Chaque entrée indique par quel endpoint le
-    graphique est réellement obtenable : ``endpoint`` vaut ``None`` tant
-    que le graphique n'est rendu que par l'application Flet en local.
+    Permet à un client (NiceGUI, DearPyGUI, iOS) de découvrir les graphiques
+    sans dupliquer le catalogue. Chaque entrée indique par quel endpoint le
+    graphique est réellement obtenable : ``endpoint`` vaut ``None`` tant que
+    le graphique n'est rendu que par l'application Flet, en local.
+
+    La source est le registre ``GRAPHES_NOTEBOOK``, seul à porter des clés
+    stables. Le menu Flet (``GRAPH_CATEGORIES``) est un second registre, aux
+    libellés distincts et spécifiques à cette interface ; il n'est donc pas
+    exposé ici.
 
     Args:
         country (str): Code ou libellé pays.
@@ -1194,29 +1208,21 @@ def list_graph_catalog(country: str) -> Dict[str, Any]:
         ValueError: Si le pays est inconnu.
     """
     code = resolve_country_code(country)
-    app = get_app_service()
-    country_label = _COUNTRY_BY_CODE[code]
+    endpoints = _ENDPOINT_BY_COUNTRY_AND_KEY.get(code, {})
 
-    key_by_name = {
-        normalize_text(spec.name): spec.key for spec in app.notebook_specs
-    }
+    by_category: Dict[str, List[Dict[str, Any]]] = {}
+    for spec in get_app_service().notebook_specs:
+        by_category.setdefault(spec.category, []).append(
+            {
+                "key": spec.key,
+                "name": spec.name,
+                "endpoint": endpoints.get(spec.key),
+            }
+        )
 
-    categories: List[Dict[str, Any]] = []
-    count = 0
-    for category in app.available_categories(country_label):
-        graphs: List[Dict[str, Any]] = []
-        for name in app.available_graphs(country_label, category):
-            key = key_by_name.get(normalize_text(name))
-            graphs.append(
-                {
-                    "key": key,
-                    "name": name,
-                    "endpoint": _ENDPOINT_BY_GRAPH_KEY.get(key or ""),
-                }
-            )
-        if not graphs:
-            continue
-        count += len(graphs)
-        categories.append({"title": category, "graphs": graphs})
-
+    categories = [
+        {"title": title, "graphs": graphs}
+        for title, graphs in sorted(by_category.items())
+    ]
+    count = sum(len(item["graphs"]) for item in categories)
     return {"country": code, "count": count, "categories": categories}

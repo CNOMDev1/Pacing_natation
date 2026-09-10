@@ -10,6 +10,43 @@ enum MockPacingService {
         ])
     }
 
+    /// Référentiel d'épreuves hors ligne, calqué sur la forme servie par l'API :
+    /// arbre nage → distance → bassins pour FR et MA, liste plate pour US.
+    static func events(country: CountryCode) -> EventsReferentialResponse {
+        guard country != .US else {
+            return EventsReferentialResponse(
+                country: country,
+                strokes: [],
+                events: ["50 FR SCY", "100 FR SCY", "200 FR SCY", "100 BK SCY", "100 BR SCY"]
+            )
+        }
+
+        let pools = [
+            PoolItem(code: "LCM", label: "LCM"),
+            PoolItem(code: "SCM", label: "SCM"),
+        ]
+        let strokes: [(StrokeCode, [Int])] = [
+            (.FR, [50, 100, 200, 400, 800, 1500]),
+            (.BK, [50, 100, 200]),
+            (.BR, [50, 100, 200]),
+            (.FL, [50, 100, 200]),
+            (.IM, [200, 400]),
+        ]
+        return EventsReferentialResponse(
+            country: country,
+            strokes: strokes.map { stroke, distances in
+                StrokeTreeItem(
+                    code: stroke.rawValue,
+                    label: stroke.label,
+                    distances: distances.map {
+                        DistanceItem(distance: $0, unit: "m", pools: pools)
+                    }
+                )
+            },
+            events: []
+        )
+    }
+
     static func search(query: String, country: CountryCode) -> SwimmerSearchResponse {
         let all = demoSwimmers.filter { $0.country == country }
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

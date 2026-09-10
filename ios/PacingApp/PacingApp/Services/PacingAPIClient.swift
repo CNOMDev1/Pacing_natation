@@ -29,6 +29,20 @@ struct PacingAPIClient: Sendable {
         try await get("/api/v1/pays")
     }
 
+    func fetchEvents(country: CountryCode) async throws -> EventsReferentialResponse {
+        try await get("/api/v1/referentiels/epreuves", query: ["country": country.rawValue])
+    }
+
+    /// Extrait le message du format d'erreur unique `{"error": {...}}`.
+    ///
+    /// Sans ce décodage, l'utilisateur voit le corps JSON brut de la réponse.
+    static func errorMessage(from data: Data) -> String {
+        if let envelope = try? JSONDecoder().decode(ApiErrorEnvelope.self, from: data) {
+            return envelope.error.message
+        }
+        return String(data: data, encoding: .utf8) ?? "erreur"
+    }
+
     func searchSwimmers(
         query: String,
         country: CountryCode,
@@ -144,8 +158,7 @@ struct PacingAPIClient: Sendable {
             throw PacingAPIError.unreachable(baseURL)
         }
         guard (200..<300).contains(http.statusCode) else {
-            let detail = String(data: data, encoding: .utf8) ?? "erreur"
-            throw PacingAPIError.http(http.statusCode, detail)
+            throw PacingAPIError.http(http.statusCode, Self.errorMessage(from: data))
         }
 
         do {
@@ -184,8 +197,7 @@ struct PacingAPIClient: Sendable {
             throw PacingAPIError.unreachable(baseURL)
         }
         guard (200..<300).contains(http.statusCode) else {
-            let detail = String(data: data, encoding: .utf8) ?? "erreur"
-            throw PacingAPIError.http(http.statusCode, detail)
+            throw PacingAPIError.http(http.statusCode, Self.errorMessage(from: data))
         }
 
         do {

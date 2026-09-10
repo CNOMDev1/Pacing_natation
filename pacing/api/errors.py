@@ -17,9 +17,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 #: Correspondance statut HTTP → code d'erreur stable exposé aux clients.
 ERROR_CODE_BY_STATUS: Dict[int, str] = {
@@ -92,13 +93,18 @@ def _validation_details(exc: RequestValidationError) -> List[Dict[str, Any]]:
 
 async def http_exception_handler(
     request: Request,
-    exc: HTTPException,
+    exc: StarletteHTTPException,
 ) -> JSONResponse:
     """Convertit une ``HTTPException`` au format d'erreur unique.
 
+    Le type intercepté est celui de Starlette, classe mère de
+    ``fastapi.HTTPException`` : c'est lui que lève le routeur pour une URL
+    inconnue. S'abonner seulement à la version FastAPI laisserait les 404 de
+    routage au format ``{"detail": ...}``.
+
     Args:
         request (Request): Requête entrante (non utilisée, signature FastAPI).
-        exc (HTTPException): Exception levée par un endpoint.
+        exc (StarletteHTTPException): Exception levée par un endpoint ou le routeur.
 
     Returns:
         JSONResponse: Réponse ``{"error": {...}}`` au statut d'origine.
@@ -142,5 +148,5 @@ def register_error_handlers(app: FastAPI) -> None:
     Returns:
         None
     """
-    app.add_exception_handler(HTTPException, http_exception_handler)
+    app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)

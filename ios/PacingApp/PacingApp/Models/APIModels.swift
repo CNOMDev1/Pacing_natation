@@ -107,6 +107,68 @@ struct CountriesResponse: Codable, Sendable {
     let countries: [CountryItem]
 }
 
+// MARK: - Format d'erreur unique de l'API
+
+/// Un champ fautif d'une erreur de validation (422).
+struct ApiErrorDetail: Codable, Sendable {
+    let field: String
+    let message: String
+    let type: String?
+}
+
+/// Contenu d'une erreur API.
+struct ApiErrorBody: Codable, Sendable {
+    let code: String
+    let message: String
+    let details: [ApiErrorDetail]?
+}
+
+/// Enveloppe `{"error": {...}}` commune à toutes les réponses 4xx / 5xx.
+///
+/// Permet d'afficher le message de l'API au lieu du corps JSON brut.
+struct ApiErrorEnvelope: Codable, Sendable {
+    let error: ApiErrorBody
+}
+
+// MARK: - Référentiel d'épreuves
+
+struct PoolItem: Codable, Identifiable, Hashable, Sendable {
+    let code: String
+    let label: String
+
+    var id: String { code }
+    var poolCode: PoolCode? { PoolCode(rawValue: code) }
+}
+
+struct DistanceItem: Codable, Identifiable, Hashable, Sendable {
+    let distance: Int
+    let unit: String?
+    let pools: [PoolItem]
+
+    var id: Int { distance }
+}
+
+struct StrokeTreeItem: Codable, Identifiable, Hashable, Sendable {
+    let code: String
+    let label: String
+    let distances: [DistanceItem]
+
+    var id: String { code }
+    var strokeCode: StrokeCode? { StrokeCode(rawValue: code) }
+}
+
+/// Réponse `GET /referentiels/epreuves`.
+///
+/// La forme dépend du pays : arbre `strokes` pour FR et MA, liste plate
+/// `events` pour les États-Unis.
+struct EventsReferentialResponse: Codable, Sendable {
+    let country: CountryCode
+    let strokes: [StrokeTreeItem]
+    let events: [String]
+
+    var isEmpty: Bool { strokes.isEmpty && events.isEmpty }
+}
+
 struct SwimmerSearchResult: Codable, Identifiable, Hashable, Sendable {
     let label: String
     let name: String

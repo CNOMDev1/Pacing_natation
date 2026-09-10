@@ -21,6 +21,7 @@
 		A41B20FFBBF74A18B8893254 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA41B20FFBBF74A18B88932 /* SettingsView.swift */; };
 		91C364EC80F0448FA3490D8F /* CorridorChartView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A91C364EC80F0448FA3490D /* CorridorChartView.swift */; };
 		B2ADD51F0F0448FA3490D01 /* AddSwimmerFormView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2ADD51F0F0448FA3490D01 /* AddSwimmerFormView.swift */; };
+		E5F6A7B8C9D0417283ABCD04 /* EventsReferentialView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE5F6A7B8C9D0417283ABC /* EventsReferentialView.swift */; };
 		093D17B2FB424F90A17669FD /* ThemeAndFormat.swift in Sources */ = {isa = PBXBuildFile; fileRef = A093D17B2FB424F90A17669 /* ThemeAndFormat.swift */; };
 		5385A528300F4DDF8AB184F3 /* SampleCorridor.json in Resources */ = {isa = PBXBuildFile; fileRef = A5385A528300F4DDF8AB184 /* SampleCorridor.json */; };
 		C1A2B3C4D5E6F70180ABCD02 /* ChartSpec.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1A2B3C4D5E6F70180ABCD /* ChartSpec.swift */; };
@@ -43,6 +44,7 @@
 		AA41B20FFBBF74A18B88932 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		A91C364EC80F0448FA3490D /* CorridorChartView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CorridorChartView.swift; sourceTree = "<group>"; };
 		A2ADD51F0F0448FA3490D01 /* AddSwimmerFormView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddSwimmerFormView.swift; sourceTree = "<group>"; };
+		AE5F6A7B8C9D0417283ABC /* EventsReferentialView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventsReferentialView.swift; sourceTree = "<group>"; };
 		A093D17B2FB424F90A17669 /* ThemeAndFormat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeAndFormat.swift; sourceTree = "<group>"; };
 		A5385A528300F4DDF8AB184 /* SampleCorridor.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = SampleCorridor.json; sourceTree = "<group>"; };
 		AC1A2B3C4D5E6F70180ABCD /* ChartSpec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartSpec.swift; sourceTree = "<group>"; };
@@ -124,6 +126,7 @@
 				AA41B20FFBBF74A18B88932 /* SettingsView.swift */,
 				A91C364EC80F0448FA3490D /* CorridorChartView.swift */,
 				A2ADD51F0F0448FA3490D01 /* AddSwimmerFormView.swift */,
+				AE5F6A7B8C9D0417283ABC /* EventsReferentialView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -231,6 +234,7 @@
 				A41B20FFBBF74A18B8893254 /* SettingsView.swift in Sources */,
 				91C364EC80F0448FA3490D8F /* CorridorChartView.swift in Sources */,
 				B2ADD51F0F0448FA3490D01 /* AddSwimmerFormView.swift in Sources */,
+				E5F6A7B8C9D0417283ABCD04 /* EventsReferentialView.swift in Sources */,
 				093D17B2FB424F90A17669FD /* ThemeAndFormat.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
