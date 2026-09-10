@@ -70,10 +70,8 @@ struct CompareView: View {
                         .foregroundStyle(.secondary)
 
                     CorridorChartView(
-                        bands: compare.bands,
-                        swimmerA: compare.swimmerA,
-                        swimmerB: compare.swimmerB,
-                        title: "Comparaison sur \(compare.meta.event)"
+                        spec: compare.spec,
+                        fallbackTitle: "Comparaison sur \(compare.meta.event)"
                     )
                     bandTable(compare.bands)
                     if let a = compare.swimmerA {

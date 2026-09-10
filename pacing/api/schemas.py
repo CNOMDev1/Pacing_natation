@@ -328,6 +328,10 @@ class CorridorResponse(BaseModel):
         meta (CorridorMeta): Contexte de la requête.
         bands (List[CorridorBand]): Bandes percentiles.
         swimmer (Optional[CorridorSwimmer]): Nageur cible si demandé.
+        spec (Optional[Dict[str, Any]]): Recette du graphique (grammaire
+            Pacing) : géométries, échelles, thème et légende. Permet à un
+            client non-Python — Swift Charts sur iPad — de tracer le même
+            graphique que Matplotlib au lieu de le redéfinir.
         image_base64 (Optional[str]): Image optionnelle (non utilisée en prototype).
         missing (Optional[List[str]]): Ressources manquantes si ``not_found``.
     """
@@ -336,6 +340,7 @@ class CorridorResponse(BaseModel):
     meta: CorridorMeta
     bands: List[CorridorBand] = Field(default_factory=list)
     swimmer: Optional[CorridorSwimmer] = None
+    spec: Optional[Dict[str, Any]] = None
     image_base64: Optional[str] = None
     missing: Optional[List[str]] = None
 
@@ -349,6 +354,8 @@ class CompareResponse(BaseModel):
         bands (List[CorridorBand]): Bandes du couloir.
         swimmer_a (Optional[CorridorSwimmer]): Premier nageur.
         swimmer_b (Optional[CorridorSwimmer]): Second nageur (overlay).
+        spec (Optional[Dict[str, Any]]): Recette du graphique (grammaire
+            Pacing), identique en structure à celle de ``/couloir``.
         image_base64 (Optional[str]): Non utilisé en prototype.
         missing (Optional[List[str]]): ``swimmer_a`` / ``swimmer_b`` si absents.
     """
@@ -358,6 +365,7 @@ class CompareResponse(BaseModel):
     bands: List[CorridorBand] = Field(default_factory=list)
     swimmer_a: Optional[CorridorSwimmer] = None
     swimmer_b: Optional[CorridorSwimmer] = None
+    spec: Optional[Dict[str, Any]] = None
     image_base64: Optional[str] = None
     missing: Optional[List[str]] = None
 

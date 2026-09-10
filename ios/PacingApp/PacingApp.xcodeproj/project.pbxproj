@@ -23,6 +23,8 @@
 		B2ADD51F0F0448FA3490D01 /* AddSwimmerFormView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2ADD51F0F0448FA3490D01 /* AddSwimmerFormView.swift */; };
 		093D17B2FB424F90A17669FD /* ThemeAndFormat.swift in Sources */ = {isa = PBXBuildFile; fileRef = A093D17B2FB424F90A17669 /* ThemeAndFormat.swift */; };
 		5385A528300F4DDF8AB184F3 /* SampleCorridor.json in Resources */ = {isa = PBXBuildFile; fileRef = A5385A528300F4DDF8AB184 /* SampleCorridor.json */; };
+		C1A2B3C4D5E6F70180ABCD02 /* ChartSpec.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1A2B3C4D5E6F70180ABCD /* ChartSpec.swift */; };
+		D2B3C4D5E6F708019ABCDE03 /* DemoChartSpecs.json in Resources */ = {isa = PBXBuildFile; fileRef = AD2B3C4D5E6F708019ABCDE /* DemoChartSpecs.json */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -43,6 +45,8 @@
 		A2ADD51F0F0448FA3490D01 /* AddSwimmerFormView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddSwimmerFormView.swift; sourceTree = "<group>"; };
 		A093D17B2FB424F90A17669 /* ThemeAndFormat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeAndFormat.swift; sourceTree = "<group>"; };
 		A5385A528300F4DDF8AB184 /* SampleCorridor.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = SampleCorridor.json; sourceTree = "<group>"; };
+		AC1A2B3C4D5E6F70180ABCD /* ChartSpec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartSpec.swift; sourceTree = "<group>"; };
+		AD2B3C4D5E6F708019ABCDE /* DemoChartSpecs.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = DemoChartSpecs.json; sourceTree = "<group>"; };
 		A292F88D825404FC3955458 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A598CEFC28EBF474BBF78FF /* PacingApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PacingApp.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -94,6 +98,7 @@
 			isa = PBXGroup;
 			children = (
 				A75D297868A8A4731ADF561 /* APIModels.swift */,
+				AC1A2B3C4D5E6F70180ABCD /* ChartSpec.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -135,6 +140,7 @@
 			isa = PBXGroup;
 			children = (
 				A5385A528300F4DDF8AB184 /* SampleCorridor.json */,
+				AD2B3C4D5E6F708019ABCDE /* DemoChartSpecs.json */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -199,6 +205,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				5385A528300F4DDF8AB184F3 /* SampleCorridor.json in Resources */,
+				D2B3C4D5E6F708019ABCDE03 /* DemoChartSpecs.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -212,6 +219,7 @@
 				325D9F4068A84C3CAC1BB39A /* PacingAppApp.swift in Sources */,
 				C8FC5B27D7EC4B9DA5212DC9 /* ContentView.swift in Sources */,
 				75D297868A8A4731ADF561DB /* APIModels.swift in Sources */,
+				C1A2B3C4D5E6F70180ABCD02 /* ChartSpec.swift in Sources */,
 				27E9E022AD53498D9190239B /* PacingAPIClient.swift in Sources */,
 				B1C2D3E4F5A6478990ABCD01 /* LocalAPIServerLauncher.swift in Sources */,
 				2592F0E44B044082B130F4ED /* MockPacingService.swift in Sources */,

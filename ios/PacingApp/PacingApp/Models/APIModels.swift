@@ -264,11 +264,13 @@ struct CorridorResponse: Codable, Sendable {
     let meta: CorridorMeta
     let bands: [CorridorBand]
     let swimmer: CorridorSwimmer?
+    /// Recette du graphique (grammaire Pacing) : ce que l’iPad trace.
+    let spec: ChartSpec?
     let imageBase64: String?
     let missing: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case status, meta, bands, swimmer, missing
+        case status, meta, bands, swimmer, spec, missing
         case imageBase64 = "image_base64"
     }
 }
@@ -279,11 +281,13 @@ struct CompareResponse: Codable, Sendable {
     let bands: [CorridorBand]
     let swimmerA: CorridorSwimmer?
     let swimmerB: CorridorSwimmer?
+    /// Recette du graphique (grammaire Pacing) : ce que l’iPad trace.
+    let spec: ChartSpec?
     let imageBase64: String?
     let missing: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case status, meta, bands, missing
+        case status, meta, bands, spec, missing
         case swimmerA = "swimmer_a"
         case swimmerB = "swimmer_b"
         case imageBase64 = "image_base64"

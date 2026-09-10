@@ -62,6 +62,7 @@ enum MockPacingService {
             ),
             bands: bands,
             swimmer: swimmer,
+            spec: demoSpecs?.corridor,
             imageBase64: nil,
             missing: nil
         )
@@ -104,6 +105,7 @@ enum MockPacingService {
                 gender: selection.gender.rawValue,
                 points: demoSwimmerBPoints
             ),
+            spec: demoSpecs?.compare,
             imageBase64: nil,
             missing: nil
         )
@@ -143,6 +145,24 @@ enum MockPacingService {
         SwimmerPoint(age: 15, ageGroup: nil, timeS: 61.5),
         SwimmerPoint(age: 16, ageGroup: nil, timeS: 59.9),
     ]
+
+    /// Recettes de démo produites par la grammaire Python
+    /// (``pacing/grammar/corridor.py``) et embarquées telles quelles.
+    ///
+    /// Le mode hors ligne ne redéfinit donc pas le graphique : il rejoue une
+    /// recette générée, exactement comme si l'API l'avait renvoyée.
+    private struct DemoSpecs: Decodable {
+        let corridor: ChartSpec
+        let compare: ChartSpec
+    }
+
+    private static let demoSpecs: DemoSpecs? = {
+        guard let url = Bundle.main.url(forResource: "DemoChartSpecs", withExtension: "json"),
+              let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(DemoSpecs.self, from: data)
+    }()
 
     private static func loadBundledCorridor() -> CorridorResponse? {
         guard let url = Bundle.main.url(forResource: "SampleCorridor", withExtension: "json"),

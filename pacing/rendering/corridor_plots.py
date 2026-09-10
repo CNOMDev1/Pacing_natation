@@ -4,6 +4,11 @@ Ce module trace les bandes de percentiles/déciles et les nageurs cibles à
 partir de données déjà calculées par ``pacing.analytics.corridor_data``. Il ne
 calcule ni percentiles ni résolution de nageurs.
 
+La structure du couloir percentile n'est plus décrite ici : elle vit dans
+``pacing.grammar.corridor``, partagée avec NiceGUI, DearPyGUI et iOS. Ce module
+n'en est qu'un point d'entrée pour le chemin Flet, qui part d'un DataFrame
+pandas au lieu du payload de l'API.
+
 Attributes:
     Aucun attribut de module public au-delà des fonctions exportées.
 """
@@ -14,18 +19,6 @@ from typing import Any, Dict, List, Optional, Sequence
 import pandas as pd
 
 from pacing.analytics.corridor_data import (
-    CORRIDOR_ABOVE_MEDIAN_EDGE_COLOR,
-    CORRIDOR_ABOVE_MEDIAN_INNER_COLOR,
-    CORRIDOR_ABOVE_MEDIAN_OUTER_COLOR,
-    CORRIDOR_BAND_EDGE_ALPHA,
-    CORRIDOR_BAND_INNER_ALPHA,
-    CORRIDOR_BAND_OUTER_ALPHA,
-    CORRIDOR_BELOW_MEDIAN_EDGE_COLOR,
-    CORRIDOR_BELOW_MEDIAN_INNER_COLOR,
-    CORRIDOR_BELOW_MEDIAN_OUTER_COLOR,
-    CORRIDOR_CHART_AXES_FACECOLOR,
-    CORRIDOR_CHART_FIGURE_FACECOLOR,
-    CORRIDOR_GRID_ALPHA,
     CORRIDOR_MA_SWIMMER_COLOR,
     CORRIDOR_MEDIAN_COLOR,
     CORRIDOR_MEDIAN_LINEWIDTH,
@@ -42,6 +35,8 @@ from pacing.analytics.corridor_data import (
     build_corridor_swimmer_series,
     build_normalized_pacing_series,
 )
+from pacing.grammar.corridor import PACING_THEME, percentile_corridor_spec
+from pacing.grammar.render_matplotlib import draw_layers
 
 
 def corridor_swimmer_line_kwargs(spec: CorridorSwimmerSpec) -> Dict[str, Any]:
@@ -104,9 +99,14 @@ def apply_corridor_chart_theme(fig, ax) -> None:
     Returns:
         None
     """
-    fig.patch.set_facecolor(CORRIDOR_CHART_FIGURE_FACECOLOR)
-    ax.set_facecolor(CORRIDOR_CHART_AXES_FACECOLOR)
-    ax.grid(alpha=CORRIDOR_GRID_ALPHA, color="#94a3b8", linestyle="-", linewidth=0.6)
+    fig.patch.set_facecolor(PACING_THEME.figure_facecolor)
+    ax.set_facecolor(PACING_THEME.axes_facecolor)
+    ax.grid(
+        alpha=PACING_THEME.grid_alpha,
+        color=PACING_THEME.grid_color,
+        linestyle="-",
+        linewidth=PACING_THEME.grid_linewidth,
+    )
 
 
 def draw_percentile_corridor_bands(
@@ -119,14 +119,6 @@ def draw_percentile_corridor_bands(
     inner_low: str = "p25",
     inner_high: str = "p75",
     median_col: str = "p50",
-    below_median_outer_color: str = CORRIDOR_BELOW_MEDIAN_OUTER_COLOR,
-    below_median_inner_color: str = CORRIDOR_BELOW_MEDIAN_INNER_COLOR,
-    above_median_outer_color: str = CORRIDOR_ABOVE_MEDIAN_OUTER_COLOR,
-    above_median_inner_color: str = CORRIDOR_ABOVE_MEDIAN_INNER_COLOR,
-    median_color: str = CORRIDOR_MEDIAN_COLOR,
-    median_linewidth: float = CORRIDOR_MEDIAN_LINEWIDTH,
-    outer_alpha: float = CORRIDOR_BAND_OUTER_ALPHA,
-    inner_alpha: float = CORRIDOR_BAND_INNER_ALPHA,
     outer_label_below: str = "Couloir P10–P50 (sous médiane)",
     outer_label_above: str = "Couloir P50–P90 (au-dessus médiane)",
     inner_label_below: str = "_nolegend_",
@@ -137,9 +129,14 @@ def draw_percentile_corridor_bands(
 ) -> None:
     """Trace un couloir percentile divergent autour de la médiane (P50).
 
-    Les domaines P10–P90 et P25–P75 sont scindés en deux moitiés : sous la
-    médiane (bleu, dégradé clair→foncé vers P50) et au-dessus (ambre, idem).
-    La ligne médiane matérialise le point neutre (carte divergente, Munzner 2014).
+    Adaptateur du chemin pandas vers la grammaire : construit la recette avec
+    ``percentile_corridor_spec`` puis la fait dessiner par le moteur commun.
+    La structure des bandes (moitiés bleue et ambre autour du point neutre,
+    carte divergente, Munzner 2014) est décrite dans ``pacing.grammar``.
+
+    Les couleurs, opacités et épaisseurs ne sont plus paramétrables ici : elles
+    appartiennent à la recette, afin que les quatre interfaces ne puissent pas
+    en diverger.
 
     Args:
         ax: Axe matplotlib cible.
@@ -150,14 +147,6 @@ def draw_percentile_corridor_bands(
         inner_low (str): Colonne borne basse interne (ex. ``p25``).
         inner_high (str): Colonne borne haute interne (ex. ``p75``).
         median_col (str): Colonne médiane (ex. ``p50``).
-        below_median_outer_color (str): Couleur bande externe sous la médiane.
-        below_median_inner_color (str): Couleur bande interne sous la médiane.
-        above_median_outer_color (str): Couleur bande externe au-dessus de la médiane.
-        above_median_inner_color (str): Couleur bande interne au-dessus de la médiane.
-        median_color (str): Couleur ligne médiane (point neutre divergent).
-        median_linewidth (float): Épaisseur de la ligne médiane.
-        outer_alpha (float): Transparence bandes externes.
-        inner_alpha (float): Transparence bandes internes.
         outer_label_below (str): Libellé légende bande externe sous médiane.
         outer_label_above (str): Libellé légende bande externe au-dessus médiane.
         inner_label_below (str): Libellé légende bande interne sous médiane.
@@ -174,130 +163,25 @@ def draw_percentile_corridor_bands(
     if median_col not in df_percentiles.columns:
         return
 
-    x = list(x_values)
-    median = df_percentiles[median_col]
-
-    has_outer = outer_low in df_percentiles.columns and outer_high in df_percentiles.columns
-    has_inner = inner_low in df_percentiles.columns and inner_high in df_percentiles.columns
-
-    if has_outer and len(x) > 1:
-        ax.fill_between(
-            x,
-            df_percentiles[outer_low],
-            median,
-            color=below_median_outer_color,
-            alpha=outer_alpha,
-            linewidth=0,
-            label=outer_label_below,
-            zorder=zorder_bands,
-        )
-        ax.fill_between(
-            x,
-            median,
-            df_percentiles[outer_high],
-            color=above_median_outer_color,
-            alpha=outer_alpha,
-            linewidth=0,
-            label=outer_label_above,
-            zorder=zorder_bands,
-        )
-        for edge_col, edge_color in (
-            (outer_low, CORRIDOR_BELOW_MEDIAN_EDGE_COLOR),
-            (outer_high, CORRIDOR_ABOVE_MEDIAN_EDGE_COLOR),
-        ):
-            ax.plot(
-                x,
-                df_percentiles[edge_col],
-                color=edge_color,
-                alpha=CORRIDOR_BAND_EDGE_ALPHA,
-                linewidth=0.8,
-                linestyle="-",
-                label="_nolegend_",
-                zorder=zorder_bands + 1,
-            )
-
-    if has_inner and len(x) > 1:
-        ax.fill_between(
-            x,
-            df_percentiles[inner_low],
-            median,
-            color=below_median_inner_color,
-            alpha=inner_alpha,
-            linewidth=0,
-            label=inner_label_below,
-            zorder=zorder_bands + 2,
-        )
-        ax.fill_between(
-            x,
-            median,
-            df_percentiles[inner_high],
-            color=above_median_inner_color,
-            alpha=inner_alpha,
-            linewidth=0,
-            label=inner_label_above,
-            zorder=zorder_bands + 2,
-        )
-
-    ax.plot(
-        x,
-        median,
-        color=median_color,
-        linewidth=median_linewidth,
-        linestyle="-",
-        solid_capstyle="round",
-        label=median_label,
-        zorder=zorder_median,
+    draw_layers(
+        ax,
+        percentile_corridor_spec(
+            x_values,
+            df_percentiles,
+            outer_low=outer_low,
+            outer_high=outer_high,
+            inner_low=inner_low,
+            inner_high=inner_high,
+            median_col=median_col,
+            outer_label_below=outer_label_below,
+            outer_label_above=outer_label_above,
+            inner_label_below=inner_label_below,
+            inner_label_above=inner_label_above,
+            median_label=median_label,
+            zorder_bands=zorder_bands,
+            zorder_median=zorder_median,
+        ),
     )
-    if len(x) == 1:
-        x0 = x[0]
-        median_v = float(median.iloc[0])
-        if has_outer:
-            ax.scatter(
-                [x0, x0],
-                [
-                    float(df_percentiles[outer_low].iloc[0]),
-                    float(df_percentiles[outer_high].iloc[0]),
-                ],
-                color=[
-                    CORRIDOR_BELOW_MEDIAN_EDGE_COLOR,
-                    CORRIDOR_ABOVE_MEDIAN_EDGE_COLOR,
-                ],
-                s=45,
-                marker="_",
-                linewidths=2.2,
-                zorder=zorder_median + 1,
-                label="_nolegend_",
-            )
-        if has_inner:
-            ax.scatter(
-                [x0, x0],
-                [
-                    float(df_percentiles[inner_low].iloc[0]),
-                    float(df_percentiles[inner_high].iloc[0]),
-                ],
-                color=[
-                    below_median_inner_color,
-                    above_median_inner_color,
-                ],
-                s=40,
-                marker="o",
-                edgecolors="#1e293b",
-                linewidths=0.8,
-                alpha=0.9,
-                zorder=zorder_median + 1,
-                label="_nolegend_",
-            )
-        ax.scatter(
-            [x0],
-            [median_v],
-            color=median_color,
-            s=55,
-            marker="o",
-            edgecolors="#1e293b",
-            linewidths=0.8,
-            zorder=zorder_median + 2,
-            label="_nolegend_",
-        )
 
 
 def draw_decile_corridor_bands(
