@@ -35,9 +35,8 @@ struct CorridorView: View {
                 if let corridor = store.corridor {
                     metaBlock(corridor)
                     CorridorChartView(
-                        bands: corridor.bands,
-                        swimmerA: corridor.swimmer,
-                        title: corridor.meta.event
+                        spec: corridor.spec,
+                        fallbackTitle: corridor.meta.event
                     )
                     bandTable(corridor.bands)
                     if let swimmer = corridor.swimmer {

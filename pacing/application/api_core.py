@@ -23,7 +23,7 @@ from pacing.analytics.corridor_data import (
 from pacing.application.scope import event_combinations
 from pacing.application.manual_swimmer_store import list_manual_points, list_manual_swimmers
 from pacing.domain.normalize import normalize_gender_code, normalize_text
-from services.app_service import (
+from pacing.application.app_service import (
     COUNTRY_FRANCE,
     COUNTRY_MOROCCO,
     COUNTRY_USA,
@@ -310,7 +310,12 @@ def search_swimmers(
     merged: List[Dict[str, Any]] = []
     seen_keys: set[Tuple[str, str, Optional[int]]] = set()
     for row in list_manual_swimmers(
-        query=query, country=code, gender=gender_key
+        query=query,
+        country=code,
+        gender=gender_key,
+        stroke=stroke,
+        distance=distance,
+        pool=pool,
     ) + results:
         key = (
             str(row.get("country") or ""),
@@ -1157,3 +1162,67 @@ def list_event_combos(country: str) -> Dict[str, Any]:
             }
         )
     return {"country": code, "strokes": strokes}
+
+
+#: Graphes déjà servis par un endpoint HTTP sous forme de ``ChartSpec``
+#: (grammaire Pacing), donc traçables par un client non Python. La clé de
+#: premier niveau est le code pays, car le couloir servi par ``/couloir``
+#: change de nature selon le pays : âge en années pour FR/MA, catégorie
+#: d'âge USA Swimming pour US.
+_ENDPOINT_BY_COUNTRY_AND_KEY: Dict[str, Dict[str, str]] = {
+    "FR": {
+        "performance_corridor_global_plot_time": "/api/v1/couloir",
+        "performance_corridor_plot_time": "/api/v1/couloir",
+    },
+    "MA": {
+        "performance_corridor_global_plot_time": "/api/v1/couloir",
+        "performance_corridor_plot_time": "/api/v1/couloir",
+    },
+    "US": {
+        "performance_corridor_global_by_agegroup": "/api/v1/couloir",
+    },
+}
+
+
+def list_graph_catalog(country: str) -> Dict[str, Any]:
+    """
+    Liste le catalogue de graphiques disponibles pour un pays.
+
+    Permet à un client (NiceGUI, DearPyGUI, iOS) de découvrir les graphiques
+    sans dupliquer le catalogue. Chaque entrée indique par quel endpoint le
+    graphique est réellement obtenable : ``endpoint`` vaut ``None`` tant que
+    le graphique n'est rendu que par l'application Flet, en local.
+
+    La source est le registre ``GRAPHES_NOTEBOOK``, seul à porter des clés
+    stables. Le menu Flet (``GRAPH_CATEGORIES``) est un second registre, aux
+    libellés distincts et spécifiques à cette interface ; il n'est donc pas
+    exposé ici.
+
+    Args:
+        country (str): Code ou libellé pays.
+
+    Returns:
+        Dict[str, Any]: Payload ``country``, ``count``, ``categories[]``.
+
+    Raises:
+        ValueError: Si le pays est inconnu.
+    """
+    code = resolve_country_code(country)
+    endpoints = _ENDPOINT_BY_COUNTRY_AND_KEY.get(code, {})
+
+    by_category: Dict[str, List[Dict[str, Any]]] = {}
+    for spec in get_app_service().notebook_specs:
+        by_category.setdefault(spec.category, []).append(
+            {
+                "key": spec.key,
+                "name": spec.name,
+                "endpoint": endpoints.get(spec.key),
+            }
+        )
+
+    categories = [
+        {"title": title, "graphs": graphs}
+        for title, graphs in sorted(by_category.items())
+    ]
+    count = sum(len(item["graphs"]) for item in categories)
+    return {"country": code, "count": count, "categories": categories}

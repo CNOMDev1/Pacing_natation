@@ -107,6 +107,68 @@ struct CountriesResponse: Codable, Sendable {
     let countries: [CountryItem]
 }
 
+// MARK: - Format d'erreur unique de l'API
+
+/// Un champ fautif d'une erreur de validation (422).
+struct ApiErrorDetail: Codable, Sendable {
+    let field: String
+    let message: String
+    let type: String?
+}
+
+/// Contenu d'une erreur API.
+struct ApiErrorBody: Codable, Sendable {
+    let code: String
+    let message: String
+    let details: [ApiErrorDetail]?
+}
+
+/// Enveloppe `{"error": {...}}` commune à toutes les réponses 4xx / 5xx.
+///
+/// Permet d'afficher le message de l'API au lieu du corps JSON brut.
+struct ApiErrorEnvelope: Codable, Sendable {
+    let error: ApiErrorBody
+}
+
+// MARK: - Référentiel d'épreuves
+
+struct PoolItem: Codable, Identifiable, Hashable, Sendable {
+    let code: String
+    let label: String
+
+    var id: String { code }
+    var poolCode: PoolCode? { PoolCode(rawValue: code) }
+}
+
+struct DistanceItem: Codable, Identifiable, Hashable, Sendable {
+    let distance: Int
+    let unit: String?
+    let pools: [PoolItem]
+
+    var id: Int { distance }
+}
+
+struct StrokeTreeItem: Codable, Identifiable, Hashable, Sendable {
+    let code: String
+    let label: String
+    let distances: [DistanceItem]
+
+    var id: String { code }
+    var strokeCode: StrokeCode? { StrokeCode(rawValue: code) }
+}
+
+/// Réponse `GET /referentiels/epreuves`.
+///
+/// La forme dépend du pays : arbre `strokes` pour FR et MA, liste plate
+/// `events` pour les États-Unis.
+struct EventsReferentialResponse: Codable, Sendable {
+    let country: CountryCode
+    let strokes: [StrokeTreeItem]
+    let events: [String]
+
+    var isEmpty: Bool { strokes.isEmpty && events.isEmpty }
+}
+
 struct SwimmerSearchResult: Codable, Identifiable, Hashable, Sendable {
     let label: String
     let name: String
@@ -264,11 +326,13 @@ struct CorridorResponse: Codable, Sendable {
     let meta: CorridorMeta
     let bands: [CorridorBand]
     let swimmer: CorridorSwimmer?
+    /// Recette du graphique (grammaire Pacing) : ce que l’iPad trace.
+    let spec: ChartSpec?
     let imageBase64: String?
     let missing: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case status, meta, bands, swimmer, missing
+        case status, meta, bands, swimmer, spec, missing
         case imageBase64 = "image_base64"
     }
 }
@@ -279,11 +343,13 @@ struct CompareResponse: Codable, Sendable {
     let bands: [CorridorBand]
     let swimmerA: CorridorSwimmer?
     let swimmerB: CorridorSwimmer?
+    /// Recette du graphique (grammaire Pacing) : ce que l’iPad trace.
+    let spec: ChartSpec?
     let imageBase64: String?
     let missing: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case status, meta, bands, missing
+        case status, meta, bands, spec, missing
         case swimmerA = "swimmer_a"
         case swimmerB = "swimmer_b"
         case imageBase64 = "image_base64"

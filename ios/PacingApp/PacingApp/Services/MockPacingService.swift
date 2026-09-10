@@ -10,6 +10,43 @@ enum MockPacingService {
         ])
     }
 
+    /// Référentiel d'épreuves hors ligne, calqué sur la forme servie par l'API :
+    /// arbre nage → distance → bassins pour FR et MA, liste plate pour US.
+    static func events(country: CountryCode) -> EventsReferentialResponse {
+        guard country != .US else {
+            return EventsReferentialResponse(
+                country: country,
+                strokes: [],
+                events: ["50 FR SCY", "100 FR SCY", "200 FR SCY", "100 BK SCY", "100 BR SCY"]
+            )
+        }
+
+        let pools = [
+            PoolItem(code: "LCM", label: "LCM"),
+            PoolItem(code: "SCM", label: "SCM"),
+        ]
+        let strokes: [(StrokeCode, [Int])] = [
+            (.FR, [50, 100, 200, 400, 800, 1500]),
+            (.BK, [50, 100, 200]),
+            (.BR, [50, 100, 200]),
+            (.FL, [50, 100, 200]),
+            (.IM, [200, 400]),
+        ]
+        return EventsReferentialResponse(
+            country: country,
+            strokes: strokes.map { stroke, distances in
+                StrokeTreeItem(
+                    code: stroke.rawValue,
+                    label: stroke.label,
+                    distances: distances.map {
+                        DistanceItem(distance: $0, unit: "m", pools: pools)
+                    }
+                )
+            },
+            events: []
+        )
+    }
+
     static func search(query: String, country: CountryCode) -> SwimmerSearchResponse {
         let all = demoSwimmers.filter { $0.country == country }
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -62,6 +99,7 @@ enum MockPacingService {
             ),
             bands: bands,
             swimmer: swimmer,
+            spec: demoSpecs?.corridor,
             imageBase64: nil,
             missing: nil
         )
@@ -104,6 +142,7 @@ enum MockPacingService {
                 gender: selection.gender.rawValue,
                 points: demoSwimmerBPoints
             ),
+            spec: demoSpecs?.compare,
             imageBase64: nil,
             missing: nil
         )
@@ -143,6 +182,24 @@ enum MockPacingService {
         SwimmerPoint(age: 15, ageGroup: nil, timeS: 61.5),
         SwimmerPoint(age: 16, ageGroup: nil, timeS: 59.9),
     ]
+
+    /// Recettes de démo produites par la grammaire Python
+    /// (``pacing/grammar/corridor.py``) et embarquées telles quelles.
+    ///
+    /// Le mode hors ligne ne redéfinit donc pas le graphique : il rejoue une
+    /// recette générée, exactement comme si l'API l'avait renvoyée.
+    private struct DemoSpecs: Decodable {
+        let corridor: ChartSpec
+        let compare: ChartSpec
+    }
+
+    private static let demoSpecs: DemoSpecs? = {
+        guard let url = Bundle.main.url(forResource: "DemoChartSpecs", withExtension: "json"),
+              let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(DemoSpecs.self, from: data)
+    }()
 
     private static func loadBundledCorridor() -> CorridorResponse? {
         guard let url = Bundle.main.url(forResource: "SampleCorridor", withExtension: "json"),

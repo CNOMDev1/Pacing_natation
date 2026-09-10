@@ -183,7 +183,7 @@ def test_service_graphe_histogram_empty() -> None:
 
 def test_pacing_app_service_available_graphs_nested() -> None:
     """La façade liste des graphes pour plusieurs catégories FR."""
-    from services.app_service import PacingAppService
+    from pacing.application.app_service import PacingAppService
 
     svc = PacingAppService()
     cats = svc.available_categories("France")

@@ -15,16 +15,30 @@ final class LocalAPIServerLauncher: @unchecked Sendable {
     /// Point d'entrée FastAPI du dépôt (``pacing.api.main:app``, pas ``pacing.app.main``).
     static let uvicornTarget = "pacing.api.main:app"
 
+    // `Process` n'existe pas sur iOS : la déclaration doit être conditionnée
+    // comme les corps de méthodes, sinon la cible iPad ne compile pas.
+    #if os(macOS)
     private var serverProcess: Process?
+    #endif
+
     private let lock = NSLock()
 
     private init() {}
 
-    /// Chemin du dépôt Pacing (contient ``.venv``).
+    /// Racine servant de base aux écritures locales.
+    ///
+    /// Sur macOS, c'est le dépôt Pacing lui-même (il contient ``.venv`` et
+    /// ``data/``). Sur iPad, il n'existe aucun dépôt et ``homeDirectoryForCurrentUser``
+    /// est indisponible : on retombe sur le dossier Documents de l'app, ce qui
+    /// permet à la saisie manuelle de fonctionner hors ligne dans le bac à sable.
     var defaultProjectPath: String {
+        #if os(macOS)
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Desktop/Pacing")
             .path
+        #else
+        URL.documentsDirectory.path
+        #endif
     }
 
     /// Démarre uvicorn si l'API ne répond pas encore.

@@ -165,18 +165,44 @@ def save_manual_swimmer(
     }
 
 
+def _performance_matches_event(
+    perf: Any,
+    *,
+    stroke: Optional[str],
+    distance: Optional[int],
+    pool: Optional[str],
+) -> bool:
+    if not isinstance(perf, dict):
+        return False
+    if stroke and str(perf.get("stroke") or "").upper() != str(stroke).strip().upper():
+        return False
+    if pool and str(perf.get("pool") or "").upper() != str(pool).strip().upper():
+        return False
+    if distance is not None:
+        try:
+            if int(perf.get("distance")) != int(distance):
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
 def list_manual_swimmers(
     *,
     query: str = "",
     country: Optional[str] = None,
     gender: str = "all",
+    stroke: Optional[str] = None,
+    distance: Optional[int] = None,
+    pool: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Lit les nageurs manuels (filtre nom / pays / genre)."""
+    """Lit les nageurs manuels (filtre nom / pays / genre / épreuve)."""
     if not MANUAL_PERFORMANCES_DIR.is_dir():
         return []
     q = query.strip().casefold()
     country_s = country.strip().upper() if country else None
     gender_s = gender.strip().upper() if gender else "ALL"
+    filter_event = bool(stroke or pool or distance is not None)
     hits: List[Dict[str, Any]] = []
     for path in sorted(MANUAL_PERFORMANCES_DIR.glob("*.json")):
         try:
@@ -195,6 +221,15 @@ def list_manual_swimmers(
         row_gender_s = str(row_gender).upper() if row_gender else None
         if gender_s in {"F", "M"} and row_gender_s not in {None, gender_s}:
             continue
+        if filter_event:
+            perfs = data.get("performances") or []
+            if not any(
+                _performance_matches_event(
+                    perf, stroke=stroke, distance=distance, pool=pool
+                )
+                for perf in perfs
+            ):
+                continue
         yob = data.get("year_of_birth")
         try:
             yob_i = int(yob) if yob is not None else None

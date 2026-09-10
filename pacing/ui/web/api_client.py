@@ -62,6 +62,34 @@ class PacingApiClient:
         self.base_url = raw.rstrip("/")
         self.timeout = timeout
 
+    @staticmethod
+    def _error_message(response: httpx.Response) -> str:
+        """
+        Extrait un message lisible d'une réponse d'erreur de l'API.
+
+        L'API sert toutes ses erreurs sous la forme
+        ``{"error": {"code", "message", "details"}}``. Le repli sur ``detail``
+        couvre les erreurs émises par Starlette avant nos gestionnaires
+        (404 de route inconnue, par exemple).
+
+        Args:
+            response (httpx.Response): Réponse HTTP en échec.
+
+        Returns:
+            str: Message d'erreur affichable.
+        """
+        try:
+            payload = response.json()
+        except Exception:
+            return response.text or f"Erreur HTTP {response.status_code}"
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            if isinstance(error, dict) and error.get("message"):
+                return str(error["message"])
+            if payload.get("detail") is not None:
+                return str(payload["detail"])
+        return str(payload)
+
     def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Exécute un ``GET`` JSON.
@@ -92,13 +120,10 @@ class PacingApiClient:
             ) from exc
 
         if response.status_code >= 400:
-            detail = response.text
-            try:
-                payload = response.json()
-                detail = str(payload.get("detail", payload))
-            except Exception:
-                pass
-            raise PacingApiError(detail, status_code=response.status_code)
+            raise PacingApiError(
+                self._error_message(response),
+                status_code=response.status_code,
+            )
 
         try:
             data = response.json()
@@ -129,6 +154,18 @@ class PacingApiClient:
             Dict[str, Any]: Payload ``strokes`` / ``events``.
         """
         return self._get("/api/v1/referentiels/epreuves", {"country": country})
+
+    def list_graph_catalog(self, country: str) -> Dict[str, Any]:
+        """
+        Charge le catalogue de graphiques disponibles pour un pays.
+
+        Args:
+            country (str): Code pays (``FR`` / ``MA`` / ``US``).
+
+        Returns:
+            Dict[str, Any]: Payload ``count`` / ``categories``.
+        """
+        return self._get("/api/v1/graphiques", {"country": country})
 
     def search_swimmers(
         self,

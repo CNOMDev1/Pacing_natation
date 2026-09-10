@@ -1,0 +1,541 @@
+{
+  "corridor": {
+    "kind": "corridor",
+    "title": "",
+    "stat": "percentiles(10, 25, 50, 75, 90) group_by=x",
+    "mapping": {
+      "x": "age",
+      "y": "time_s"
+    },
+    "x": {
+      "label": "Âge (années)",
+      "unit": "années",
+      "kind": "linear",
+      "reverse": false,
+      "categories": [],
+      "tick_format": "integer"
+    },
+    "y": {
+      "label": "Temps (s)",
+      "unit": "s",
+      "kind": "linear",
+      "reverse": true,
+      "categories": [],
+      "tick_format": "seconds"
+    },
+    "theme": {
+      "figure_facecolor": "#ffffff",
+      "axes_facecolor": "#f8fafc",
+      "grid_color": "#94a3b8",
+      "grid_alpha": 0.18,
+      "grid_linewidth": 0.6,
+      "annotation_color": "#334155",
+      "marker_edge_color": "#1e293b"
+    },
+    "layers": [
+      {
+        "geom": "area",
+        "source": "bands",
+        "ymin": "p10",
+        "ymax": "p50",
+        "fill": "#bfdbfe",
+        "alpha": 0.4,
+        "label": "Couloir P10–P50 (sous médiane)",
+        "zorder": 1
+      },
+      {
+        "geom": "area",
+        "source": "bands",
+        "ymin": "p50",
+        "ymax": "p90",
+        "fill": "#fde68a",
+        "alpha": 0.4,
+        "label": "Couloir P50–P90 (au-dessus médiane)",
+        "zorder": 1
+      },
+      {
+        "geom": "line",
+        "source": "bands",
+        "y": "p10",
+        "color": "#1d4ed8",
+        "width": 0.8,
+        "dash": [],
+        "alpha": 0.72,
+        "marker": null,
+        "marker_size": 0.0,
+        "label": null,
+        "zorder": 2
+      },
+      {
+        "geom": "line",
+        "source": "bands",
+        "y": "p90",
+        "color": "#d97706",
+        "width": 0.8,
+        "dash": [],
+        "alpha": 0.72,
+        "marker": null,
+        "marker_size": 0.0,
+        "label": null,
+        "zorder": 2
+      },
+      {
+        "geom": "area",
+        "source": "bands",
+        "ymin": "p25",
+        "ymax": "p50",
+        "fill": "#3b82f6",
+        "alpha": 0.55,
+        "label": "Cœur P25–P50",
+        "zorder": 3
+      },
+      {
+        "geom": "area",
+        "source": "bands",
+        "ymin": "p50",
+        "ymax": "p75",
+        "fill": "#f59e0b",
+        "alpha": 0.55,
+        "label": "Cœur P50–P75",
+        "zorder": 3
+      },
+      {
+        "geom": "line",
+        "source": "bands",
+        "y": "p50",
+        "color": "#666666",
+        "width": 3.4,
+        "dash": [],
+        "alpha": 1.0,
+        "marker": null,
+        "marker_size": 0.0,
+        "label": "Médiane (P50)",
+        "zorder": 3
+      },
+      {
+        "geom": "line",
+        "source": "swimmer",
+        "y": "time_s",
+        "color": "#dc2626",
+        "width": 3.4,
+        "dash": [],
+        "alpha": 1.0,
+        "marker": "circle",
+        "marker_size": 8.0,
+        "label": "Nageur",
+        "zorder": 8
+      }
+    ],
+    "legend": [
+      {
+        "label": "Couloir P10–P50 (sous médiane)",
+        "color": "#bfdbfe",
+        "kind": "swatch",
+        "dash": []
+      },
+      {
+        "label": "Couloir P50–P90 (au-dessus médiane)",
+        "color": "#fde68a",
+        "kind": "swatch",
+        "dash": []
+      },
+      {
+        "label": "Cœur P25–P50",
+        "color": "#3b82f6",
+        "kind": "swatch",
+        "dash": []
+      },
+      {
+        "label": "Cœur P50–P75",
+        "color": "#f59e0b",
+        "kind": "swatch",
+        "dash": []
+      },
+      {
+        "label": "Médiane (P50)",
+        "color": "#666666",
+        "kind": "line",
+        "dash": []
+      },
+      {
+        "label": "Nageur",
+        "color": "#dc2626",
+        "kind": "line",
+        "dash": []
+      }
+    ],
+    "data": {
+      "bands": [
+        {
+          "x": 12.0,
+          "p10": 64.0,
+          "p25": 66.5,
+          "p50": 69.2,
+          "p75": 72.0,
+          "p90": 75.5
+        },
+        {
+          "x": 13.0,
+          "p10": 61.5,
+          "p25": 63.8,
+          "p50": 66.4,
+          "p75": 69.1,
+          "p90": 72.4
+        },
+        {
+          "x": 14.0,
+          "p10": 58.2,
+          "p25": 60.1,
+          "p50": 62.4,
+          "p75": 65.0,
+          "p90": 68.3
+        },
+        {
+          "x": 15.0,
+          "p10": 56.0,
+          "p25": 57.9,
+          "p50": 60.1,
+          "p75": 62.8,
+          "p90": 66.0
+        },
+        {
+          "x": 16.0,
+          "p10": 54.5,
+          "p25": 56.2,
+          "p50": 58.4,
+          "p75": 61.0,
+          "p90": 64.2
+        },
+        {
+          "x": 17.0,
+          "p10": 53.2,
+          "p25": 54.8,
+          "p50": 57.0,
+          "p75": 59.5,
+          "p90": 62.8
+        },
+        {
+          "x": 18.0,
+          "p10": 52.4,
+          "p25": 54.0,
+          "p50": 56.1,
+          "p75": 58.6,
+          "p90": 61.9
+        }
+      ],
+      "swimmer": [
+        {
+          "x": 13.0,
+          "time_s": 65.1
+        },
+        {
+          "x": 14.0,
+          "time_s": 61.2
+        },
+        {
+          "x": 15.0,
+          "time_s": 59.8
+        },
+        {
+          "x": 16.0,
+          "time_s": 58.0
+        }
+      ]
+    },
+    "meta": {
+      "event": "Démo",
+      "country": "FR"
+    }
+  },
+  "compare": {
+    "kind": "compare",
+    "title": "",
+    "stat": "percentiles(10, 25, 50, 75, 90) group_by=x",
+    "mapping": {
+      "x": "age",
+      "y": "time_s"
+    },
+    "x": {
+      "label": "Âge (années)",
+      "unit": "années",
+      "kind": "linear",
+      "reverse": false,
+      "categories": [],
+      "tick_format": "integer"
+    },
+    "y": {
+      "label": "Temps (s)",
+      "unit": "s",
+      "kind": "linear",
+      "reverse": true,
+      "categories": [],
+      "tick_format": "seconds"
+    },
+    "theme": {
+      "figure_facecolor": "#ffffff",
+      "axes_facecolor": "#f8fafc",
+      "grid_color": "#94a3b8",
+      "grid_alpha": 0.18,
+      "grid_linewidth": 0.6,
+      "annotation_color": "#334155",
+      "marker_edge_color": "#1e293b"
+    },
+    "layers": [
+      {
+        "geom": "area",
+        "source": "bands",
+        "ymin": "p10",
+        "ymax": "p50",
+        "fill": "#bfdbfe",
+        "alpha": 0.4,
+        "label": "Couloir P10–P50 (sous médiane)",
+        "zorder": 1
+      },
+      {
+        "geom": "area",
+        "source": "bands",
+        "ymin": "p50",
+        "ymax": "p90",
+        "fill": "#fde68a",
+        "alpha": 0.4,
+        "label": "Couloir P50–P90 (au-dessus médiane)",
+        "zorder": 1
+      },
+      {
+        "geom": "line",
+        "source": "bands",
+        "y": "p10",
+        "color": "#1d4ed8",
+        "width": 0.8,
+        "dash": [],
+        "alpha": 0.72,
+        "marker": null,
+        "marker_size": 0.0,
+        "label": null,
+        "zorder": 2
+      },
+      {
+        "geom": "line",
+        "source": "bands",
+        "y": "p90",
+        "color": "#d97706",
+        "width": 0.8,
+        "dash": [],
+        "alpha": 0.72,
+        "marker": null,
+        "marker_size": 0.0,
+        "label": null,
+        "zorder": 2
+      },
+      {
+        "geom": "area",
+        "source": "bands",
+        "ymin": "p25",
+        "ymax": "p50",
+        "fill": "#3b82f6",
+        "alpha": 0.55,
+        "label": "Cœur P25–P50",
+        "zorder": 3
+      },
+      {
+        "geom": "area",
+        "source": "bands",
+        "ymin": "p50",
+        "ymax": "p75",
+        "fill": "#f59e0b",
+        "alpha": 0.55,
+        "label": "Cœur P50–P75",
+        "zorder": 3
+      },
+      {
+        "geom": "line",
+        "source": "bands",
+        "y": "p50",
+        "color": "#666666",
+        "width": 3.4,
+        "dash": [],
+        "alpha": 1.0,
+        "marker": null,
+        "marker_size": 0.0,
+        "label": "Médiane (P50)",
+        "zorder": 3
+      },
+      {
+        "geom": "line",
+        "source": "swimmer_a",
+        "y": "time_s",
+        "color": "#dc2626",
+        "width": 3.4,
+        "dash": [],
+        "alpha": 1.0,
+        "marker": "circle",
+        "marker_size": 8.0,
+        "label": "Nageur A",
+        "zorder": 8
+      },
+      {
+        "geom": "line",
+        "source": "swimmer_b",
+        "y": "time_s",
+        "color": "#059669",
+        "width": 3.2,
+        "dash": [
+          5.0,
+          3.0
+        ],
+        "alpha": 1.0,
+        "marker": "square",
+        "marker_size": 8.0,
+        "label": "Nageur B",
+        "zorder": 8
+      }
+    ],
+    "legend": [
+      {
+        "label": "Couloir P10–P50 (sous médiane)",
+        "color": "#bfdbfe",
+        "kind": "swatch",
+        "dash": []
+      },
+      {
+        "label": "Couloir P50–P90 (au-dessus médiane)",
+        "color": "#fde68a",
+        "kind": "swatch",
+        "dash": []
+      },
+      {
+        "label": "Cœur P25–P50",
+        "color": "#3b82f6",
+        "kind": "swatch",
+        "dash": []
+      },
+      {
+        "label": "Cœur P50–P75",
+        "color": "#f59e0b",
+        "kind": "swatch",
+        "dash": []
+      },
+      {
+        "label": "Médiane (P50)",
+        "color": "#666666",
+        "kind": "line",
+        "dash": []
+      },
+      {
+        "label": "Nageur A",
+        "color": "#dc2626",
+        "kind": "line",
+        "dash": []
+      },
+      {
+        "label": "Nageur B",
+        "color": "#059669",
+        "kind": "line",
+        "dash": [
+          5.0,
+          3.0
+        ]
+      }
+    ],
+    "data": {
+      "bands": [
+        {
+          "x": 12.0,
+          "p10": 64.0,
+          "p25": 66.5,
+          "p50": 69.2,
+          "p75": 72.0,
+          "p90": 75.5
+        },
+        {
+          "x": 13.0,
+          "p10": 61.5,
+          "p25": 63.8,
+          "p50": 66.4,
+          "p75": 69.1,
+          "p90": 72.4
+        },
+        {
+          "x": 14.0,
+          "p10": 58.2,
+          "p25": 60.1,
+          "p50": 62.4,
+          "p75": 65.0,
+          "p90": 68.3
+        },
+        {
+          "x": 15.0,
+          "p10": 56.0,
+          "p25": 57.9,
+          "p50": 60.1,
+          "p75": 62.8,
+          "p90": 66.0
+        },
+        {
+          "x": 16.0,
+          "p10": 54.5,
+          "p25": 56.2,
+          "p50": 58.4,
+          "p75": 61.0,
+          "p90": 64.2
+        },
+        {
+          "x": 17.0,
+          "p10": 53.2,
+          "p25": 54.8,
+          "p50": 57.0,
+          "p75": 59.5,
+          "p90": 62.8
+        },
+        {
+          "x": 18.0,
+          "p10": 52.4,
+          "p25": 54.0,
+          "p50": 56.1,
+          "p75": 58.6,
+          "p90": 61.9
+        }
+      ],
+      "swimmer_a": [
+        {
+          "x": 13.0,
+          "time_s": 65.1
+        },
+        {
+          "x": 14.0,
+          "time_s": 61.2
+        },
+        {
+          "x": 15.0,
+          "time_s": 59.8
+        },
+        {
+          "x": 16.0,
+          "time_s": 58.0
+        }
+      ],
+      "swimmer_b": [
+        {
+          "x": 13.0,
+          "time_s": 66.8
+        },
+        {
+          "x": 14.0,
+          "time_s": 63.0
+        },
+        {
+          "x": 15.0,
+          "time_s": 61.5
+        },
+        {
+          "x": 16.0,
+          "time_s": 59.9
+        }
+      ]
+    },
+    "meta": {
+      "event": "Démo",
+      "country": "FR"
+    }
+  }
+}

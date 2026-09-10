@@ -5,15 +5,22 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 import pytest
 
+from pacing.api.export_openapi import OPENAPI_PATH, check as openapi_is_fresh
 from pacing.api.main import app
 from pacing.api.schemas import (
+    ApiErrorResponse,
     CorridorParams,
     CorridorType,
     CountriesResponse,
     CountryCode,
+    GraphCatalogResponse,
     SwimmerSearchParams,
 )
-from services.api_core import list_countries, resolve_country_code
+from pacing.application.api_core import (
+    list_countries,
+    list_graph_catalog,
+    resolve_country_code,
+)
 
 
 def test_resolve_country_code() -> None:
@@ -92,6 +99,91 @@ def test_couloir_age_target_requires_swimmer() -> None:
         },
     )
     assert resp.status_code == 422
+
+
+def test_validation_error_uses_single_format() -> None:
+    """Une erreur de validation a la forme {"error": {code, message, details}}."""
+    client = TestClient(app)
+    resp = client.get("/api/v1/couloir", params={"country": "FR"})
+    assert resp.status_code == 422
+    body = resp.json()
+    assert "detail" not in body
+    ApiErrorResponse.model_validate(body)
+    assert body["error"]["code"] == "validation_error"
+    assert body["error"]["message"]
+    fields = {item["field"] for item in body["error"]["details"]}
+    assert {"query.stroke", "query.distance", "query.pool"} <= fields
+
+
+def test_http_error_uses_single_format() -> None:
+    """Une route inconnue renvoie aussi {"error": {...}}, sans "detail"."""
+    client = TestClient(app)
+    resp = client.get("/api/v1/route-inexistante")
+    assert resp.status_code == 404
+    body = resp.json()
+    assert "detail" not in body
+    ApiErrorResponse.model_validate(body)
+    assert body["error"]["code"] == "not_found"
+    assert body["error"].get("details") is None
+
+
+def test_graph_catalog_endpoint() -> None:
+    """GET /graphiques expose le catalogue et les endpoints disponibles."""
+    client = TestClient(app)
+    resp = client.get("/api/v1/graphiques", params={"country": "FR"})
+    assert resp.status_code == 200
+    body = resp.json()
+    GraphCatalogResponse.model_validate(body)
+    assert body["country"] == "FR"
+    assert body["count"] > 0
+    assert body["categories"]
+
+    graphs = [
+        graph for category in body["categories"] for graph in category["graphs"]
+    ]
+    assert all(graph["key"] for graph in graphs), "toute entrée porte une clé stable"
+
+    endpoints = {graph["endpoint"] for graph in graphs}
+    assert "/api/v1/couloir" in endpoints, "le couloir doit être servi par l'API"
+    assert None in endpoints, "les graphiques non exposés doivent rester visibles"
+
+
+def test_graph_catalog_endpoint_depends_on_country() -> None:
+    """Le couloir servi par l'API diffère entre la France et les États-Unis."""
+    client = TestClient(app)
+
+    def served_keys(country: str) -> set[str]:
+        body = client.get("/api/v1/graphiques", params={"country": country}).json()
+        return {
+            graph["key"]
+            for category in body["categories"]
+            for graph in category["graphs"]
+            if graph["endpoint"]
+        }
+
+    assert served_keys("FR") == {
+        "performance_corridor_plot_time",
+        "performance_corridor_global_plot_time",
+    }
+    assert served_keys("US") == {"performance_corridor_global_by_agegroup"}
+
+
+def test_graph_catalog_rejects_unknown_country() -> None:
+    """Un pays inconnu lève une ValueError côté cœur métier."""
+    with pytest.raises(ValueError):
+        list_graph_catalog("ZZ")
+
+
+def test_openapi_snapshot_is_up_to_date() -> None:
+    """docs/openapi.json doit refléter le code (contrat versionné)."""
+    assert OPENAPI_PATH.exists(), (
+        "docs/openapi.json absent : lancez "
+        "python -m pacing.api.export_openapi"
+    )
+    assert openapi_is_fresh(), (
+        "docs/openapi.json est obsolète : relancez "
+        "python -m pacing.api.export_openapi"
+    )
 
 
 def test_corridor_params_model_ok() -> None:

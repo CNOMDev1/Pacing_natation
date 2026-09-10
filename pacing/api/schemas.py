@@ -60,6 +60,50 @@ class ApiStatus(str, Enum):
     NOT_FOUND = "not_found"
 
 
+# --- Erreurs ---
+
+
+class ApiErrorDetail(BaseModel):
+    """Un champ fautif d'une erreur de validation.
+
+    Attributes:
+        field (str): Chemin du paramètre en cause.
+        message (str): Message de validation Pydantic.
+        type (str): Type d'erreur Pydantic.
+    """
+
+    field: str
+    message: str
+    type: str = ""
+
+
+class ApiErrorBody(BaseModel):
+    """Contenu d'une erreur API.
+
+    Attributes:
+        code (str): Code stable (``bad_request``, ``validation_error``, …).
+        message (str): Message lisible.
+        details (Optional[List[ApiErrorDetail]]): Champs fautifs (422).
+    """
+
+    code: str
+    message: str
+    details: Optional[List[ApiErrorDetail]] = None
+
+
+class ApiErrorResponse(BaseModel):
+    """Enveloppe d'erreur commune à tous les endpoints.
+
+    Toute réponse 4xx ou 5xx de l'API a cette forme, quelle que soit
+    l'origine de l'échec.
+
+    Attributes:
+        error (ApiErrorBody): Détail de l'erreur.
+    """
+
+    error: ApiErrorBody
+
+
 # --- Référentiels ---
 
 
@@ -137,6 +181,52 @@ class EventsReferentialResponse(BaseModel):
     country: CountryCode
     strokes: List[StrokeTreeItem] = Field(default_factory=list)
     events: List[str] = Field(default_factory=list)
+
+
+# --- Catalogue de graphiques ---
+
+
+class GraphCatalogItem(BaseModel):
+    """Un graphique du catalogue.
+
+    Attributes:
+        key (Optional[str]): Clé stable du graphe ; ``None`` quand le libellé
+            du menu n'a pas d'équivalent dans le registre ``GRAPHES_NOTEBOOK``.
+        name (str): Libellé affichable.
+        endpoint (Optional[str]): Endpoint qui sert ce graphique sous forme de
+            ``ChartSpec`` ; ``None`` si le graphique n'est rendu que par
+            l'application Flet en local.
+    """
+
+    key: Optional[str] = None
+    name: str
+    endpoint: Optional[str] = None
+
+
+class GraphCatalogCategory(BaseModel):
+    """Une catégorie du catalogue.
+
+    Attributes:
+        title (str): Libellé de la catégorie.
+        graphs (List[GraphCatalogItem]): Graphiques de la catégorie.
+    """
+
+    title: str
+    graphs: List[GraphCatalogItem] = Field(default_factory=list)
+
+
+class GraphCatalogResponse(BaseModel):
+    """Réponse ``GET /graphiques``.
+
+    Attributes:
+        country (CountryCode): Pays demandé.
+        count (int): Nombre total de graphiques.
+        categories (List[GraphCatalogCategory]): Catalogue par catégorie.
+    """
+
+    country: CountryCode
+    count: int = Field(..., ge=0)
+    categories: List[GraphCatalogCategory] = Field(default_factory=list)
 
 
 # --- Recherche nageur ---
@@ -328,6 +418,10 @@ class CorridorResponse(BaseModel):
         meta (CorridorMeta): Contexte de la requête.
         bands (List[CorridorBand]): Bandes percentiles.
         swimmer (Optional[CorridorSwimmer]): Nageur cible si demandé.
+        spec (Optional[Dict[str, Any]]): Recette du graphique (grammaire
+            Pacing) : géométries, échelles, thème et légende. Permet à un
+            client non-Python — Swift Charts sur iPad — de tracer le même
+            graphique que Matplotlib au lieu de le redéfinir.
         image_base64 (Optional[str]): Image optionnelle (non utilisée en prototype).
         missing (Optional[List[str]]): Ressources manquantes si ``not_found``.
     """
@@ -336,6 +430,7 @@ class CorridorResponse(BaseModel):
     meta: CorridorMeta
     bands: List[CorridorBand] = Field(default_factory=list)
     swimmer: Optional[CorridorSwimmer] = None
+    spec: Optional[Dict[str, Any]] = None
     image_base64: Optional[str] = None
     missing: Optional[List[str]] = None
 
@@ -349,6 +444,8 @@ class CompareResponse(BaseModel):
         bands (List[CorridorBand]): Bandes du couloir.
         swimmer_a (Optional[CorridorSwimmer]): Premier nageur.
         swimmer_b (Optional[CorridorSwimmer]): Second nageur (overlay).
+        spec (Optional[Dict[str, Any]]): Recette du graphique (grammaire
+            Pacing), identique en structure à celle de ``/couloir``.
         image_base64 (Optional[str]): Non utilisé en prototype.
         missing (Optional[List[str]]): ``swimmer_a`` / ``swimmer_b`` si absents.
     """
@@ -358,6 +455,7 @@ class CompareResponse(BaseModel):
     bands: List[CorridorBand] = Field(default_factory=list)
     swimmer_a: Optional[CorridorSwimmer] = None
     swimmer_b: Optional[CorridorSwimmer] = None
+    spec: Optional[Dict[str, Any]] = None
     image_base64: Optional[str] = None
     missing: Optional[List[str]] = None
 

@@ -14,7 +14,8 @@ enum PacingTheme {
     static let canvas = Color(hex: "f8fafc")
 }
 
-private extension Color {
+extension Color {
+    /// Construit une couleur depuis un hex `rrggbb` de la charte Pacing.
     init(hex: String, opacity: Double = 1) {
         let cleaned = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
         var value: UInt64 = 0

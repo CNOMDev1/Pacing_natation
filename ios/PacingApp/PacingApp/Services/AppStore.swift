@@ -22,6 +22,7 @@ final class AppStore: ObservableObject {
     @Published var corridor: CorridorResponse?
     @Published var compare: CompareResponse?
     @Published var searchResults: [SwimmerSearchResult] = []
+    @Published var events: EventsReferentialResponse?
     @Published var isLoading: Bool = false
     /// True si l'API répond, même si l'utilisateur est encore en mode Démo.
     @Published var apiAvailable: Bool = false
@@ -34,10 +35,19 @@ final class AppStore: ObservableObject {
         static let projectPath = "pacing.projectPath"
     }
 
+    /// Vrai si l'utilisateur a déjà choisi un mode lors d'une session passée.
+    private let hasStoredMode: Bool
+
+    /// Empêche la bascule automatique vers Live de se répéter.
+    private var didAutoSelectMode = false
+
     init() {
         let savedMode = UserDefaults.standard.string(forKey: Keys.mode).flatMap(DataMode.init(rawValue:))
-        // Par défaut Live dès qu'on cible les vraies données terrain.
-        dataMode = savedMode ?? .live
+        hasStoredMode = savedMode != nil
+        // Premier lancement : démarrer en Démo, qui fonctionne sans serveur.
+        // `refreshConnection()` basculera en Live si l'API répond, ce qui
+        // évite un premier écran vide quand aucun uvicorn ne tourne.
+        dataMode = savedMode ?? .demo
         apiBaseURL = UserDefaults.standard.string(forKey: Keys.apiURL) ?? "http://127.0.0.1:8000"
         projectPath = UserDefaults.standard.string(forKey: Keys.projectPath)
             ?? LocalAPIServerLauncher.shared.defaultProjectPath
@@ -60,11 +70,45 @@ final class AppStore: ObservableObject {
     func refreshConnection() async {
         let reachable = await client.ping()
         apiAvailable = reachable
-        if dataMode == .live {
-            isAPIReachable = reachable
-        } else {
+
+        // Au tout premier lancement, si l'API répond, on préfère les vraies
+        // données. Un choix explicite de l'utilisateur n'est jamais écrasé.
+        if reachable, !hasStoredMode, !didAutoSelectMode, dataMode == .demo {
+            didAutoSelectMode = true
+            dataMode = .live
+        }
+
+        isAPIReachable = dataMode == .live ? reachable : false
+    }
+
+    /// Charge le référentiel d'épreuves du pays sélectionné.
+    func loadEvents() async {
+        isLoading = true
+        lastError = nil
+        defer { isLoading = false }
+
+        do {
+            switch dataMode {
+            case .demo:
+                events = MockPacingService.events(country: selection.country)
+            case .live:
+                events = try await client.fetchEvents(country: selection.country)
+                isAPIReachable = true
+                apiAvailable = true
+            }
+        } catch {
+            lastError = error.localizedDescription
+            events = nil
             isAPIReachable = false
         }
+    }
+
+    /// Applique une épreuve choisie dans le référentiel aux écrans couloir
+    /// et comparaison.
+    func applyEvent(stroke: StrokeCode, distance: Int, pool: PoolCode) {
+        selection.stroke = stroke
+        selection.distance = distance
+        selection.pool = pool
     }
 
     /// Teste l'API ; sur macOS, lance uvicorn si le serveur ne répond pas.

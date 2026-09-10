@@ -93,7 +93,7 @@ def test_event_combinations() -> None:
 
 def test_pacing_app_service_catalog() -> None:
     """La façade expose le catalogue sans charger les données."""
-    from services.app_service import PacingAppService
+    from pacing.application.app_service import PacingAppService
 
     svc = PacingAppService()
     cats = svc.available_categories("France")

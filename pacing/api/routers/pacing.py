@@ -11,6 +11,7 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query
 
 from pacing.api.schemas import (
+    ApiErrorResponse,
     CompareParams,
     CompareResponse,
     CorridorParams,
@@ -20,19 +21,32 @@ from pacing.api.schemas import (
     CreateSwimmerResponse,
     EventsParams,
     EventsReferentialResponse,
+    GraphCatalogResponse,
     SwimmerSearchParams,
     SwimmerSearchResponse,
 )
 from pacing.application.manual_swimmer_store import save_manual_swimmer
-from services.api_core import (
+from pacing.grammar.corridor import (
+    compare_spec_from_payload,
+    corridor_spec_from_payload,
+)
+from pacing.application.api_core import (
     build_compare_payload,
     build_corridor_payload,
     list_countries,
     list_event_combos,
+    list_graph_catalog,
     search_swimmers,
 )
 
-router = APIRouter(prefix="/api/v1", tags=["pacing"])
+router = APIRouter(
+    prefix="/api/v1",
+    tags=["pacing"],
+    responses={
+        400: {"model": ApiErrorResponse, "description": "Requête invalide"},
+        422: {"model": ApiErrorResponse, "description": "Paramètres invalides"},
+    },
+)
 
 
 @router.get("/pays", response_model=CountriesResponse)
@@ -116,7 +130,7 @@ def get_couloir(
         params (CorridorParams): Query params validés.
 
     Returns:
-        CorridorResponse: ``meta``, ``bands[]``, ``swimmer``.
+        CorridorResponse: ``meta``, ``bands[]``, ``swimmer``, ``spec``.
     """
     try:
         payload = build_corridor_payload(
@@ -132,6 +146,7 @@ def get_couloir(
             ),
             corridor_type=params.corridor_type.value,
         )
+        payload["spec"] = corridor_spec_from_payload(payload).to_dict()
         return CorridorResponse.model_validate(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -151,7 +166,7 @@ def get_comparaison(
         params (CompareParams): Query params validés (A / B + épreuve).
 
     Returns:
-        CompareResponse: ``bands``, ``swimmer_a``, ``swimmer_b``.
+        CompareResponse: ``bands``, ``swimmer_a``, ``swimmer_b``, ``spec``.
     """
     try:
         payload = build_compare_payload(
@@ -171,6 +186,7 @@ def get_comparaison(
                 params.swimmer_b_country.value if params.swimmer_b_country else None
             ),
         )
+        payload["spec"] = compare_spec_from_payload(payload).to_dict()
         return CompareResponse.model_validate(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -192,5 +208,30 @@ def get_epreuves(
     try:
         payload = list_event_combos(params.country.value)
         return EventsReferentialResponse.model_validate(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/graphiques", response_model=GraphCatalogResponse)
+def get_graphiques(
+    params: Annotated[EventsParams, Query()],
+) -> GraphCatalogResponse:
+    """
+    Catalogue des graphiques disponibles pour un pays.
+
+    Chaque entrée porte un champ ``endpoint`` : il indique par quel appel HTTP
+    le graphique est réellement obtenable sous forme de ``ChartSpec``. Un
+    ``endpoint`` nul signale un graphique aujourd'hui rendu uniquement par
+    l'application Flet, en local.
+
+    Args:
+        params (EventsParams): Query params (country).
+
+    Returns:
+        GraphCatalogResponse: ``country``, ``count``, ``categories[]``.
+    """
+    try:
+        payload = list_graph_catalog(params.country.value)
+        return GraphCatalogResponse.model_validate(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
