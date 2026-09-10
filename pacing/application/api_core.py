@@ -23,7 +23,7 @@ from pacing.analytics.corridor_data import (
 from pacing.application.scope import event_combinations
 from pacing.application.manual_swimmer_store import list_manual_points, list_manual_swimmers
 from pacing.domain.normalize import normalize_gender_code, normalize_text
-from services.app_service import (
+from pacing.application.app_service import (
     COUNTRY_FRANCE,
     COUNTRY_MOROCCO,
     COUNTRY_USA,
@@ -1162,3 +1162,61 @@ def list_event_combos(country: str) -> Dict[str, Any]:
             }
         )
     return {"country": code, "strokes": strokes}
+
+
+#: Graphes du catalogue déjà servis par un endpoint HTTP, sous forme de
+#: ``ChartSpec`` (grammaire Pacing) directement traçable par un client non
+#: Python. Les autres graphes du catalogue ne sont aujourd'hui disponibles
+#: que dans l'application Flet, qui les rend en local.
+_ENDPOINT_BY_GRAPH_KEY: Dict[str, str] = {
+    "performance_corridor_global_plot_time": "/api/v1/couloir",
+    "performance_corridor_plot_time": "/api/v1/couloir",
+    "performance_corridor_global_by_agegroup": "/api/v1/couloir",
+}
+
+
+def list_graph_catalog(country: str) -> Dict[str, Any]:
+    """
+    Liste le catalogue de graphiques disponibles pour un pays.
+
+    Permet à un client (NiceGUI, iOS) de découvrir les graphiques sans
+    dupliquer le catalogue. Chaque entrée indique par quel endpoint le
+    graphique est réellement obtenable : ``endpoint`` vaut ``None`` tant
+    que le graphique n'est rendu que par l'application Flet en local.
+
+    Args:
+        country (str): Code ou libellé pays.
+
+    Returns:
+        Dict[str, Any]: Payload ``country``, ``count``, ``categories[]``.
+
+    Raises:
+        ValueError: Si le pays est inconnu.
+    """
+    code = resolve_country_code(country)
+    app = get_app_service()
+    country_label = _COUNTRY_BY_CODE[code]
+
+    key_by_name = {
+        normalize_text(spec.name): spec.key for spec in app.notebook_specs
+    }
+
+    categories: List[Dict[str, Any]] = []
+    count = 0
+    for category in app.available_categories(country_label):
+        graphs: List[Dict[str, Any]] = []
+        for name in app.available_graphs(country_label, category):
+            key = key_by_name.get(normalize_text(name))
+            graphs.append(
+                {
+                    "key": key,
+                    "name": name,
+                    "endpoint": _ENDPOINT_BY_GRAPH_KEY.get(key or ""),
+                }
+            )
+        if not graphs:
+            continue
+        count += len(graphs)
+        categories.append({"title": category, "graphs": graphs})
+
+    return {"country": code, "count": count, "categories": categories}

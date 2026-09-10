@@ -60,6 +60,50 @@ class ApiStatus(str, Enum):
     NOT_FOUND = "not_found"
 
 
+# --- Erreurs ---
+
+
+class ApiErrorDetail(BaseModel):
+    """Un champ fautif d'une erreur de validation.
+
+    Attributes:
+        field (str): Chemin du paramètre en cause.
+        message (str): Message de validation Pydantic.
+        type (str): Type d'erreur Pydantic.
+    """
+
+    field: str
+    message: str
+    type: str = ""
+
+
+class ApiErrorBody(BaseModel):
+    """Contenu d'une erreur API.
+
+    Attributes:
+        code (str): Code stable (``bad_request``, ``validation_error``, …).
+        message (str): Message lisible.
+        details (Optional[List[ApiErrorDetail]]): Champs fautifs (422).
+    """
+
+    code: str
+    message: str
+    details: Optional[List[ApiErrorDetail]] = None
+
+
+class ApiErrorResponse(BaseModel):
+    """Enveloppe d'erreur commune à tous les endpoints.
+
+    Toute réponse 4xx ou 5xx de l'API a cette forme, quelle que soit
+    l'origine de l'échec.
+
+    Attributes:
+        error (ApiErrorBody): Détail de l'erreur.
+    """
+
+    error: ApiErrorBody
+
+
 # --- Référentiels ---
 
 
@@ -137,6 +181,52 @@ class EventsReferentialResponse(BaseModel):
     country: CountryCode
     strokes: List[StrokeTreeItem] = Field(default_factory=list)
     events: List[str] = Field(default_factory=list)
+
+
+# --- Catalogue de graphiques ---
+
+
+class GraphCatalogItem(BaseModel):
+    """Un graphique du catalogue.
+
+    Attributes:
+        key (Optional[str]): Clé stable du graphe ; ``None`` quand le libellé
+            du menu n'a pas d'équivalent dans le registre ``GRAPHES_NOTEBOOK``.
+        name (str): Libellé affichable.
+        endpoint (Optional[str]): Endpoint qui sert ce graphique sous forme de
+            ``ChartSpec`` ; ``None`` si le graphique n'est rendu que par
+            l'application Flet en local.
+    """
+
+    key: Optional[str] = None
+    name: str
+    endpoint: Optional[str] = None
+
+
+class GraphCatalogCategory(BaseModel):
+    """Une catégorie du catalogue.
+
+    Attributes:
+        title (str): Libellé de la catégorie.
+        graphs (List[GraphCatalogItem]): Graphiques de la catégorie.
+    """
+
+    title: str
+    graphs: List[GraphCatalogItem] = Field(default_factory=list)
+
+
+class GraphCatalogResponse(BaseModel):
+    """Réponse ``GET /graphiques``.
+
+    Attributes:
+        country (CountryCode): Pays demandé.
+        count (int): Nombre total de graphiques.
+        categories (List[GraphCatalogCategory]): Catalogue par catégorie.
+    """
+
+    country: CountryCode
+    count: int = Field(..., ge=0)
+    categories: List[GraphCatalogCategory] = Field(default_factory=list)
 
 
 # --- Recherche nageur ---

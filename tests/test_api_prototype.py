@@ -13,7 +13,7 @@ from pacing.api.schemas import (
     CountryCode,
     SwimmerSearchParams,
 )
-from services.api_core import list_countries, resolve_country_code
+from pacing.application.api_core import list_countries, resolve_country_code
 
 
 def test_resolve_country_code() -> None:
