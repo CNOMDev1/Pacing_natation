@@ -41,6 +41,7 @@ from pacing.analytics.corridor_data import (
     DECILE_CORRIDOR_PERCENTILES,
     add_within_swim_speed_pct,
     build_corridor_chart_plot_kwargs,
+    build_normalized_pacing_series,
     compute_corridor_percentiles_df,
     compute_group_percentiles_df,
     compute_corridor_deciles_df,
@@ -112,6 +113,19 @@ from pacing.analytics.graph_compute import (
     _top_n_swim_keys_for_event,
     _top_n_swim_keys_for_event_by_gender,
 )
+from pacing.grammar.families import (
+    COLOR_FEMALE,
+    COLOR_IQR,
+    COLOR_MALE,
+    COLOR_PRIMARY,
+    COLOR_SECONDARY,
+    boxplot_spec,
+    empty_spec,
+    histogram_spec,
+    normalized_pacing_spec,
+    pacing_profile_spec,
+)
+from pacing.grammar.render_matplotlib import render_figure
 from pacing.rendering.chart_plots import (
     NON_CORRIDOR_CMAP_DIVERGING,
     NON_CORRIDOR_CMAP_SEQUENTIAL,
@@ -156,6 +170,8 @@ from pacing.rendering.chart_plots import (
     _plot_mean_speed_by_distance_and_stroke,
     _plot_ranked_horizontal_counts,
     _plot_ranked_horizontal_median_times,
+    _plot_speed_heatmap_from_pivots,
+    _plot_speed_heatmap_panels,
     _plot_yearly_stroke_time_evolution,
     _ranked_sequential_bar_colors,
     _stroke_palette_for_labels,
@@ -474,24 +490,13 @@ class ServiceGraphe:
         values = values[np.isfinite(values)].astype(float)
         values = values[values > 0]
 
-        fig, ax = plt.subplots(figsize=(12, 8))
-        ax.set_facecolor("#f8fafc")
-
         if values.empty:
-            ax.text(
-                0.5,
-                0.5,
-                "Aucune performance disponible pour cet histogramme.",
-                ha="center",
-                va="center",
-                transform=ax.transAxes,
-                fontsize=12,
-                color="#334155",
+            return render_figure(
+                empty_spec(
+                    "Histogramme simple des temps de nage",
+                    "Aucune performance disponible pour cet histogramme.",
+                )
             )
-            ax.set_axis_off()
-            fig.tight_layout()
-            return fig
-
         q1, median, q3 = np.percentile(values, [25, 50, 75])
         mean_val = float(np.mean(values))
         std_val = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
@@ -500,79 +505,28 @@ class ServiceGraphe:
         iqr = float(q3 - q1)
         n_perf = int(len(values))
         nbins = _adaptive_histogram_bin_count(n_perf, data_min, data_max, iqr)
-
-        hist_counts, bin_edges, _ = ax.hist(
-            values,
-            bins=nbins,
-            color=NON_CORRIDOR_COLOR_PRIMARY,
-            edgecolor="#ffffff",
-            linewidth=0.9,
-            alpha=0.78,
-            rwidth=0.96,
-        )
-        bin_width = _apply_histogram_bin_xaxis(ax, bin_edges, nbins)
-
-        ax.axvspan(
-            q1,
-            q3,
-            color=NON_CORRIDOR_COLOR_SECONDARY,
-            alpha=0.12,
-            label="Intervalle interquartile (Q1-Q3)",
-        )
-        ax.axvline(
-            mean_val,
-            color=NON_CORRIDOR_COLOR_TARGET,
-            linestyle="dashed",
-            linewidth=2.4,
-            label="Moyenne",
-            zorder=7,
-        )
-        ax.axvline(
-            float(median),
-            color=NON_CORRIDOR_COLOR_SECONDARY,
-            linestyle=(0, (3, 2)),
-            linewidth=2.6,
-            label="Médiane",
-            zorder=8,
-        )
-        if len(values) >= 5 and np.unique(values).size > 1:
-            ax_kde = ax.twinx()
-            sns.kdeplot(
-                values,
-                ax=ax_kde,
-                color=NON_CORRIDOR_COLOR_NEUTRAL,
-                linewidth=2.0,
-                alpha=0.9,
-                clip=(data_min, data_max),
-                bw_adjust=1.1,
-                label="Tendance (KDE)",
-            )
-            ax_kde.set_yticks([])
-            ax_kde.set_ylabel("")
-            ax_kde.grid(False)
-
+        counts, edges = np.histogram(values, bins=nbins)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        bin_width = float(edges[1] - edges[0]) if len(edges) > 1 else 1.0
         stats_text = (
             f"n={n_perf}  |  classes={nbins}  Δ≈{bin_width:.2f}s  |  "
             f"min={data_min:.2f}s  max={data_max:.2f}s  "
             f"moy={mean_val:.2f}s  méd={median:.2f}s  σ={std_val:.2f}s"
         )
-
-        hist_handles, hist_labels = ax.get_legend_handles_labels()
-        if len(values) >= 5 and np.unique(values).size > 1:
-            kde_handles, kde_labels = ax_kde.get_legend_handles_labels()
-            ax.legend(hist_handles + kde_handles, hist_labels + kde_labels, loc="upper right")
-        else:
-            ax.legend(loc="upper right")
-        ax.set_title("Histogramme simple des temps de nage")
-        max_count = int(np.max(hist_counts)) if hist_counts.size > 0 else 0
-        if max_count <= 12:
-            ax.yaxis.set_major_locator(MultipleLocator(1))
-        else:
-            ax.yaxis.set_major_locator(MaxNLocator(integer=True, min_n_ticks=5))
-        ax.yaxis.set_major_formatter(FuncFormatter(lambda tick, _: f"{int(tick)}" if tick >= 0 else ""))
-        ax.grid(axis="y", alpha=0.22, linestyle="--", linewidth=0.7)
-        _place_histogram_stats_footnote(fig, stats_text, ax=ax, nbins=nbins)
-        return fig
+        return render_figure(
+            histogram_spec(
+                centers=centers.tolist(),
+                counts=counts.astype(float).tolist(),
+                bin_width=bin_width,
+                mean=mean_val,
+                median=float(median),
+                q1=float(q1),
+                q3=float(q3),
+                title="Histogramme simple des temps de nage",
+                stats_text=stats_text,
+                n_perf=n_perf,
+            )
+        )
 
     def plot_camembert_sexe_global(
         self,
@@ -634,24 +588,13 @@ class ServiceGraphe:
         values = values[np.isfinite(values)].astype(float)
         values = values[values > 0]
 
-        fig, ax = plt.subplots(figsize=(12, 8))
-        ax.set_facecolor("#f8fafc")
-
         if values.empty:
-            ax.text(
-                0.5,
-                0.5,
-                "Aucune performance disponible pour cet histogramme cumulatif.",
-                ha="center",
-                va="center",
-                transform=ax.transAxes,
-                fontsize=12,
-                color="#334155",
+            return render_figure(
+                empty_spec(
+                    "Histogramme cumulatif des temps de nage",
+                    "Aucune performance disponible pour cet histogramme cumulatif.",
+                )
             )
-            ax.set_axis_off()
-            fig.tight_layout()
-            return fig
-
         q1, median, q3 = np.percentile(values, [25, 50, 75])
         mean_val = float(np.mean(values))
         std_val = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
@@ -661,66 +604,15 @@ class ServiceGraphe:
         n_perf = int(len(values))
         count_at_or_below_median = int(np.sum(values <= median))
         nbins = _adaptive_histogram_bin_count(n_perf, data_min, data_max, iqr)
-
         span = max(data_max - data_min, 1e-6)
         pad = max(0.25, span * 0.06)
         x_lo = max(0.0, data_min - pad)
         x_hi = data_max + pad
         bin_edges = np.linspace(x_lo, x_hi, nbins + 1)
-
-        ax.hist(
-            values,
-            bins=bin_edges,
-            cumulative=True,
-            histtype="stepfilled",
-            color=NON_CORRIDOR_COLOR_PRIMARY,
-            alpha=0.28,
-            edgecolor="none",
-        )
-        ax.hist(
-            values,
-            bins=bin_edges,
-            cumulative=True,
-            histtype="step",
-            color=NON_CORRIDOR_COLOR_PRIMARY,
-            linewidth=2.4,
-        )
-        bin_width = _apply_histogram_bin_xaxis(ax, bin_edges, nbins)
-
-        ax.axvspan(
-            q1,
-            q3,
-            color=NON_CORRIDOR_COLOR_SECONDARY,
-            alpha=0.12,
-            label="Intervalle interquartile (Q1-Q3)",
-            zorder=1,
-        )
-        ax.axvline(
-            mean_val,
-            color=NON_CORRIDOR_COLOR_TARGET,
-            linestyle="dashed",
-            linewidth=2.4,
-            label="Moyenne",
-            zorder=7,
-        )
-        ax.axvline(
-            float(median),
-            color=NON_CORRIDOR_COLOR_SECONDARY,
-            linestyle=(0, (3, 2)),
-            linewidth=2.6,
-            label="Médiane",
-            zorder=8,
-        )
-        ax.axhline(
-            count_at_or_below_median,
-            color=NON_CORRIDOR_COLOR_NEUTRAL,
-            linestyle=":",
-            linewidth=1.4,
-            alpha=0.75,
-            label=f"Effectif ≤ médiane ({count_at_or_below_median})",
-            zorder=4,
-        )
-
+        counts, _edges = np.histogram(values, bins=bin_edges)
+        centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+        cum = np.cumsum(counts).astype(float)
+        bin_width = float(bin_edges[1] - bin_edges[0]) if len(bin_edges) > 1 else 1.0
         stats_text = (
             f"n={n_perf}  |  classes={nbins}  Δ≈{bin_width:.2f}s  |  "
             f"min={data_min:.2f}s  max={data_max:.2f}s  "
@@ -728,25 +620,21 @@ class ServiceGraphe:
             f"≤ médiane : {count_at_or_below_median}/{n_perf} "
             f"({100.0 * count_at_or_below_median / n_perf:.0f} %)"
         )
-
-        ax.set_ylim(0, n_perf)
-        if n_perf <= 12:
-            ax.yaxis.set_major_locator(MultipleLocator(1))
-        else:
-            ax.yaxis.set_major_locator(MaxNLocator(integer=True, min_n_ticks=5))
-        ax.yaxis.set_major_formatter(FuncFormatter(lambda tick, _: f"{int(tick)}" if tick >= 0 else ""))
-
-        ax.set_title("Histogramme cumulatif des temps de nage")
-        ax.legend(loc="lower right")
-        ax.grid(axis="y", alpha=0.22, linestyle="--", linewidth=0.7)
-        _place_histogram_stats_footnote(
-            fig,
-            stats_text,
-            ax=ax,
-            nbins=nbins,
-            ylabel="Nombre cumulé de performances",
+        return render_figure(
+            histogram_spec(
+                centers=centers.tolist(),
+                counts=cum.tolist(),
+                bin_width=bin_width,
+                mean=mean_val,
+                median=float(median),
+                q1=float(q1),
+                q3=float(q3),
+                title="Histogramme cumulatif des temps de nage",
+                stats_text=stats_text,
+                n_perf=n_perf,
+                ylabel="Nombre cumulé de performances",
+            )
         )
-        return fig
 
     def plot_boxplot_temps_par_nage(
         self,
@@ -783,121 +671,49 @@ class ServiceGraphe:
         local_df = local_df.loc[local_df[swim_col] > 0].copy()
         local_df = relabel_stroke_column(local_df, stroke_col)
 
-        fig, ax = plt.subplots(figsize=(12, 8))
-        _apply_standard_chart_theme(fig, ax)
-
         if local_df.empty:
-            ax.text(
-                0.5,
-                0.5,
-                "Aucune performance disponible pour ce périmètre.",
-                ha="center",
-                va="center",
-                transform=ax.transAxes,
-                fontsize=12,
-                color="#334155",
-            )
-            ax.set_axis_off()
-            ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-            fig.tight_layout()
-            return fig
-
+            return render_figure(empty_spec(title, "Aucune performance disponible pour ce périmètre."))
         stroke_order = _ordered_stroke_labels(local_df[stroke_col].tolist())
         palette = _stroke_palette_for_labels(stroke_order)
-
-        sns.boxplot(
-            data=local_df,
-            x=stroke_col,
-            y=swim_col,
-            order=stroke_order,
-            hue=stroke_col,
-            palette=palette,
-            dodge=False,
-            width=0.52,
-            linewidth=1.4,
-            fliersize=0,
-            boxprops={"facecolor": "white", "alpha": 0.88, "edgecolor": "#475569", "linewidth": 1.4},
-            medianprops={"color": NON_CORRIDOR_COLOR_NEUTRAL, "linewidth": 2.4},
-            whiskerprops={"color": "#64748b", "linewidth": 1.2, "linestyle": "-"},
-            capprops={"color": "#64748b", "linewidth": 1.2},
-            legend=False,
-            ax=ax,
-            zorder=3,
-        )
-        for stroke_label in stroke_order:
-            stroke_subset = local_df.loc[local_df[stroke_col] == stroke_label]
-            sns.stripplot(
-                data=stroke_subset,
-                x=stroke_col,
-                y=swim_col,
-                order=stroke_order,
-                color=palette[stroke_label],
-                size=4.0,
-                alpha=0.35,
-                jitter=0.24,
-                linewidth=0.4,
-                edgecolor="#ffffff",
-                ax=ax,
-                zorder=2,
-            )
-
-        box_center_x = _boxplot_category_center_x(ax, len(stroke_order))
-        y_max = float(local_df[swim_col].max())
-        y_min = float(local_df[swim_col].min())
-        y_span = max(y_max - y_min, 0.01)
-        label_offset = y_span * 0.03
-        median_label_ymax = y_min
-
-        for x_center, stroke_label in zip(box_center_x, stroke_order):
-            stroke_values = local_df.loc[
-                local_df[stroke_col] == stroke_label, swim_col
-            ].astype(float)
-            if stroke_values.empty:
-                continue
-            median_val = float(stroke_values.median())
-            q1_val = float(stroke_values.quantile(0.25))
-            q3_val = float(stroke_values.quantile(0.75))
+        rng = np.random.default_rng(0)
+        stats = []
+        fills = []
+        outliers = []
+        tick_labels = []
+        for index, stroke_label in enumerate(stroke_order):
+            vals = local_df.loc[local_df[stroke_col] == stroke_label, swim_col].astype(float).to_numpy()
+            q1_val = float(np.percentile(vals, 25))
+            median_val = float(np.percentile(vals, 50))
+            q3_val = float(np.percentile(vals, 75))
             iqr = max(q3_val - q1_val, 0.01)
-            whisker_top = min(float(stroke_values.max()), q3_val + 1.5 * iqr)
-            label_y = whisker_top + label_offset
-            median_label_ymax = max(median_label_ymax, label_y)
-            ax.text(
-                x_center,
-                label_y,
-                _format_swim_time_annotation(median_val),
-                ha="center",
-                va="bottom",
-                fontsize=9.5,
-                color="#0f172a",
-                fontweight="semibold",
-                bbox=_MEDIAN_LABEL_BBOX,
-                zorder=6,
+            lo = q1_val - 1.5 * iqr
+            hi = q3_val + 1.5 * iqr
+            inside = vals[(vals >= lo) & (vals <= hi)]
+            stats.append(
+                {
+                    "q1": q1_val,
+                    "median": median_val,
+                    "q3": q3_val,
+                    "whislo": float(inside.min()) if inside.size else q1_val,
+                    "whishi": float(inside.max()) if inside.size else q3_val,
+                }
             )
-
-        tick_labels = [
-            f"{label}\n(n={int((local_df[stroke_col] == label).sum())})"
-            for label in stroke_order
-        ]
-        ax.set_xticks(box_center_x)
-        ax.set_xticklabels(tick_labels)
-
-        ax.set_ylabel("Temps (secondes)")
-        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-        ax.yaxis.set_major_formatter(FuncFormatter(_format_swim_time_tick))
-        y_top = max(y_max + y_span * 0.12, median_label_ymax + y_span * 0.04)
-        ax.set_ylim(y_min - y_span * 0.06, y_top)
-        ax.grid(
-            axis="y",
-            alpha=CORRIDOR_GRID_ALPHA,
-            color="#94a3b8",
-            linestyle="-",
-            linewidth=0.6,
-            zorder=0,
+            fills.append(palette.get(stroke_label, NON_CORRIDOR_COLOR_NEUTRAL))
+            tick_labels.append(f"{stroke_label} (n={int(len(vals))})")
+            jitter = rng.uniform(-0.22, 0.22, size=len(vals))
+            for value, shift in zip(vals, jitter):
+                outliers.append({"x": float(index) + float(shift), "y": float(value)})
+        return render_figure(
+            boxplot_spec(
+                categories=tick_labels,
+                stats=stats,
+                outliers=outliers,
+                fills=fills,
+                title=title,
+                ylabel="Temps (secondes)",
+                note="Limites : mélange les distances si le périmètre n'est pas filtré.",
+            )
         )
-        fig.tight_layout()
-        ax.set_xlabel("Type de nage", fontsize=11, labelpad=18)
-        ax.xaxis.set_label_coords(0.5, -0.11)
-        return fig
 
     def plot_top10_clubs(
         self,
@@ -959,27 +775,18 @@ class ServiceGraphe:
         if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
             vmin, vmax = 0.8, 1.8
 
-        fig, ax = plt.subplots(figsize=(12, 7))
-        _draw_speed_heatmap_panel(
-            ax,
+        return _plot_speed_heatmap_from_pivots(
             speed_pivot,
             count_pivot,
             title="Heatmap vitesse médiane (distance × nage)",
+            cmap=NON_CORRIDOR_CMAP_SEQUENTIAL,
             vmin=vmin,
             vmax=vmax,
-            cmap=NON_CORRIDOR_CMAP_SEQUENTIAL,
-            cbar=True,
-            cbar_label="Vitesse médiane (m/s)",
-            show_counts=False,
+            note=(
+                "Limites : l'encodage par couleur est moins précis que la position ; "
+                "à réserver au repérage, pas à la lecture de valeurs."
+            ),
         )
-        fig.suptitle(
-            "Synthèse peloton · vitesse médiane par distance et nage",
-            fontsize=14,
-            fontweight="bold",
-            y=1.02,
-        )
-        fig.tight_layout()
-        return fig
 
     def plot_swimming_speed_by_distance_and_stroke(
         self,
@@ -2350,80 +2157,45 @@ class ServiceGraphe:
             long_df.loc[target_mask, "Name"].iloc[0]
         ).strip() or nageur_cible
 
-        fig, axes = plt.subplots(
-            1,
-            3,
-            figsize=(24, 8),
-            sharey=True,
-            gridspec_kw={"width_ratios": [1.0, 1.0, 1.0], "wspace": 0.12},
-            constrained_layout=True,
-        )
-        speed_mesh = _draw_speed_heatmap_panel(
-            axes[0],
-            pivot_target,
-            count_target,
-            title=f"{display_name} — vitesse médiane",
-            vmin=vmin,
-            vmax=vmax,
-            cmap=NON_CORRIDOR_CMAP_SEQUENTIAL,
-            cbar=False,
-            cbar_label="Vitesse médiane (m/s)",
-            show_counts=True,
-        )
-        _draw_speed_heatmap_panel(
-            axes[1],
-            pivot_others,
-            count_others,
-            title="Peloton — vitesse médiane",
-            vmin=vmin,
-            vmax=vmax,
-            cmap=NON_CORRIDOR_CMAP_SEQUENTIAL,
-            cbar=False,
-            cbar_label="Vitesse médiane (m/s)",
-            show_counts=False,
-        )
-        delta_mesh = _draw_speed_heatmap_panel(
-            axes[2],
-            delta,
-            count_target,
-            title="Écart cible − peloton",
-            vmin=-delta_lim,
-            vmax=delta_lim,
-            cmap=NON_CORRIDOR_CMAP_DIVERGING,
-            cbar=False,
-            cbar_label="Écart (m/s)",
-            center=0.0,
-            show_counts=False,
-        )
-        n_rows = len(_HEATMAP_STANDARD_DISTANCES)
-        for panel_ax in axes:
-            panel_ax.set_ylim(n_rows, 0)
-            panel_ax.set_xlim(0, len(stroke_cols))
-        if speed_mesh is not None:
-            speed_cbar = fig.colorbar(
-                speed_mesh,
-                ax=axes[:2],
-                location="right",
-                fraction=0.025,
-                pad=0.02,
-            )
-            speed_cbar.set_label("Vitesse médiane (m/s)", fontsize=10)
-        if delta_mesh is not None:
-            delta_cbar = fig.colorbar(
-                delta_mesh,
-                ax=axes[2],
-                location="right",
-                fraction=0.035,
-                pad=0.02,
-            )
-            delta_cbar.set_label("Écart (m/s)", fontsize=10)
-        fig.suptitle(
-            (
+        fig = _plot_speed_heatmap_panels(
+            [
+                {
+                    "values": pivot_target,
+                    "counts": count_target,
+                    "title": f"{display_name} — vitesse médiane",
+                    "cmap": NON_CORRIDOR_CMAP_SEQUENTIAL,
+                    "vmin": vmin,
+                    "vmax": vmax,
+                    "show_counts": True,
+                    "colorbar_label": "Vitesse médiane (m/s)",
+                },
+                {
+                    "values": pivot_others,
+                    "counts": count_others,
+                    "title": "Peloton — vitesse médiane",
+                    "cmap": NON_CORRIDOR_CMAP_SEQUENTIAL,
+                    "vmin": vmin,
+                    "vmax": vmax,
+                    "show_counts": False,
+                    "colorbar_label": "Vitesse médiane (m/s)",
+                },
+                {
+                    "values": delta,
+                    "counts": count_target,
+                    "title": "Écart cible − peloton",
+                    "cmap": NON_CORRIDOR_CMAP_DIVERGING,
+                    "vmin": -delta_lim,
+                    "vmax": delta_lim,
+                    "center": 0.0,
+                    "show_counts": False,
+                    "colorbar_label": "Écart (m/s)",
+                },
+            ],
+            title=(
                 f"{display_name} vs peloton · vitesse médiane (m/s) par distance et nage · "
                 f"{nb_target} performances cible"
             ),
-            fontsize=14,
-            fontweight="bold",
+            note="Limites : les cellules peu peuplées sont fragiles.",
         )
         return fig, {
             "message": "ok",
@@ -2498,69 +2270,45 @@ class ServiceGraphe:
         )
         stats["split_distance"] = stats["split_no"].map(distance_by_no)
 
-        fig, ax = plt.subplots(figsize=(13, 7))
-        _apply_standard_chart_theme(fig, ax)
-        ax.fill_between(
-            stats["split_no"],
-            stats["q1"],
-            stats["q3"],
-            color="#FDE68A",
-            alpha=0.32,
-            linewidth=0,
-            label="IQR peloton (Q1–Q3)",
-            zorder=2,
-        )
-        ax.plot(
-            stats["split_no"],
-            stats["median"],
-            color=NON_CORRIDOR_COLOR_SECONDARY,
-            linewidth=2.8,
-            linestyle="--",
-            marker="s",
-            markersize=7,
-            markeredgecolor="white",
-            markeredgewidth=0.8,
-            label="Vitesse médiane — peloton",
-            zorder=5,
-        )
-        best_color = (
-            NON_CORRIDOR_COLOR_MALE
-            if best_gender == "M"
-            else NON_CORRIDOR_COLOR_FEMALE
-        )
-        ax.plot(
-            best_rows["split_no"],
-            best_rows["split_speed"],
-            color=best_color,
-            linewidth=3.2,
-            linestyle="-",
-            marker="o",
-            markersize=8,
-            markeredgecolor="white",
-            markeredgewidth=0.9,
-            label=f"Meilleur nageur : {best_name} ({best_gender})",
-            zorder=7,
-        )
-
         ticks = stats["split_no"].astype(int).tolist()
         labels = _split_segment_tick_labels(ticks, distance_by_no)
-        ax.set_xticks(ticks)
-        ax.set_xticklabels(labels)
+        index_of = {no: i for i, no in enumerate(ticks)}
+        xs = [float(index_of[int(n)]) for n in ticks]
+        best_x = [float(index_of[int(n)]) for n in best_rows["split_no"] if int(n) in index_of]
+        best_y = [
+            float(y)
+            for n, y in zip(best_rows["split_no"], best_rows["split_speed"])
+            if int(n) in index_of
+        ]
         time_label = _format_swim_time_display(best_swim_time, precision=2)
-        ax.set_title(
-            (
-                f"Vitesse par segment — peloton vs meilleur nageur\n"
-                f"{localize_event_string(nom_event)} · record {time_label} ({best_name})"
-            ),
-            fontsize=14,
-            fontweight="bold",
-            pad=10,
+        fig = render_figure(
+            pacing_profile_spec(
+                x_values=xs,
+                q1=stats["q1"].astype(float).tolist(),
+                q3=stats["q3"].astype(float).tolist(),
+                median=stats["median"].astype(float).tolist(),
+                series=[
+                    {
+                        "label": f"Meilleur nageur : {best_name} ({best_gender})",
+                        "color": COLOR_MALE if best_gender == "M" else COLOR_FEMALE,
+                        "x": best_x,
+                        "y": best_y,
+                    }
+                ],
+                title=(
+                    f"Vitesse par segment — peloton vs meilleur nageur\n"
+                    f"{localize_event_string(nom_event)} · record {time_label} ({best_name})"
+                ),
+                xlabel="Segment de course",
+                ylabel="Vitesse (m/s)",
+                note=(
+                    "Limites : dépend de la résolution des splits ; ne signale pas encore "
+                    "les segments discriminants."
+                ),
+                x_labels=labels,
+                median_label="Vitesse médiane — peloton",
+            )
         )
-        ax.set_xlabel("Segment de course", fontsize=12)
-        ax.set_ylabel("Vitesse (m/s)", fontsize=12)
-        ax.grid(alpha=0.25, color="#cbd5e1")
-        ax.legend(frameon=False, fontsize=10, loc="best")
-        fig.tight_layout()
         return fig, stats, best_rows, {
             "message": "ok",
             "best_name": best_name,
@@ -2645,63 +2393,41 @@ class ServiceGraphe:
         stats["split_distance"] = stats["split_no"].map(distance_by_no)
         top_stats["split_distance"] = top_stats["split_no"].map(distance_by_no)
 
-        fig, ax = plt.subplots(figsize=(13, 7))
-        _apply_standard_chart_theme(fig, ax)
-        ax.fill_between(
-            stats["split_no"],
-            stats["q1"],
-            stats["q3"],
-            color="#FDE68A",
-            alpha=0.32,
-            linewidth=0,
-            label="IQR peloton (Q1–Q3)",
-            zorder=2,
-        )
-        ax.plot(
-            stats["split_no"],
-            stats["median"],
-            color=NON_CORRIDOR_COLOR_SECONDARY,
-            linewidth=2.8,
-            linestyle="--",
-            marker="s",
-            markersize=7,
-            markeredgecolor="white",
-            markeredgewidth=0.8,
-            label="Vitesse médiane — peloton",
-            zorder=5,
-        )
-        ax.plot(
-            top_stats["split_no"],
-            top_stats["median"],
-            color=NON_CORRIDOR_COLOR_MALE,
-            linewidth=3.2,
-            linestyle="-",
-            marker="o",
-            markersize=8,
-            markeredgecolor="white",
-            markeredgewidth=0.9,
-            label=f"Vitesse médiane — top {len(top_keys)} (meilleurs temps)",
-            zorder=7,
-        )
-
         ticks = stats["split_no"].astype(int).tolist()
         labels = _split_segment_tick_labels(ticks, distance_by_no)
-        ax.set_xticks(ticks)
-        ax.set_xticklabels(labels)
-        ax.set_title(
-            (
-                f"Vitesse par segment — peloton vs top {len(top_keys)}\n"
-                f"{localize_event_string(nom_event)}"
-            ),
-            fontsize=14,
-            fontweight="bold",
-            pad=10,
+        index_of = {no: i for i, no in enumerate(ticks)}
+        xs = [float(index_of[int(n)]) for n in ticks]
+        top_x = [float(index_of[int(n)]) for n in top_stats["split_no"] if int(n) in index_of]
+        top_y = [
+            float(y)
+            for n, y in zip(top_stats["split_no"], top_stats["median"])
+            if int(n) in index_of
+        ]
+        fig = render_figure(
+            pacing_profile_spec(
+                x_values=xs,
+                q1=stats["q1"].astype(float).tolist(),
+                q3=stats["q3"].astype(float).tolist(),
+                median=stats["median"].astype(float).tolist(),
+                series=[
+                    {
+                        "label": f"Vitesse médiane — top {len(top_keys)} (meilleurs temps)",
+                        "color": COLOR_MALE,
+                        "x": top_x,
+                        "y": top_y,
+                    }
+                ],
+                title=(
+                    f"Vitesse par segment — peloton vs top {len(top_keys)}\n"
+                    f"{localize_event_string(nom_event)}"
+                ),
+                xlabel="Segment de course",
+                ylabel="Vitesse (m/s)",
+                note="Limites : dépend de la résolution des splits.",
+                x_labels=labels,
+                median_label="Vitesse médiane — peloton",
+            )
         )
-        ax.set_xlabel("Segment de course", fontsize=12)
-        ax.set_ylabel("Vitesse (m/s)", fontsize=12)
-        ax.grid(alpha=0.25, color="#cbd5e1")
-        ax.legend(frameon=False, fontsize=10, loc="best")
-        fig.tight_layout()
         return fig, stats, top_stats, {
             "message": "ok",
             "top10_count": len(top_keys),
@@ -2786,73 +2512,63 @@ class ServiceGraphe:
         )
         stats["split_distance"] = stats["split_no"].map(distance_by_no)
 
-        style_by_gender = {
-            "F": {
-                "fill": "#F6D5E8",
-                "median": NON_CORRIDOR_COLOR_FEMALE,
-                "label": "Femmes",
-            },
-            "M": {
-                "fill": "#D2E8F8",
-                "median": NON_CORRIDOR_COLOR_MALE,
-                "label": "Hommes",
-            },
-        }
-
-        fig, ax = plt.subplots(figsize=(13, 7))
-        _apply_standard_chart_theme(fig, ax)
-        for gender in ("F", "M"):
+        ticks = sorted(work_df["split_no"].dropna().astype(int).unique().tolist())
+        labels = _split_segment_tick_labels(ticks, distance_by_no)
+        index_of = {no: i for i, no in enumerate(ticks)}
+        bands = []
+        for gender, fill, color, glabel in (
+            ("F", "#F6D5E8", COLOR_FEMALE, "Femmes"),
+            ("M", "#D2E8F8", COLOR_MALE, "Hommes"),
+        ):
             data_gender = stats[stats["Gender"] == gender].sort_values("split_no")
             if data_gender.empty:
                 continue
-            style = style_by_gender[gender]
-            ax.fill_between(
-                data_gender["split_no"],
-                data_gender["q1"],
-                data_gender["q3"],
-                color=style["fill"],
-                alpha=0.32,
-                linewidth=0,
-                label=f"IQR {style['label']} (Q1–Q3)",
-                zorder=2,
+            xs, q1, q3, med = [], [], [], []
+            for _, row in data_gender.iterrows():
+                key = int(row["split_no"])
+                if key not in index_of:
+                    continue
+                xs.append(float(index_of[key]))
+                q1.append(float(row["q1"]))
+                q3.append(float(row["q3"]))
+                med.append(float(row["median"]))
+            bands.append(
+                {
+                    "x": xs,
+                    "q1": q1,
+                    "q3": q3,
+                    "median": med,
+                    "fill": fill,
+                    "median_color": color,
+                    "label": f"IQR {glabel} (Q1–Q3)",
+                    "median_label": f"Vitesse médiane — {glabel}",
+                }
             )
-            ax.plot(
-                data_gender["split_no"],
-                data_gender["median"],
-                color=style["median"],
-                linewidth=3.0,
-                linestyle="-",
-                marker="o",
-                markersize=8,
-                markeredgecolor="white",
-                markeredgewidth=0.9,
-                label=f"Vitesse médiane — {style['label']}",
-                zorder=6,
-            )
-
-        ticks = sorted(work_df["split_no"].dropna().astype(int).unique().tolist())
-        labels = _split_segment_tick_labels(ticks, distance_by_no)
-        ax.set_xticks(ticks)
-        ax.set_xticklabels(labels)
         scope_label = (
-            f"top {int(top_n)} par genre"
-            if int(top_n) > 0
-            else "peloton complet"
+            f"top {int(top_n)} par genre" if int(top_n) > 0 else "peloton complet"
         )
-        ax.set_title(
-            (
-                f"Vitesse par segment selon le genre ({scope_label})\n"
-                f"{localize_event_string(nom_event)}"
-            ),
-            fontsize=14,
-            fontweight="bold",
-            pad=10,
+        first = bands[0] if bands else {"x": [], "q1": [], "q3": [], "median": []}
+        fig = render_figure(
+            pacing_profile_spec(
+                x_values=first.get("x") or [],
+                q1=first.get("q1") or [],
+                q3=first.get("q3") or [],
+                median=first.get("median") or [],
+                series=[],
+                title=(
+                    f"Vitesse par segment selon le genre ({scope_label})\n"
+                    f"{localize_event_string(nom_event)}"
+                ),
+                xlabel="Segment de course",
+                ylabel="Vitesse (m/s)",
+                note="Limites : les segments discriminants (C3) ne sont pas encore mis en évidence.",
+                x_labels=labels,
+                iqr_color=str(first.get("fill") or COLOR_IQR),
+                iqr_label=str(first.get("label") or "IQR"),
+                median_label=str(first.get("median_label") or "Médiane"),
+                additional_bands=bands[1:],
+            )
         )
-        ax.set_xlabel("Segment de course", fontsize=12)
-        ax.set_ylabel("Vitesse (m/s)", fontsize=12)
-        ax.grid(alpha=0.25, color="#cbd5e1")
-        ax.legend(frameon=False, fontsize=10, loc="best", title="Genre")
-        fig.tight_layout()
         return fig, stats, {
             "message": "ok",
             "top_men_count": top_men if int(top_n) > 0 else int(
@@ -2925,76 +2641,58 @@ class ServiceGraphe:
         )
         df_pts = long_df.rename(columns={"split_distance": "split_distance_m"}).copy()
 
-        fig, ax = plt.subplots(figsize=(13, 7))
-        _apply_standard_chart_theme(fig, ax)
-        rng = np.random.default_rng(42)
-        jitter = (rng.random(len(long_df)) - 0.5) * 0.14
-        ax.scatter(
-            long_df["split_no"].to_numpy() + jitter,
-            long_df["split_speed"].to_numpy(),
-            alpha=0.22,
-            s=22,
-            color=NON_CORRIDOR_COLOR_PRIMARY,
-            edgecolors="none",
-            label="Performances relais",
-            zorder=1,
-        )
-        ax.fill_between(
-            stats["split_no"],
-            stats["q1"],
-            stats["q3"],
-            color="#D2E8F8",
-            alpha=0.45,
-            linewidth=0,
-            label="IQR relais (Q1–Q3)",
-            zorder=2,
-        )
-        ax.plot(
-            stats["split_no"],
-            stats["median"],
-            color=NON_CORRIDOR_COLOR_MALE,
-            linewidth=3.0,
-            linestyle="-",
-            marker="s",
-            markersize=8,
-            markeredgecolor="white",
-            markeredgewidth=0.9,
-            label="Vitesse médiane — relais",
-            zorder=6,
-        )
-        ax.plot(
-            stats["split_no"],
-            stats["mean"],
-            color=NON_CORRIDOR_COLOR_SECONDARY,
-            linewidth=2.4,
-            linestyle="--",
-            marker="o",
-            markersize=6,
-            markeredgecolor="white",
-            markeredgewidth=0.7,
-            label="Vitesse moyenne — relais",
-            zorder=5,
-        )
-
         ticks = stats["split_no"].astype(int).tolist()
         labels = _split_segment_tick_labels(ticks, distance_by_no)
-        ax.set_xticks(ticks)
-        ax.set_xticklabels(labels)
-        ax.set_title(
-            (
-                f"Vitesse par segment — relais uniquement\n"
-                f"{localize_event_string(nom_event)} · "
-                f"{relay_perf_count:,} relais".replace(",", " ")
-            ),
-            fontsize=14,
-            fontweight="bold",
-            pad=10,
+        index_of = {no: i for i, no in enumerate(ticks)}
+        xs = [float(index_of[int(n)]) for n in ticks]
+        rng = np.random.default_rng(42)
+        jitter = (rng.random(len(long_df)) - 0.5) * 0.14
+        point_x = []
+        point_y = []
+        for n, j, y in zip(long_df["split_no"], jitter, long_df["split_speed"]):
+            if int(n) not in index_of:
+                continue
+            point_x.append(float(index_of[int(n)]) + float(j))
+            point_y.append(float(y))
+        fig = render_figure(
+            pacing_profile_spec(
+                x_values=xs,
+                q1=stats["q1"].astype(float).tolist(),
+                q3=stats["q3"].astype(float).tolist(),
+                median=stats["median"].astype(float).tolist(),
+                series=[
+                    {
+                        "label": "Performances relais",
+                        "geom": "point",
+                        "color": COLOR_PRIMARY,
+                        "x": point_x,
+                        "y": point_y,
+                        "alpha": 0.22,
+                        "size": 22.0,
+                    },
+                    {
+                        "label": "Vitesse moyenne — relais",
+                        "color": COLOR_SECONDARY,
+                        "x": xs,
+                        "y": stats["mean"].astype(float).tolist(),
+                        "dash": (5.0, 3.0),
+                        "marker": "circle",
+                    },
+                ],
+                title=(
+                    f"Vitesse par segment — relais uniquement\n"
+                    f"{localize_event_string(nom_event)} · "
+                    f"{relay_perf_count:,} relais".replace(",", " ")
+                ),
+                xlabel="Segment de course",
+                ylabel="Vitesse (m/s)",
+                note="Limites : le premier relayeur part d'un plot fixe et les suivants d'un départ lancé.",
+                x_labels=labels,
+                iqr_color="#D2E8F8",
+                iqr_label="IQR relais (Q1–Q3)",
+                median_label="Vitesse médiane — relais",
+            )
         )
-        ax.set_xlabel("Segment de course", fontsize=12)
-        ax.set_ylabel("Vitesse (m/s)", fontsize=12)
-        ax.grid(alpha=0.25, color="#cbd5e1")
-        ax.legend(frameon=False, fontsize=10, loc="best")
-        fig.tight_layout()
         return fig, df_pts, mean_by_dist, median_by_dist, {
             "message": "ok",
             "relay_perf_count": relay_perf_count,
@@ -3103,65 +2801,49 @@ class ServiceGraphe:
 
         plot_norm = add_within_swim_speed_pct(plot_splits)
 
-        fig, ax = plt.subplots(figsize=figsize)
-        draw_percentile_corridor_bands(
-            ax,
-            df_percentiles.index,
-            df_percentiles,
-            outer_label_below="Référence sous médiane (P10–P50)",
-            outer_label_above="Référence au-dessus médiane (P50–P90)",
-            inner_label_below="Référence P25–P50",
-            inner_label_above="Référence P50–P75",
-            median_label="Médiane du groupe de référence",
-        )
-        trace_messages = plot_normalized_pacing_profiles_on_ax(ax, plot_norm, specs)
-
+        series_list, trace_messages = build_normalized_pacing_series(plot_norm, specs)
         ticks = [int(x) for x in df_percentiles.index.tolist()]
-        ax.set_xticks(ticks)
-        ax.set_xticklabels([f"{t} m" for t in ticks])
-        ax.axhline(
-            100.0,
-            color=CORRIDOR_REFERENCE_LINE_COLOR,
-            linewidth=1.0,
-            linestyle=":",
-            zorder=0,
-            label="Vitesse moyenne de la nage (100 %)",
-        )
-        ax.set_xlabel("Segment de nage")
-        ax.set_ylabel("Vitesse normalisée (% de la vitesse moyenne de la nage)")
+        band_rows = []
+        for position, x in enumerate(ticks):
+            row = {"x": float(x)}
+            for name in ("p10", "p25", "p50", "p75", "p90"):
+                if name in df_percentiles.columns:
+                    value = df_percentiles[name].iloc[position]
+                    row[name] = None if value is None else float(value)
+            band_rows.append(row)
         title_event = localize_event_string(nom_event)
+        gender_txt = corridor_gender_display_label(gender)
+        title = f"Profil de pacing normalisé — {title_event}"
+        if gender_txt:
+            title = f"{title} ({gender_txt})"
         ref_swims = int(ref_norm["swim_key"].nunique())
-        _apply_corridor_consistent_styling(
-            fig,
-            ax,
-            title=f"Profil de pacing normalisé — {title_event}",
-            gender=gender,
-            reference_count=ref_swims,
-            legend_fontsize=9,
-        )
-        mono_segment_msg: Optional[str] = None
+        notes = [
+            f"Couloir : {ref_swims} nages de référence. "
+            "Limites : la normalisation efface l'écart de performance absolu."
+        ]
         if len(ticks) <= 1:
-            mono_segment_msg = (
-                "Épreuve mono-segment (25/50 m) : le profil normalisé se réduit "
-                "à un point proche de 100 %."
+            notes.append(
+                "Épreuve mono-segment (25/50 m) : le profil normalisé se réduit à un point proche de 100 %."
             )
-            ax.text(
-                0.5,
-                0.05,
-                mono_segment_msg,
-                transform=ax.transAxes,
-                ha="center",
-                va="bottom",
-                fontsize=9,
-                color=CORRIDOR_ANNOTATION_COLOR,
-                bbox={
-                    "boxstyle": "round,pad=0.3",
-                    "facecolor": "#ffffff",
-                    "edgecolor": "#cbd5e1",
-                    "alpha": 0.92,
-                },
-            )
-        fig.tight_layout()
+        fig = render_figure(
+            normalized_pacing_spec(
+                x_values=ticks,
+                band_rows=band_rows,
+                series=[
+                    {
+                        "label": series.label,
+                        "color": series.color,
+                        "x": list(series.distances),
+                        "y": list(series.speed_pct),
+                    }
+                    for series in series_list
+                ],
+                title=title,
+                note=" ".join(notes),
+            ),
+            figsize=figsize,
+        )
+        mono_segment_msg = notes[-1] if len(ticks) <= 1 else None
 
         meta: dict[str, object] = {
             "message": "ok",

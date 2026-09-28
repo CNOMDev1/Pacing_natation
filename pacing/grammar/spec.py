@@ -247,7 +247,317 @@ class Point:
         }
 
 
-Geom = Any  # Area | Line | Point — union structurelle via ``to_dict()``
+@dataclass(frozen=True)
+class Bar:
+    """Géométrie « barres » : longueur = grandeur, position = catégorie.
+
+    Attributes:
+        source (str): Table de données (``x`` = indice de catégorie, ``y`` =
+            valeur).
+        y (str): Champ de la longueur.
+        fill (str): Couleur de remplissage.
+        orientation (str): ``"vertical"`` ou ``"horizontal"``.
+        width (float): Largeur (ou hauteur) d'une barre, en unités d'axe.
+        alpha (float): Opacité.
+        label (Optional[str]): Libellé de légende.
+        zorder (int): Plan de dessin.
+        value_labels (bool): Annoter chaque barre avec sa valeur.
+        label_field (Optional[str]): Champ texte d'annotation ; ``None`` =
+            formater ``y``.
+    """
+
+    source: str
+    y: str
+    fill: str
+    orientation: str = "vertical"
+    width: float = 0.8
+    alpha: float = 0.92
+    label: Optional[str] = None
+    zorder: int = 3
+    value_labels: bool = False
+    label_field: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Sérialise la géométrie."""
+        return {
+            "geom": "bar",
+            "source": self.source,
+            "y": self.y,
+            "fill": self.fill,
+            "orientation": self.orientation,
+            "width": self.width,
+            "alpha": self.alpha,
+            "label": self.label,
+            "zorder": self.zorder,
+            "value_labels": self.value_labels,
+            "label_field": self.label_field,
+        }
+
+
+@dataclass(frozen=True)
+class Histogram:
+    """Géométrie « histogramme » : barres de classes déjà calculées en amont.
+
+    La transformation (bins adaptatifs) n'est pas le rôle du moteur : la table
+    expose le centre de classe ``x`` et l'effectif ``y``.
+
+    Attributes:
+        source (str): Table des classes.
+        y (str): Effectif (ou densité) de la classe.
+        fill (str): Couleur.
+        width (float): Largeur de classe en unités d'abscisse.
+        alpha (float): Opacité.
+        label (Optional[str]): Libellé de légende.
+        zorder (int): Plan de dessin.
+    """
+
+    source: str
+    y: str
+    fill: str
+    width: float = 1.0
+    alpha: float = 0.78
+    label: Optional[str] = None
+    zorder: int = 2
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Sérialise la géométrie."""
+        return {
+            "geom": "histogram",
+            "source": self.source,
+            "y": self.y,
+            "fill": self.fill,
+            "width": self.width,
+            "alpha": self.alpha,
+            "label": self.label,
+            "zorder": self.zorder,
+        }
+
+
+@dataclass(frozen=True)
+class Boxplot:
+    """Géométrie « boîte à moustaches » : quartiles calculés en amont.
+
+    Chaque ligne de la table porte ``x``, ``q1``, ``median``, ``q3``,
+    ``whislo``, ``whishi``. Les points aberrants sont une géométrie ``Point``
+    séparée.
+
+    Attributes:
+        source (str): Table des statistiques par catégorie.
+        fill (str): Couleur de remplissage des boîtes.
+        median_color (str): Couleur du trait de médiane.
+        edge_color (str): Couleur des contours.
+        width (float): Largeur des boîtes.
+        label (Optional[str]): Libellé de légende.
+        zorder (int): Plan de dessin.
+    """
+
+    source: str
+    fill: str = "#ffffff"
+    median_color: str = "#374151"
+    edge_color: str = "#475569"
+    width: float = 0.52
+    label: Optional[str] = None
+    zorder: int = 3
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Sérialise la géométrie."""
+        return {
+            "geom": "boxplot",
+            "source": self.source,
+            "fill": self.fill,
+            "median_color": self.median_color,
+            "edge_color": self.edge_color,
+            "width": self.width,
+            "label": self.label,
+            "zorder": self.zorder,
+        }
+
+
+@dataclass(frozen=True)
+class Heatmap:
+    """Géométrie « heatmap » : tuiles ``x`` × ``y`` colorées par ``value``.
+
+    Attributes:
+        source (str): Table (une ligne par cellule).
+        value (str): Champ numérique encodé par la couleur.
+        cmap (str): Nom de colormap Matplotlib.
+        annot (Optional[str]): Champ texte d'annotation de cellule.
+        vmin (Optional[float]): Borne basse de l'échelle.
+        vmax (Optional[float]): Borne haute de l'échelle.
+        center (Optional[float]): Centre pour une carte divergente.
+        x_field (str): Champ d'indice de colonne (défaut ``x``).
+        y_field (str): Champ d'indice de ligne (défaut ``y``).
+        zorder (int): Plan de dessin.
+        colorbar (bool): Afficher l'échelle de couleur.
+        colorbar_label (Optional[str]): Libellé de l'échelle.
+    """
+
+    source: str
+    value: str = "value"
+    cmap: str = "viridis"
+    annot: Optional[str] = None
+    vmin: Optional[float] = None
+    vmax: Optional[float] = None
+    center: Optional[float] = None
+    x_field: str = "x"
+    y_field: str = "y"
+    zorder: int = 1
+    colorbar: bool = False
+    colorbar_label: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Sérialise la géométrie."""
+        return {
+            "geom": "heatmap",
+            "source": self.source,
+            "value": self.value,
+            "cmap": self.cmap,
+            "annot": self.annot,
+            "vmin": self.vmin,
+            "vmax": self.vmax,
+            "center": self.center,
+            "x_field": self.x_field,
+            "y_field": self.y_field,
+            "zorder": self.zorder,
+            "colorbar": self.colorbar,
+            "colorbar_label": self.colorbar_label,
+        }
+
+
+@dataclass(frozen=True)
+class Rule:
+    """Ligne de référence constante (moyenne, médiane, 100 %).
+
+    Attributes:
+        axis (str): ``"x"`` (verticale) ou ``"y"`` (horizontale).
+        value (float): Position.
+        color (str): Couleur.
+        width (float): Épaisseur.
+        dash (Tuple[float, ...]): Motif de pointillés.
+        alpha (float): Opacité.
+        label (Optional[str]): Libellé de légende.
+        zorder (int): Plan de dessin.
+    """
+
+    axis: str
+    value: float
+    color: str
+    width: float = 1.4
+    dash: Tuple[float, ...] = ()
+    alpha: float = 1.0
+    label: Optional[str] = None
+    zorder: int = 6
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Sérialise la géométrie."""
+        return {
+            "geom": "rule",
+            "source": "",
+            "axis": self.axis,
+            "value": self.value,
+            "color": self.color,
+            "width": self.width,
+            "dash": list(self.dash),
+            "alpha": self.alpha,
+            "label": self.label,
+            "zorder": self.zorder,
+        }
+
+
+@dataclass(frozen=True)
+class Span:
+    """Bande de référence (IQR, intervalle) le long d'un axe.
+
+    Attributes:
+        axis (str): ``"x"`` (axvspan) ou ``"y"`` (axhspan).
+        start (float): Borne basse.
+        end (float): Borne haute.
+        fill (str): Couleur.
+        alpha (float): Opacité.
+        label (Optional[str]): Libellé de légende.
+        zorder (int): Plan de dessin.
+    """
+
+    axis: str
+    start: float
+    end: float
+    fill: str
+    alpha: float = 0.15
+    label: Optional[str] = None
+    zorder: int = 1
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Sérialise la géométrie."""
+        return {
+            "geom": "span",
+            "source": "",
+            "axis": self.axis,
+            "start": self.start,
+            "end": self.end,
+            "fill": self.fill,
+            "alpha": self.alpha,
+            "label": self.label,
+            "zorder": self.zorder,
+        }
+
+
+@dataclass(frozen=True)
+class Annotation:
+    """Texte d'annotation (limites d'interprétation, stats, message vide).
+
+    Attributes:
+        text (str): Contenu.
+        loc (str): ``"footnote"`` (figure), ``"center"`` (message vide),
+            ``"axes"`` (coordonnées 0–1) ou ``"data"``.
+        x (Optional[float]): Abscisse (data ou axes).
+        y (Optional[float]): Ordonnée.
+        color (Optional[str]): Couleur ; ``None`` = thème.
+        size (float): Taille de police.
+    """
+
+    text: str
+    loc: str = "footnote"
+    x: Optional[float] = None
+    y: Optional[float] = None
+    color: Optional[str] = None
+    size: float = 8.5
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Sérialise l'annotation."""
+        return {
+            "text": self.text,
+            "loc": self.loc,
+            "x": self.x,
+            "y": self.y,
+            "color": self.color,
+            "size": self.size,
+        }
+
+
+@dataclass(frozen=True)
+class Facet:
+    """Disposition en petits multiples.
+
+    Attributes:
+        ncol (int): Nombre de colonnes.
+        sharex (bool): Partager l'axe X.
+        sharey (bool): Partager l'axe Y.
+    """
+
+    ncol: int = 2
+    sharex: bool = True
+    sharey: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Sérialise la facette."""
+        return {
+            "ncol": self.ncol,
+            "sharex": self.sharex,
+            "sharey": self.sharey,
+        }
+
+
+Geom = Any  # Area | Line | Point | Bar | Histogram | Boxplot | Heatmap | Rule | Span
 
 
 @dataclass(frozen=True)
@@ -302,6 +612,12 @@ class ChartSpec:
         layers (Tuple[Geom, ...]): Géométries, dans l'ordre de dessin.
         theme (Theme): Charte visuelle.
         legend (Tuple[LegendEntry, ...]): Légende déclarée.
+        annotations (Tuple[Annotation, ...]): Textes (limites, notes, vide).
+        panels (Tuple[ChartSpec, ...]): Petits multiples ; si non vide, chaque
+            panneau est une recette complète (F6, F10).
+        facet (Optional[Facet]): Disposition des ``panels``.
+        figsize (Optional[Tuple[float, float]]): Taille en pouces, si le moteur
+            Matplotlib doit s'écarter du défaut.
         meta (Dict[str, Any]): Contexte libre (épreuve, pays, effectif).
     """
 
@@ -315,6 +631,10 @@ class ChartSpec:
     theme: Theme
     stat: Optional[str] = None
     legend: Tuple[LegendEntry, ...] = ()
+    annotations: Tuple[Annotation, ...] = ()
+    panels: Tuple["ChartSpec", ...] = ()
+    facet: Optional[Facet] = None
+    figsize: Optional[Tuple[float, float]] = None
     meta: Dict[str, Any] = field(default_factory=dict)
 
     def table(self, name: str) -> DataTable:
@@ -347,6 +667,10 @@ class ChartSpec:
             "theme": self.theme.to_dict(),
             "layers": [layer.to_dict() for layer in self.layers],
             "legend": [entry.to_dict() for entry in self.legend],
+            "annotations": [note.to_dict() for note in self.annotations],
+            "panels": [panel.to_dict() for panel in self.panels],
+            "facet": None if self.facet is None else self.facet.to_dict(),
+            "figsize": None if self.figsize is None else list(self.figsize),
             "data": {
                 name: [dict(row) for row in rows] for name, rows in self.data.items()
             },
