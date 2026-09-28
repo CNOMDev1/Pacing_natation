@@ -37,6 +37,19 @@ from pacing.analytics.graph_compute import (
     CORRIDOR_OVERLAY_SWIMMER_COLOR,
     CORRIDOR_OVERLAY_SWIMMER_LABEL,
 )
+from pacing.grammar.families import (
+    COLOR_FEMALE,
+    COLOR_MALE,
+    STROKE_COLORS,
+    category_bar_spec,
+    facet_lines_spec,
+    grouped_bar_spec,
+    heatmap_panels_spec,
+    heatmap_spec,
+    multiline_spec,
+    ranked_bar_spec,
+)
+from pacing.grammar.render_matplotlib import render_figure
 from pacing.rendering.corridor_plots import (
     apply_corridor_chart_theme,
     plot_corridor_swimmer_specs,
@@ -264,6 +277,128 @@ def _draw_speed_heatmap_panel(
     collections = heatmap.collections
     return collections[0] if collections else None
 
+
+def _heatmap_spec_from_pivots(
+    values: pd.DataFrame,
+    counts: pd.DataFrame,
+    *,
+    title: str,
+    cmap: str,
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    center: Optional[float] = None,
+    show_counts: bool = False,
+    colorbar: bool = True,
+    colorbar_label: str = "Vitesse médiane (m/s)",
+    note: str = "",
+) -> Any:
+    """Construit une recette heatmap F9 à partir de tableaux distance × nage."""
+    if values.empty or values.dropna(how="all").dropna(axis=1, how="all").empty:
+        return heatmap_spec(
+            x_categories=[],
+            y_categories=[],
+            cells=[],
+            title=title,
+            cmap=cmap,
+            note=note or "Pas de données disponibles",
+        )
+    counts_aligned = counts.reindex(index=values.index, columns=values.columns).fillna(0)
+    x_categories = [str(col) for col in values.columns]
+    y_categories = [str(idx) for idx in values.index]
+    cells = []
+    for row_idx, distance in enumerate(values.index):
+        for col_idx, stroke in enumerate(values.columns):
+            val = values.iat[row_idx, col_idx]
+            count = counts_aligned.iat[row_idx, col_idx]
+            if pd.isna(val) or pd.isna(count) or int(count) <= 0:
+                continue
+            annot = f"{float(val):.2f}"
+            if show_counts:
+                annot = f"{annot}\n(n={int(count)})"
+            cells.append(
+                {
+                    "x": col_idx,
+                    "y": row_idx,
+                    "value": float(val),
+                    "annot": annot,
+                }
+            )
+    return heatmap_spec(
+        x_categories=x_categories,
+        y_categories=y_categories,
+        cells=cells,
+        title=title,
+        cmap=cmap,
+        note=note
+        or "Limites : l'encodage par couleur est moins précis que la position ; à réserver au repérage.",
+        vmin=vmin,
+        vmax=vmax,
+        center=center,
+        xlabel="Nage",
+        ylabel="Distance (m)",
+        colorbar=colorbar,
+        colorbar_label=colorbar_label,
+    )
+
+
+def _plot_speed_heatmap_from_pivots(
+    values: pd.DataFrame,
+    counts: pd.DataFrame,
+    *,
+    title: str,
+    cmap: str,
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    center: Optional[float] = None,
+    show_counts: bool = False,
+    colorbar_label: str = "Vitesse médiane (m/s)",
+    note: str = "",
+) -> plt.Figure:
+    """Rend une heatmap F9 via la grammaire."""
+    return render_figure(
+        _heatmap_spec_from_pivots(
+            values,
+            counts,
+            title=title,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            center=center,
+            show_counts=show_counts,
+            colorbar_label=colorbar_label,
+            note=note,
+        )
+    )
+
+
+def _plot_speed_heatmap_panels(
+    panels: List[Dict[str, Any]],
+    *,
+    title: str,
+    note: str,
+) -> plt.Figure:
+    """Rend les heatmaps coordonnées F10 via la grammaire."""
+    specs = [
+        _heatmap_spec_from_pivots(
+            panel["values"],
+            panel["counts"],
+            title=panel["title"],
+            cmap=panel["cmap"],
+            vmin=panel.get("vmin"),
+            vmax=panel.get("vmax"),
+            center=panel.get("center"),
+            show_counts=bool(panel.get("show_counts")),
+            colorbar=True,
+            colorbar_label=str(panel.get("colorbar_label") or "Valeur"),
+            note="",
+        )
+        for panel in panels
+    ]
+    return render_figure(
+        heatmap_panels_spec(panels=specs, title=title, note=note, figsize=(24.0, 8.0))
+    )
+
+
 def _format_swim_time_display(total_seconds: float, *, precision: int = 1) -> str:
     """Formate une durée de nage pour axe ou annotation.
 
@@ -407,79 +542,33 @@ def _plot_ranked_horizontal_counts(
     """
     ordered = counts.sort_values(ascending=False)
     categories = [str(label) for label in ordered.index.tolist()]
-    values = [int(value) for value in ordered.values]
+    values = [float(value) for value in ordered.values]
     n_items = len(categories)
     bar_total = int(sum(values)) if values else 0
     denominator = int(total_count) if total_count is not None else bar_total
-
-    fig_height = max(5.0, min(12.0, n_items * 0.62 + 1.8))
-    fig, ax = plt.subplots(figsize=(12, fig_height))
-    _apply_standard_chart_theme(fig, ax)
-
-    if n_items == 0 or bar_total == 0:
-        ax.text(
-            0.5,
-            0.5,
-            "Aucune performance disponible pour ce périmètre.",
-            ha="center",
-            va="center",
-            transform=ax.transAxes,
-            fontsize=12,
-            color="#334155",
-        )
-        ax.set_axis_off()
-        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-        fig.tight_layout()
-        return fig
-
     colors = _ranked_sequential_bar_colors(n_items)
-    y_pos = np.arange(n_items)
-    bars = ax.barh(
-        y_pos,
-        values,
-        height=0.62,
-        color=colors,
-        edgecolor="#ffffff",
-        linewidth=0.8,
-        zorder=3,
+    note = (
+        "Limites : un top 10 sur l'effectif favorise les gros clubs ; "
+        f"n affiché = {bar_total} participations"
+        + (f" (base {denominator})." if denominator != bar_total else ".")
     )
-    xmax = max(values)
-    label_offset = xmax * 0.02 if xmax > 0 else 0.5
-    for bar, value in zip(bars, values):
-        share_pct = (100.0 * value / denominator) if denominator > 0 else 0.0
-        ax.text(
-            value + label_offset,
-            bar.get_y() + bar.get_height() / 2,
-            f"{_format_count_display(value)} ({share_pct:.0f} %)",
-            ha="left",
-            va="center",
-            fontsize=10.5,
-            color="#334155",
-            fontweight="medium",
-            zorder=4,
+    return render_figure(
+        ranked_bar_spec(
+            categories=categories,
+            values=values,
+            fills=colors or [NON_CORRIDOR_COLOR_PRIMARY],
+            title=title,
+            xlabel=x_label,
+            ylabel=y_label,
+            note=note,
+            value_texts=[
+                f"{_format_count_display(int(value))} "
+                f"({(100.0 * value / denominator) if denominator > 0 else 0.0:.0f} %)"
+                for value in values
+            ],
         )
-
-    y_labelsize = 11 if n_items <= 6 else 10
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(categories)
-    ax.tick_params(axis="y", labelsize=y_labelsize)
-    ax.invert_yaxis()
-    ax.set_xlabel(x_label)
-    ax.set_ylabel(y_label)
-    ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-    ax.set_xlim(0, xmax * 1.22 if xmax > 0 else 1)
-    ax.xaxis.set_major_locator(MaxNLocator(integer=True, min_n_ticks=5))
-    ax.xaxis.set_major_formatter(FuncFormatter(_format_performance_count_tick))
-    ax.grid(
-        axis="x",
-        alpha=CORRIDOR_GRID_ALPHA,
-        color="#94a3b8",
-        linestyle="-",
-        linewidth=0.6,
-        zorder=0,
     )
-    fig.tight_layout()
-    return fig
+
 
 def _plot_ranked_horizontal_median_times(
     stats: pd.DataFrame,
@@ -520,79 +609,27 @@ def _plot_ranked_horizontal_median_times(
     categories = [str(label) for label in ordered[club_col].tolist()]
     values = [float(value) for value in ordered[median_col].tolist()]
     counts = [int(value) for value in ordered[count_col].tolist()]
-    n_items = len(categories)
-
-    fig_height = max(5.0, min(12.0, n_items * 0.62 + 1.8))
-    fig, ax = plt.subplots(figsize=(12, fig_height))
-    _apply_standard_chart_theme(fig, ax)
-
-    if n_items == 0:
-        ax.text(
-            0.5,
-            0.5,
-            "Aucune performance disponible pour ce périmètre.",
-            ha="center",
-            va="center",
-            transform=ax.transAxes,
-            fontsize=12,
-            color="#334155",
-        )
-        ax.set_axis_off()
-        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-        fig.tight_layout()
-        return fig
-
-    xmin = float(min(values))
-    xmax = float(max(values))
-    x_span = max(xmax - xmin, 0.5)
-    x_floor = max(0.0, xmin - x_span * 0.35)
-    colors = _ranked_sequential_bar_colors(n_items)
-    y_pos = np.arange(n_items)
-    bars = ax.barh(
-        y_pos,
-        [value - x_floor for value in values],
-        left=x_floor,
-        height=0.62,
-        color=colors,
-        edgecolor="#ffffff",
-        linewidth=0.8,
-        zorder=3,
+    colors = _ranked_sequential_bar_colors(len(categories))
+    value_texts = [
+        f"{_format_swim_time_annotation(median_value)} (n={perf_count})"
+        for median_value, perf_count in zip(values, counts)
+    ]
+    note = (
+        "Limites : un top 10 sur médiane favorise les petits clubs sélectifs ; "
+        "l'effectif n est affiché à côté de chaque barre."
     )
-    label_offset = x_span * 0.03 if x_span > 0 else 0.1
-    for bar, median_value, perf_count in zip(bars, values, counts):
-        ax.text(
-            median_value + label_offset,
-            bar.get_y() + bar.get_height() / 2,
-            f"{_format_swim_time_annotation(median_value)} (n={perf_count})",
-            ha="left",
-            va="center",
-            fontsize=10.5,
-            color="#334155",
-            fontweight="medium",
-            zorder=4,
+    return render_figure(
+        ranked_bar_spec(
+            categories=categories,
+            values=values,
+            fills=colors or [NON_CORRIDOR_COLOR_PRIMARY],
+            title=title,
+            xlabel=x_label,
+            ylabel=y_label,
+            note=note,
+            value_texts=value_texts,
         )
-
-    y_labelsize = 11 if n_items <= 6 else 10
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(categories)
-    ax.tick_params(axis="y", labelsize=y_labelsize)
-    ax.invert_yaxis()
-    ax.set_xlabel(x_label)
-    ax.set_ylabel(y_label)
-    ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-    ax.set_xlim(x_floor, xmax + x_span * 0.34)
-    ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
-    ax.xaxis.set_major_formatter(FuncFormatter(_format_swim_time_tick))
-    ax.grid(
-        axis="x",
-        alpha=CORRIDOR_GRID_ALPHA,
-        color="#94a3b8",
-        linestyle="-",
-        linewidth=0.6,
-        zorder=0,
     )
-    fig.tight_layout()
-    return fig
 
 def _plot_yearly_stroke_time_evolution(
     yearly_stats: pd.DataFrame,
@@ -630,41 +667,8 @@ def _plot_yearly_stroke_time_evolution(
             raise ValueError(f"Colonne introuvable pour l'évolution annuelle: {column}")
 
     stroke_order = _ordered_stroke_labels(yearly_stats[stroke_col].astype(str).tolist())
-    n_strokes = len(stroke_order)
-    if n_strokes == 0:
-        fig, ax = plt.subplots(figsize=(12, 5))
-        _apply_standard_chart_theme(fig, ax)
-        ax.text(
-            0.5,
-            0.5,
-            "Aucune performance disponible pour ce périmètre.",
-            ha="center",
-            va="center",
-            transform=ax.transAxes,
-            fontsize=12,
-            color="#334155",
-        )
-        ax.set_axis_off()
-        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-        fig.tight_layout()
-        return fig
-
-    ncols = 2 if n_strokes > 1 else 1
-    nrows = int(np.ceil(n_strokes / ncols))
-    fig, axes = plt.subplots(
-        nrows,
-        ncols,
-        figsize=(14, 3.9 * nrows + 1.2),
-        squeeze=False,
-        sharex=False,
-    )
-    fig.patch.set_facecolor("#ffffff")
-    global_year_min: Optional[int] = None
-    global_year_max: Optional[int] = None
-
-    for index, stroke_label in enumerate(stroke_order):
-        ax = axes[index // ncols][index % ncols]
-        _apply_standard_chart_theme(fig, ax)
+    panels: List[Dict[str, Any]] = []
+    for stroke_label in stroke_order:
         stroke_data = yearly_stats.loc[
             yearly_stats[stroke_col].astype(str) == stroke_label
         ].sort_values(year_col)
@@ -675,115 +679,50 @@ def _plot_yearly_stroke_time_evolution(
         )
         color = _STROKE_CATEGORY_COLORS.get(stroke_label, NON_CORRIDOR_COLOR_NEUTRAL)
         if stroke_data.empty:
-            ax.text(
-                0.5,
-                0.5,
-                "Données insuffisantes\n(effectif annuel trop faible).",
-                ha="center",
-                va="center",
-                transform=ax.transAxes,
-                fontsize=10,
-                color="#64748b",
+            panels.append(
+                {
+                    "label": stroke_label,
+                    "color": color,
+                    "x_raw": [],
+                    "y_raw": [],
+                    "x": [],
+                    "y": [],
+                    "unit": "s",
+                }
             )
-            ax.set_title(stroke_label, fontsize=12, fontweight="semibold", color=color, pad=8)
-            ax.set_xlabel("Année", fontsize=10, labelpad=6)
-            ax.tick_params(axis="x", labelbottom=True, labelsize=9)
             continue
-
         years = stroke_data[year_col].astype(int).tolist()
         medians = stroke_data[median_col].astype(float).tolist()
         smoothed = _smooth_centered_rolling(medians, rolling_window_years)
-        global_year_min = years[0] if global_year_min is None else min(global_year_min, years[0])
-        global_year_max = years[-1] if global_year_max is None else max(global_year_max, years[-1])
-
-        ax.plot(
-            years,
-            medians,
-            color=color,
-            linewidth=1.2,
-            linestyle="--",
-            alpha=0.35,
-            marker="o",
-            markersize=3.5,
-            markerfacecolor="#ffffff",
-            markeredgecolor=color,
-            markeredgewidth=1.0,
-            zorder=2,
+        panels.append(
+            {
+                "label": stroke_label,
+                "color": color,
+                "x_raw": years,
+                "y_raw": medians,
+                "x": years,
+                "y": smoothed,
+                "unit": "s",
+            }
         )
-        ax.plot(
-            years,
-            smoothed,
-            color=color,
-            linewidth=2.6,
-            marker="o",
-            markersize=5.5,
-            markerfacecolor="#ffffff",
-            markeredgecolor=color,
-            markeredgewidth=1.6,
-            zorder=3,
-        )
-        ax.set_title(stroke_label, fontsize=12, fontweight="semibold", color=color, pad=8)
-        ax.set_ylabel("Médiane", fontsize=10, labelpad=6)
-        ax.set_xlabel("Année", fontsize=10, labelpad=6)
-        ax.yaxis.set_major_formatter(FuncFormatter(_format_swim_time_tick))
-        ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=7))
-        ax.tick_params(axis="x", labelbottom=True, labelsize=9)
-        ax.grid(
-            axis="y",
-            alpha=CORRIDOR_GRID_ALPHA,
-            color="#94a3b8",
-            linestyle="-",
-            linewidth=0.6,
-            zorder=0,
-        )
-        plot_values = medians + smoothed
-        ymin = float(min(plot_values))
-        ymax = float(max(plot_values))
-        y_span = max(ymax - ymin, 0.5)
-        ax.set_ylim(ymin - y_span * 0.12, ymax + y_span * 0.18)
-        y_top = ymax + y_span * 0.12
-        ax.text(
-            0.98,
-            0.97,
-            f"échelle locale\nmax {_format_swim_time_annotation(ymax)}",
-            transform=ax.transAxes,
-            ha="right",
-            va="top",
-            fontsize=8,
-            color="#64748b",
-            bbox={
-                "boxstyle": "round,pad=0.2",
-                "facecolor": "white",
-                "alpha": 0.85,
-                "edgecolor": "#e2e8f0",
-            },
-            zorder=5,
-        )
-
-    for index in range(n_strokes, nrows * ncols):
-        axes[index // ncols][index % ncols].set_axis_off()
-
-    if global_year_min is not None and global_year_max is not None:
-        for index in range(n_strokes):
-            ax = axes[index // ncols][index % ncols]
-            if ax.has_data():
-                ax.set_xlim(global_year_min - 0.6, global_year_max + 0.6)
-
-    subtitle = (
+    note = (
         f"Moyenne mobile {rolling_window_years} ans (trait plein) · "
         f"médiane brute (pointillés) · "
         f"années avec < {min_yearly_performances} perf. exclues · "
-        "échelle Y propre à chaque nage"
+        "échelle Y propre à chaque nage. "
+        "Limites : l'évolution reflète autant la composition de la base que le niveau réel."
     )
-    fig.suptitle(
-        f"{title}\n{subtitle}",
-        fontsize=13,
-        fontweight="bold",
-        color="#1e293b",
-        y=1.02,
+    return render_figure(
+        facet_lines_spec(
+            panels=panels,
+            title=title,
+            xlabel="Année",
+            ylabel="Médiane (s)",
+            note=note,
+            ncol=2 if len(panels) > 1 else 1,
+            sharey=False,
+        )
     )
-    fig.tight_layout()
-    return fig
 
 def _format_speed_tick(value: float, _: int) -> str:
     """Formate une graduation d'axe vitesse en m/s.
@@ -859,124 +798,36 @@ def _plot_max_split_speed_by_stroke(
         peaks_df[stroke_col].astype(str).tolist()
     )
     palette = _stroke_palette_for_labels(stroke_order)
-    distances = sorted(peaks_df[distance_col].astype(float).unique())
-
-    fig, ax = plt.subplots(figsize=(14, 8))
-    _apply_standard_chart_theme(fig, ax)
-
-    if not stroke_order or not distances:
-        ax.text(
-            0.5,
-            0.5,
-            empty_message,
-            ha="center",
-            va="center",
-            transform=ax.transAxes,
-            fontsize=12,
-            color="#334155",
-        )
-        ax.set_axis_off()
-        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-        if subtitle:
-            fig.text(
-                0.5,
-                0.02,
-                subtitle,
-                ha="center",
-                va="bottom",
-                fontsize=9,
-                color="#64748B",
-            )
-        fig.tight_layout()
-        return fig
-
-    y_values_all: List[float] = []
+    series = []
     for stroke_label in stroke_order:
-        stroke_data = peaks_df.loc[
-            peaks_df[stroke_col].astype(str) == stroke_label
-        ]
+        stroke_data = peaks_df.loc[peaks_df[stroke_col].astype(str) == stroke_label]
         if stroke_data.empty:
             continue
-        color = palette[stroke_label]
-        marker = _STROKE_MARKERS.get(stroke_label, "o")
-        x_vals = stroke_data[distance_col].astype(float).tolist()
-        y_vals = stroke_data[speed_col].astype(float).tolist()
-        y_values_all.extend(y_vals)
-        ax.scatter(
-            x_vals,
-            y_vals,
-            c=color,
-            marker=marker,
-            s=95,
-            linewidths=1.4,
-            edgecolors="#ffffff",
-            label=stroke_label,
-            alpha=0.9,
-            zorder=3,
+        series.append(
+            {
+                "label": stroke_label,
+                "color": palette[stroke_label],
+                "geom": "point",
+                "marker": _STROKE_MARKERS.get(stroke_label, "o"),
+                "x": stroke_data[distance_col].astype(float).tolist(),
+                "y": stroke_data[speed_col].astype(float).tolist(),
+                "size": 95.0,
+            }
         )
+    note = subtitle or (
+        "Limites : le maximum est sensible aux erreurs de chronométrage des splits."
+    )
+    return render_figure(
+        multiline_spec(
+            series=series,
+            title=title,
+            xlabel="Distance cumulée du split (m)",
+            ylabel="Vitesse maximale du split (m/s)",
+            note=note,
+            empty_message=empty_message,
+        )
+    )
 
-    tick_values = _all_split_distance_ticks(distances)
-    ax.set_xscale("linear")
-    ax.set_xticks(tick_values)
-    ax.xaxis.set_major_formatter(
-        FuncFormatter(lambda v, _: f"{int(v)}" if v == int(v) else f"{v:g}")
-    )
-    if len(tick_values) > 8:
-        ax.tick_params(axis="x", labelsize=8, rotation=45)
-        for label in ax.get_xticklabels():
-            label.set_ha("right")
-    ax.yaxis.set_major_formatter(FuncFormatter(_format_speed_tick))
-    ax.set_xlabel("Distance cumulée du split (m) — échelle linéaire")
-    ax.set_ylabel("Vitesse maximale du split (m/s)")
-    if subtitle:
-        fig.suptitle(
-            f"{title}\n{subtitle}",
-            fontsize=13,
-            fontweight="bold",
-            color="#1e293b",
-            y=1.02,
-        )
-    else:
-        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-    if distances:
-        x_min = min(distances)
-        x_max = max(distances)
-        x_margin = max((x_max - x_min) * 0.04, 25.0)
-        ax.set_xlim(max(0.0, x_min - x_margin), x_max + x_margin)
-    if y_values_all:
-        y_min = float(min(y_values_all))
-        y_max = float(max(y_values_all))
-        y_span = max(y_max - y_min, 0.08)
-        ax.set_ylim(y_min - y_span * 0.08, y_max + y_span * 0.12)
-    ax.yaxis.set_major_locator(MaxNLocator(nbins=10))
-    ax.grid(
-        axis="y",
-        alpha=CORRIDOR_GRID_ALPHA,
-        color="#94a3b8",
-        linestyle="-",
-        linewidth=0.6,
-        zorder=0,
-    )
-    ax.grid(
-        axis="x",
-        alpha=0.18,
-        color="#94a3b8",
-        linestyle=":",
-        linewidth=0.5,
-        zorder=0,
-    )
-    ax.legend(
-        title="Nage",
-        loc="upper right",
-        framealpha=0.92,
-        edgecolor="#cbd5e1",
-        fontsize=10,
-        title_fontsize=10,
-    )
-    fig.tight_layout()
-    if len(tick_values) > 8:
-        fig.subplots_adjust(bottom=0.16)
-    return fig
 
 def _plot_mean_speed_by_distance_and_stroke(
     speed_by_dist: pd.DataFrame,
@@ -1018,135 +869,36 @@ def _plot_mean_speed_by_distance_and_stroke(
         speed_by_dist[stroke_col].astype(str).tolist()
     )
     palette = _stroke_palette_for_labels(stroke_order)
-    distances = sorted(speed_by_dist[distance_col].astype(float).unique())
-
-    fig, ax = plt.subplots(figsize=(14, 8))
-    _apply_standard_chart_theme(fig, ax)
-
-    if not stroke_order or not distances:
-        ax.text(
-            0.5,
-            0.5,
-            empty_message,
-            ha="center",
-            va="center",
-            transform=ax.transAxes,
-            fontsize=12,
-            color="#334155",
-        )
-        ax.set_axis_off()
-        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-        if subtitle:
-            fig.text(
-                0.5,
-                0.02,
-                subtitle,
-                ha="center",
-                va="bottom",
-                fontsize=9,
-                color="#64748B",
-            )
-        fig.tight_layout()
-        return fig
-
-    y_values_all: List[float] = []
+    series = []
     for stroke_label in stroke_order:
         stroke_data = speed_by_dist.loc[
             speed_by_dist[stroke_col].astype(str) == stroke_label
         ].sort_values(distance_col)
         if stroke_data.empty:
             continue
-        color = palette[stroke_label]
-        x_vals = stroke_data[distance_col].astype(float).tolist()
-        y_vals = stroke_data[speed_col].astype(float).tolist()
-        y_values_all.extend(y_vals)
-        ax.plot(
-            x_vals,
-            y_vals,
-            color=color,
-            linewidth=2.8,
-            marker="o",
-            markersize=9,
-            markerfacecolor="#ffffff",
-            markeredgecolor=color,
-            markeredgewidth=2.0,
-            label=stroke_label,
-            zorder=3,
+        series.append(
+            {
+                "label": stroke_label,
+                "color": palette[stroke_label],
+                "marker": "circle",
+                "x": stroke_data[distance_col].astype(float).tolist(),
+                "y": stroke_data[speed_col].astype(float).tolist(),
+            }
         )
-        if count_col in stroke_data.columns:
-            counts = stroke_data[count_col].astype(int).tolist()
-        else:
-            counts = [0] * len(x_vals)
-        x_span = max(distances) - min(distances) if len(distances) > 1 else 50.0
-        label_dx = max(x_span * 0.012, 1.5)
-        for x_val, y_val, perf_n in zip(x_vals, y_vals, counts):
-            ax.text(
-                x_val + label_dx,
-                y_val,
-                f"{y_val:.2f}",
-                ha="left",
-                va="center",
-                fontsize=8.5,
-                color="#334155",
-                fontweight="medium",
-                zorder=4,
-            )
+    note = subtitle or (
+        "Limites : la médiane masque la dispersion ; aucune bande de variabilité."
+    )
+    return render_figure(
+        multiline_spec(
+            series=series,
+            title=title,
+            xlabel="Distance (m)",
+            ylabel="Vitesse médiane (m/s)",
+            note=note,
+            empty_message=empty_message,
+        )
+    )
 
-    ax.set_xscale("linear")
-    ax.set_xticks(distances)
-    ax.xaxis.set_major_formatter(
-        FuncFormatter(lambda v, _: f"{int(v)}" if v == int(v) else f"{v:g}")
-    )
-    ax.yaxis.set_major_formatter(FuncFormatter(_format_speed_tick))
-    ax.set_xlabel("Distance (m) — échelle linéaire")
-    ax.set_ylabel("Vitesse médiane (m/s)")
-    if subtitle:
-        fig.suptitle(
-            f"{title}\n{subtitle}",
-            fontsize=13,
-            fontweight="bold",
-            color="#1e293b",
-            y=1.02,
-        )
-    else:
-        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-    if distances:
-        x_min = min(distances)
-        x_max = max(distances)
-        x_margin = max((x_max - x_min) * 0.05, 8.0)
-        ax.set_xlim(x_min - x_margin, x_max + x_margin * 1.35)
-    if y_values_all:
-        y_min = float(min(y_values_all))
-        y_max = float(max(y_values_all))
-        y_span = max(y_max - y_min, 0.08)
-        ax.set_ylim(y_min - y_span * 0.1, y_max + y_span * 0.14)
-    ax.yaxis.set_major_locator(MaxNLocator(nbins=10))
-    ax.grid(
-        axis="y",
-        alpha=CORRIDOR_GRID_ALPHA,
-        color="#94a3b8",
-        linestyle="-",
-        linewidth=0.6,
-        zorder=0,
-    )
-    ax.grid(
-        axis="x",
-        alpha=0.18,
-        color="#94a3b8",
-        linestyle=":",
-        linewidth=0.5,
-        zorder=0,
-    )
-    ax.legend(
-        title="Nage",
-        loc="upper right",
-        framealpha=0.92,
-        edgecolor="#cbd5e1",
-        fontsize=10,
-        title_fontsize=10,
-    )
-    fig.tight_layout()
-    return fig
 
 def _apply_standard_chart_theme(fig: plt.Figure, ax: plt.Axes) -> None:
     """Applique le thème graphique commun Pacing (effectifs et couloirs).
@@ -1238,103 +990,33 @@ def _plot_gender_grouped_counts_by_event(
     df_nonzero = _drop_zero_count_events(df_counts[gender_cols])
     df_sorted = _sort_event_counts_df(df_nonzero, by_total=by_total)
     events = df_sorted.index.tolist()
-    n_events = len(events)
-
-    if n_events == 0:
-        fig, ax = plt.subplots(figsize=(12, 6))
-        _apply_standard_chart_theme(fig, ax)
-        ax.text(
-            0.5,
-            0.5,
-            "Aucune performance disponible pour ce bassin.",
-            ha="center",
-            va="center",
-            transform=ax.transAxes,
-            fontsize=12,
-            color="#334155",
-        )
-        ax.set_axis_off()
-        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-        fig.tight_layout()
-        return fig
-
     female_counts = df_sorted["F"] if "F" in df_sorted.columns else pd.Series(0, index=events)
     male_counts = df_sorted["M"] if "M" in df_sorted.columns else pd.Series(0, index=events)
     labels = [localize_event_string(str(event)) for event in events]
-
-    fig_height = max(7.0, min(22.0, n_events * 0.38 + 1.8))
-    fig, ax = plt.subplots(figsize=(14, fig_height))
-    _apply_standard_chart_theme(fig, ax)
-
-    y_pos = np.arange(n_events)
-    bar_height = 0.36
-    female_bars = ax.barh(
-        y_pos - bar_height / 2,
-        female_counts.values,
-        height=bar_height,
-        label=_GENDER_LABEL_FEMALE,
-        color=NON_CORRIDOR_COLOR_FEMALE,
-        edgecolor="#ffffff",
-        linewidth=0.6,
-        zorder=3,
+    n = int(female_counts.sum() + male_counts.sum()) if len(events) else 0
+    note = (
+        "Limites : un effectif élevé ne garantit ni la diversité des âges ni celle des niveaux ; "
+        f"n = {n} performances."
     )
-    male_bars = ax.barh(
-        y_pos + bar_height / 2,
-        male_counts.values,
-        height=bar_height,
-        label=_GENDER_LABEL_MALE,
-        color=NON_CORRIDOR_COLOR_MALE,
-        edgecolor="#ffffff",
-        linewidth=0.6,
-        zorder=3,
+    return render_figure(
+        grouped_bar_spec(
+            categories=labels,
+            series={
+                _GENDER_LABEL_FEMALE: [float(v) for v in female_counts.tolist()] if len(events) else [],
+                _GENDER_LABEL_MALE: [float(v) for v in male_counts.tolist()] if len(events) else [],
+            },
+            colors={
+                _GENDER_LABEL_FEMALE: COLOR_FEMALE,
+                _GENDER_LABEL_MALE: COLOR_MALE,
+            },
+            title=title,
+            xlabel="Nombre de performances",
+            ylabel="Épreuve",
+            orientation="horizontal",
+            note=note,
+        )
     )
 
-    max_value = float(max(female_counts.max(), male_counts.max(), 1))
-    label_offset = max(max_value * 0.012, 8.0)
-    label_fontsize = 10 if n_events <= 8 else 9
-    for bars, counts in ((female_bars, female_counts), (male_bars, male_counts)):
-        for bar, value in zip(bars, counts.values):
-            count = int(value)
-            if count <= 0:
-                continue
-            ax.text(
-                count + label_offset,
-                bar.get_y() + bar.get_height() / 2,
-                _format_count_display(count),
-                ha="left",
-                va="center",
-                fontsize=label_fontsize,
-                color="#334155",
-                fontweight="medium",
-                zorder=4,
-            )
-
-    y_labelsize = 12 if n_events <= 8 else (11 if n_events <= 14 else 10)
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(labels)
-    ax.tick_params(axis="y", labelsize=y_labelsize)
-    ax.invert_yaxis()
-    ax.set_xlabel("Nombre de performances")
-    ax.set_ylabel("Épreuve")
-    ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-    ax.set_xlim(0, max_value * 1.14)
-    ax.xaxis.set_major_locator(MaxNLocator(integer=True, min_n_ticks=5))
-    ax.grid(
-        axis="x",
-        alpha=CORRIDOR_GRID_ALPHA,
-        color="#94a3b8",
-        linestyle="-",
-        linewidth=0.6,
-        zorder=0,
-    )
-    ax.legend(
-        loc="lower right",
-        framealpha=0.92,
-        edgecolor="#cbd5e1",
-        fontsize=10,
-    )
-    fig.tight_layout()
-    return fig
 
 def _format_count_display(value: int) -> str:
     """Formate un effectif avec des espaces ASCII comme séparateurs de milliers.
@@ -1394,71 +1076,29 @@ def _plot_gender_performance_counts(
     gender_order = ("F", "M")
     labels = [_GENDER_LABEL_FEMALE, _GENDER_LABEL_MALE]
     values = [int(counts_by_gender.get(gender, 0)) for gender in gender_order]
-    colors = [NON_CORRIDOR_COLOR_FEMALE, NON_CORRIDOR_COLOR_MALE]
+    colors = [COLOR_FEMALE, COLOR_MALE]
     total = sum(values)
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    _apply_standard_chart_theme(fig, ax)
-
-    if total == 0:
-        ax.text(
-            0.5,
-            0.5,
-            "Aucune performance disponible pour ce périmètre.",
-            ha="center",
-            va="center",
-            transform=ax.transAxes,
-            fontsize=12,
-            color="#334155",
-        )
-        ax.set_axis_off()
-        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-        fig.tight_layout()
-        return fig
-
-    x_pos = np.arange(len(gender_order))
-    bars = ax.bar(
-        x_pos,
-        values,
-        width=0.55,
-        color=colors,
-        edgecolor="#ffffff",
-        linewidth=0.8,
-        zorder=3,
+    value_texts = [
+        f"{_format_count_display(value)} ({(100.0 * value / total) if total else 0.0:.1f}%)"
+        for value in values
+    ]
+    note = (
+        "Limites : information très agrégée, pertinente surtout au niveau global ; "
+        f"n = {total} performances."
     )
-    ymax = max(values)
-    label_offset = ymax * 0.015 if ymax > 0 else 0.5
-    for bar, value in zip(bars, values):
-        share_pct = (100.0 * value / total) if total > 0 else 0.0
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            value + label_offset,
-            f"{_format_count_display(value)} ({share_pct:.1f}%)",
-            ha="center",
-            va="bottom",
-            fontsize=11,
-            color="#334155",
-            fontweight="medium",
-            zorder=4,
+    return render_figure(
+        category_bar_spec(
+            categories=labels,
+            values=values,
+            fills=colors,
+            title=title,
+            xlabel="Sexe",
+            ylabel="Nombre de performances",
+            note=note,
+            value_texts=value_texts,
         )
-    ax.set_xticks(x_pos)
-    ax.set_xticklabels(labels)
-    ax.set_xlabel("Sexe")
-    ax.set_ylabel("Nombre de performances")
-    ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
-    ax.set_ylim(0, ymax * 1.14 if ymax > 0 else 1)
-    ax.yaxis.set_major_locator(MaxNLocator(integer=True, min_n_ticks=5))
-    ax.yaxis.set_major_formatter(FuncFormatter(_format_performance_count_tick))
-    ax.grid(
-        axis="y",
-        alpha=CORRIDOR_GRID_ALPHA,
-        color="#94a3b8",
-        linestyle="-",
-        linewidth=0.6,
-        zorder=0,
     )
-    fig.tight_layout()
-    return fig
+
 
 _GENDER_PIE_COLORS: Dict[str, str] = {
     "F": NON_CORRIDOR_COLOR_FEMALE,
