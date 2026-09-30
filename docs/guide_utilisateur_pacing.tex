@@ -46,7 +46,6 @@ Pacing est une application de visualisation qui permet de\,:
 \begin{itemize}
   \item explorer des chronos et des répartitions de performances\,;
   \item tracer des \textbf{couloirs de performance} (percentiles d'âge ou de catégorie d'âge)\,;
-  \item positionner un ou plusieurs nageurs sur ces couloirs\,;
   \item comparer un nageur marocain (données FRM Natation) au peloton français (Extranat) ou américain (USA Swimming).
 \end{itemize}
 
@@ -91,7 +90,7 @@ python app/interfaces/desktop_flet.py
 \subsection{Raccourcis visuels}
 
 \begin{itemize}
-  \item \textbf{Interrupteur «\,Mode couloir déciles 10-90\,»} --- visible en haut de la barre latérale lorsque le couloir France est actif\,; bascule vers le mode déciles (section~\ref{sec:deciles}).
+  \item \textbf{Interrupteur «\,Mode couloir déciles 10-90\,»} --- visible en haut de la barre latérale lorsque le couloir est actif\,; bascule vers le mode déciles (section~\ref{sec:deciles}).
   \item \textbf{Bouton thème clair / sombre} --- icône soleil ou lune en haut à droite de la barre latérale\,; adapte les couleurs de l'interface sans modifier les graphiques.
   \item \textbf{Anneau de chargement vert} --- apparaît brièvement sous les filtres lors du recalcul d'un graphique.
 \end{itemize}
@@ -141,7 +140,7 @@ Après avoir choisi le graphique \textbf{Couloir de performance (âge) - nageur 
   \item \textbf{Stroke} --- type de nage (\emph{Freestyle}, \emph{Backstroke}, \emph{Breaststroke}, \emph{Butterfly}, \emph{IM}, etc.).
   \item \textbf{Distance} --- distance en mètres (50, 100, 200, 400, 800, 1500\ldots).
   \item \textbf{Bassin} --- \textbf{LCM} (50\,m) ou \textbf{SCM} (25\,m).
-  \item \textbf{Sexe (couloir)} (optionnel) --- \textbf{Tous}, \textbf{Femme} ou \textbf{Homme} pour restreindre le peloton de référence.
+  \item \textbf{Sexe (couloir)} (optionnel) --- \textbf{Tous}, \textbf{Femme} ou \textbf{Homme}.
 \end{enumerate}
 
 \noindent L'épreuve analysée est la combinaison \texttt{Distance + Stroke + Bassin} (ex.\ \emph{100 Freestyle LCM}).
@@ -166,13 +165,13 @@ Pour les graphiques hors couloirs (histogrammes, boxplots, heatmaps, pacing comp
 \subsection{Mode déciles (France uniquement)}
 \label{sec:deciles}
 
-Un interrupteur \textbf{Mode couloir déciles 10-90} (en haut de la barre latérale) permet de basculer vers un couloir basé sur les déciles 10\,\% à 90\,\% du peloton français, au lieu du couloir centré sur un nageur cible.
+Un interrupteur \textbf{Mode couloir déciles 10-90} (en haut de la barre latérale) permet de basculer vers un couloir basé sur les déciles 10\,\% à 90\,\% du peloton français.
 
 %----------------------------------------------------------------------
 \section{Rechercher un nageur}
 %----------------------------------------------------------------------
 
-La recherche est disponible via le champ \textbf{Rechercher un nageur} (ou ses variantes USA / Maroc) dans la barre latérale.
+La recherche est disponible via le champ \textbf{Rechercher un nageur} (ou ses variantes USA, Maroc et heatmap) dans la barre latérale. Le pacing comparatif utilise des listes, sans champ de recherche.
 
 \subsection{Procédure commune}
 
@@ -180,23 +179,23 @@ La recherche est disponible via le champ \textbf{Rechercher un nageur} (ou ses v
   \item Configurer l'épreuve (filtres ou menu USA).
   \item Saisir un \textbf{nom} ou une \textbf{année de naissance} dans le champ de recherche.
   \item Sélectionner un résultat dans la liste (format \texttt{Nom (AAAA)}).
-  \item Cliquer sur le bouton \checkmark{} (\emph{Confirmer la recherche}) pour valider et afficher le graphique.
+  \item Pour les couloirs, cliquer sur le bouton \checkmark{} (\emph{Confirmer la recherche}) pour valider et afficher le graphique. La heatmap se met à jour dès la sélection (pas de bouton \checkmark{}).
 \end{enumerate}
 
-\noindent Sans confirmation \checkmark{}, le graphique ne se met pas à jour avec le nageur choisi.
+\noindent Sans confirmation \checkmark{}, un couloir ne se met pas à jour avec le nageur choisi.
 
 \subsection{Libellés selon le contexte}
 
 \begin{center}
-\begin{tabular}{ll}
+\begin{tabular}{lp{10.2cm}}
 \hline
 \textbf{Contexte} & \textbf{Libellé du champ / liste} \\
 \hline
-Couloir France & Rechercher un nageur / Nageur cible (couloir de perf.) \\
+Couloir France & Rechercher un nageur / Nageur cible (couloir) \\
 Couloir USA & Rechercher un nageur (USA Swimming) / Nageur cible (USA) \\
 Overlay Maroc & Rechercher un nageur (Maroc) / Nageur marocain (FRM Natation) \\
-Heatmap & Nageur cible (heatmap) \\
-Pacing comparatif & Nageur cible 1/2/3 (pacing) \\
+Heatmap & Rechercher un nageur (heatmap) \\
+Pacing comparatif & Nageur cible 1 (pacing) / Nageur cible 2 (pacing) / Nageur cible 3 (pacing) \\
 \hline
 \end{tabular}
 \end{center}
@@ -277,8 +276,6 @@ Zone 20--80\,\% (mode déciles) & Bande élargie entre les déciles 20 et 80 \\
   \item \textbf{Filtre sexe\,:} si \textbf{Femme} ou \textbf{Homme} est sélectionné, le peloton et les percentiles ne portent que sur ce genre.
 \end{enumerate}
 
-\noindent Des exemples visuels sont disponibles dans le dossier \texttt{docs/screenshots/} du projet (fichiers \emph{Couloir de performance}, \emph{Couloir déciles}, etc.).
-
 %----------------------------------------------------------------------
 \section{Limites actuelles de l'outil}
 \label{sec:limites}
@@ -289,7 +286,6 @@ Zone 20--80\,\% (mode déciles) & Bande élargie entre les déciles 20 et 80 \\
 \begin{itemize}
   \item L'application nécessite des fichiers de données déjà présents dans le dossier \texttt{data/} (performances Extranat, données USA Swimming, résultats FRM Natation). Sans eux, des messages du type \textbf{«\,Aucune donnée trouvée\,»} ou \textbf{«\,Cache Parquet USA Swimming introuvable\,»} peuvent apparaître lors du choix du pays États-Unis.
   \item La mise à jour des données (collecte, nettoyage) relève d'opérations techniques distinctes\,; ce guide ne les couvre pas.
-  \item La couverture des compétitions marocaines dépend des fichiers disponibles dans \texttt{data/processed/frmnatation/}.
 \end{itemize}
 
 \subsection{Couloirs de performance}
