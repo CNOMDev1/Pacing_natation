@@ -28,17 +28,13 @@ Le dossier `services/` ne contient plus que les secrets locaux (`bearer_token.tx
 
 NiceGUI, DearPyGUI et l'app iPad/macOS consomment **uniquement l'API HTTP**. L'application Flet est une exception assumée : elle appelle le cœur métier en direct, car elle tourne sur le poste qui détient les données. Voir `docs/evaluation_cibles_interfaces.md`.
 
-## Tests
-
-```bash
-PYTHONPATH=. pytest tests/ -q
-```
-
 ## Prérequis
 
 - **Python 3.10+**
 - **Chromium** (Playwright), pour les scrapings Omega et le token USA Swimming
 - Données déjà présentes ou à générer dans `data/`
+
+
 
 ## Installation
 
@@ -52,29 +48,37 @@ pip install -e .
 playwright install chromium
 ```
 
+
+
 ## Dépendances principales
 
-| Catégorie | Paquets | Usage |
-|-----------|---------|-------|
-| API | `fastapi`, `uvicorn`, `pydantic` | Serveur REST |
-| Scraping | `requests`, `beautifulsoup4`, `playwright` | Extranat, Omega, USA Swimming |
-| Données | `pandas`, `pyarrow`, `numpy` | DataFrames, cache Parquet |
-| Visualisation | `matplotlib`, `seaborn` | Graphiques |
-| Interfaces | `flet`, `nicegui`, `dearpygui` | Desktop, web, prototype desktop |
-| Notebooks | `jupyter`, `notebook`, `ipykernel` | Analyses dans `notebooks/` |
+
+| Catégorie     | Paquets                                    | Usage                           |
+| ------------- | ------------------------------------------ | ------------------------------- |
+| API           | `fastapi`, `uvicorn`, `pydantic`           | Serveur REST                    |
+| Scraping      | `requests`, `beautifulsoup4`, `playwright` | Extranat, Omega, USA Swimming   |
+| Données       | `pandas`, `pyarrow`, `numpy`               | DataFrames, cache Parquet       |
+| Visualisation | `matplotlib`, `seaborn`                    | Graphiques                      |
+| Interfaces    | `flet`, `nicegui`, `dearpygui`             | Desktop, web, prototype desktop |
+
+
+
 
 ## Utilisation
 
+
+
 ### Interfaces
 
-| Interface | Commande |
-|-----------|----------|
-| Desktop (Flet) | `python -m pacing.ui.desktop.app` (ou `pacing-desktop`) |
-| Web (NiceGUI) | `python -m pacing.ui.web.app` (ou `pacing-web`) — API FastAPI requise |
-| Desktop (DearPyGUI) | `python -m pacing.ui.dearpygui.app` (ou `pacing-dpg`) — API FastAPI requise |
+
+| Interface              | Commande                                                                          |
+| ---------------------- | --------------------------------------------------------------------------------- |
+| Desktop (Flet)         | `python -m pacing.ui.desktop.app` (ou `pacing-desktop`)                           |
+| Web (NiceGUI)          | `python -m pacing.ui.web.app` (ou `pacing-web`) — API FastAPI requise             |
+| Desktop (DearPyGUI)    | `python -m pacing.ui.dearpygui.app` (ou `pacing-dpg`) — API FastAPI requise       |
 | iPad / macOS (SwiftUI) | `open ios/PacingApp/PacingApp.xcodeproj` — voir `docs/ios_mac_exploration_5_5.md` |
-| API | `uvicorn pacing.api.main:app --reload` |
-| Notebooks | `jupyter notebook notebooks/` |
+| API                    | `uvicorn pacing.api.main:app --reload`                                            |
+
 
 Variables utiles : `PACING_API_BASE_URL` (défaut `http://127.0.0.1:8000`), `PACING_WEB_PORT` (défaut `8080`).
 
@@ -86,18 +90,24 @@ Variables utiles : `PACING_API_BASE_URL` (défaut `http://127.0.0.1:8000`), `PAC
 - Évaluation des cibles d'interface (§5) : `docs/evaluation_cibles_interfaces.md`
 - Exploration iOS/macOS (§5.5) : `docs/ios_mac_exploration_5_5.md`
 
+
+
 ### Ingestion & ETL
 
-| Script | Commande |
-|--------|----------|
-| Scraping Extranat | `python -m pacing.ingestion.extranat.service` |
-| Scraping Omega | `python -m pacing.ingestion.omega.service` |
-| Scraping USA Swimming | `python -m pacing.ingestion.usaswimming.service` |
-| Token USA Swimming | `python -m pacing.ingestion.usaswimming.get_token` |
-| Prétraitement Extranat | `python -m pacing.ingestion.extranat.preprocessing` |
-| Prétraitement FRM | `python -m pacing.ingestion.frmnatation.preprocessing` |
-| Prétraitement USA | `python -m pacing.ingestion.usaswimming.preprocessing` |
-| Cache Parquet USA | via `UsaswimmingCompetitionsDataLoader.build_parquet_cache()` |
+
+| Script                 | Commande                                                      |
+| ---------------------- | ------------------------------------------------------------- |
+| Scraping Extranat      | `python -m pacing.ingestion.extranat.service`                 |
+| Scraping Omega         | `python -m pacing.ingestion.omega.service`                    |
+| Scraping USA Swimming  | `python -m pacing.ingestion.usaswimming.service`              |
+| Token USA Swimming     | `python -m pacing.ingestion.usaswimming.get_token`            |
+| Prétraitement Extranat | `python -m pacing.ingestion.extranat.preprocessing`           |
+| Prétraitement FRM      | `python -m pacing.ingestion.frmnatation.preprocessing`        |
+| Prétraitement USA      | `python -m pacing.ingestion.usaswimming.preprocessing`        |
+| Cache Parquet USA      | via `UsaswimmingCompetitionsDataLoader.build_parquet_cache()` |
+
+
+
 
 ### Settings prefetch (`PACING_*`)
 
@@ -109,10 +119,10 @@ Exemples : `PACING_CORRIDOR_CHART_PREFETCH_LIMIT`, `PACING_HEATMAP_PREFETCH_SWIM
 Pacing/
 ├── pacing/               # Package applicatif (architecture en couches)
 ├── services/             # Secrets et état local du poste (non versionnés)
-├── notebooks/            # Jupyter notebooks d'analyse
 ├── data/                 # raw / processed / exports (hors git)
 ├── ios/                 # Prototype SwiftUI iPad/macOS (§5.5)
 ├── docs/
 ├── pyproject.toml
 └── requirements.txt
 ```
+

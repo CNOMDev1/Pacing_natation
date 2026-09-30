@@ -12,7 +12,6 @@
 #   Web       : python -m pacing.ui.web.app   (API FastAPI doit tourner)
 #   DearPyGUI : python -m pacing.ui.dearpygui.app  (API FastAPI doit tourner)
 #   API       : uvicorn pacing.api.main:app --reload
-#   Notebooks : jupyter notebook notebooks/
 
 # --- API FastAPI ---
 fastapi>=0.100.0
@@ -49,11 +48,3 @@ httpx>=0.27.0
 
 # --- Prototype desktop DearPyGUI (client API) ---
 dearpygui>=1.11.0
-
-# --- Notebooks Jupyter ---
-jupyter>=1.0.0
-notebook>=7.0.0
-ipykernel>=6.25.0
-
-# --- Tests ---
-pytest>=8.0.0
